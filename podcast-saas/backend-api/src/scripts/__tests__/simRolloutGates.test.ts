@@ -108,7 +108,7 @@ function fakeTransforms(over: Partial<SimTransforms> = {}): SimTransforms {
     parseSectionEntries: parse,
     wrapBridgeCombined: wrap,
     computeBridgeHash: shortSha,
-    injectRafGate: (html) => (html.includes('sim-raf-gate v4') ? html : `${html}<!-- sim-raf-gate v4 -->`),
+    injectRafGate: (html) => (html.includes('sim-raf-gate v5') ? html : `${html}<!-- sim-raf-gate v5 -->`),
     injectBridgeScriptTag: (html, rel, hash) =>
       html.replace(/<script src="[^"]*bridge\.js\?v=[a-z0-9]+"><\/script>/i, '') +
       `<script src="${rel}?v=${hash}"></script>`,

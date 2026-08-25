@@ -331,7 +331,7 @@ const BRIDGE_TEMPLATE = /* js */ `;(function(){
 // IMPORTANT: the script body must NOT start with `(function` and must not contain the string
 // "sim-bridge v1"/"sim-bridge v2" — the legacy cleanup regexes in this file strip such blocks.
 
-const RAF_GATE_VERSION = 4;
+const RAF_GATE_VERSION = 5;
 const RAF_GATE_MARKER_START = `<!-- sim-raf-gate v${RAF_GATE_VERSION} -->`;
 const RAF_GATE_MARKER_END   = '<!-- /sim-raf-gate -->';
 // Strips any version of the gate block (plus the '\n' separator injectRafGate adds before it)
@@ -538,15 +538,48 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
     while (sib) { if (sib.tagName === el.tagName) n++; sib = sib.previousElementSibling; }
     return el.tagName.toLowerCase() + ':nth-of-type(' + n + ')';
   }
+  // A selector fragment this scanner may emit must survive TWO consumers that cannot complain:
+  // querySelector (throws or silently mis-matches on an unescaped special character) and the
+  // hide-list <style> blocks, whose /[{}<\\]/ safety filter — enforced at SEVEN independent
+  // sites — drops anything carrying a backslash. So escaping is not available here: a correctly
+  // escaped selector is exactly what the filters delete, which converts "the wrong control was
+  // hidden" into "the control is not offered at all" (measured, 2026-08-25). The only shape that
+  // satisfies both consumers is a fragment that NEEDS no escaping — hence cleanIdent, and the
+  // structural fall-through for everything else.
+  function cleanIdent(s) {
+    // A CSS ident that is safe to concatenate raw: starts with a letter or underscore (a leading
+    // digit makes '#123' invalid CSS even though it is a legal HTML id), then word chars/hyphens.
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(s);
+  }
+  function uniqueMatch(sel, el) {
+    // Provably THIS element, not merely "one match": for a duplicate id the second element gets
+    // length 2, but for subtler collisions m[0] === el is the check that cannot be fooled.
+    try {
+      var m = document.querySelectorAll(sel);
+      return m.length === 1 && m[0] === el;
+    } catch (err) { return false; }
+  }
   function controlSelector(el) {
-    if (el.id) return '#' + el.id;
+    // #id and [name] are shortcuts, taken ONLY when provably clean and unique. HTML happily
+    // permits duplicate ids, ids querySelector cannot parse, and names shared by a whole radio
+    // group — each of which used to produce a selector that silently hid nothing, the wrong
+    // control, or an entire group (ledger, 2026-08-25). Anything that fails the proof falls
+    // through to the structural path, which is single-match by construction and, containing only
+    // tag names, digits and ' > ', is accepted by every filter unchanged.
+    if (el.id && cleanIdent(el.id)) {
+      var idSel = '#' + el.id;
+      if (uniqueMatch(idSel, el)) return idSel;
+    }
     var name = el.getAttribute('name');
-    if (name) return '[name="' + name + '"]';
-    // Unambiguous structural path: CHILD-combinator hops from the nearest ancestor WITH
-    // an id (or document.body) down to the element — tag:nth-of-type(i) per level, i
-    // counted among same-TAG siblings. A descendant-scoped fallback
-    // ('#anc button:nth-of-type(2)') is ambiguous: it can collapse distinct controls into
-    // one selector (and hide siblings too); the child path matches exactly one element.
+    if (name && cleanIdent(name)) {
+      var nameSel = '[name="' + name + '"]';
+      if (uniqueMatch(nameSel, el)) return nameSel;
+    }
+    // Unambiguous structural path: CHILD-combinator hops from the nearest ancestor with a
+    // PROVEN-unique clean id (or document.body) down to the element — tag:nth-of-type(i) per
+    // level, i counted among same-TAG siblings. The anchor is gated by the same proof as the
+    // shortcut above: an ancestor with a duplicate or unparseable id would poison every path
+    // anchored on it, so such an ancestor is climbed past rather than trusted.
     var parts = [];
     var node = el;
     var anchor = null;
@@ -554,7 +587,7 @@ const RAF_GATE_TEMPLATE = /* js */ `;(function () {
       parts.unshift(nthOfType(node));
       var parent = node.parentElement;
       if (!parent) break;
-      if (parent.id) anchor = '#' + parent.id;
+      if (parent.id && cleanIdent(parent.id) && uniqueMatch('#' + parent.id, parent)) anchor = '#' + parent.id;
       else if (parent === document.body) anchor = 'body';
       else if (parent === document.documentElement) anchor = 'html';
       else node = parent;

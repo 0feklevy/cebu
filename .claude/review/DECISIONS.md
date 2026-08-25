@@ -118,7 +118,7 @@ moves the active pointer, it does not unpublish a URL. That belongs in the runbo
 Full options analysis, with the migration DDL and the idempotency/lease/`section_version` design:
 `md-files/PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md`.
 
-## 🔴 OPEN (found 2026-08-25, measured) — "hide this control" silently does nothing, or hides too much
+## ✅ FIXED (gate v5, 2026-08-25, mutation-proven) — "hide this control" silently did nothing, or hid too much
 
 Found during Phase 0 of the action-recording work, while building the golden fixtures. It is a
 **live viewer defect today** and has nothing to do with that feature — the feature is only what
@@ -187,8 +187,17 @@ defect-describing tests in the new one flip. The golden fixture is
 `backend-api/src/scripts/fixtures/controlsFixture.ts`, emitted as the `controls` package by
 `gen-sim-fixture.ts`.
 
-**Not fixed in this pass** — it is a viewer-behaviour change that deserves its own PR and its own
-mutation proof, not a drive-by inside a Phase 0 research branch.
+**FIXED — `feat/sim-locator-gate`, as Phase 1's opening PR, exactly as ruled.** The fix is the
+fall-through the mutation measurement dictated, not escaping: `#id`/`[name]` are emitted only when
+clean AND proven unique (`querySelectorAll` → exactly one match that IS this element), everything
+else gets the structural child-combinator path, which passes all seven filters unchanged. The
+structural ANCHOR gets the same proof — `'#' + parent.id` on any ancestor was the same defect one
+level up. The static scanner gets a document-wide counting pre-pass for the same rule. Gate
+version 4 → 5.
+
+Three mutations, all caught (revert to raw concat: 4 failed; weaken uniqueness: 2; drop the static
+count proof: 2). Real-browser e2e green on regenerated v5 fixtures. **Residue: stored packages keep
+v4 bytes until `reinject-sim-gates.ts` runs — an ops step, listed below.**
 
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 

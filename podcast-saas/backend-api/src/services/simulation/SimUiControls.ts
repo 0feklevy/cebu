@@ -242,12 +242,16 @@ const BUTTONISH_CLASS_RE = /(?:^|[\s_-])(?:btn|button)(?:$|[\s_-])/i;
  * words minus embedded controls — covers `<label><input type=checkbox> Own wings</label>`)
  * → text content (buttons) → title → placeholder → name → id (prettified).
  *
- * Selectors: ONLY unambiguous ones — #id or [name="…"]. Regex parsing cannot see the
- * real DOM tree, so a static structural path (nth-of-type) can collapse distinct
- * sibling controls into one row or match nothing at all; unnamed controls are therefore
- * DROPPED here — the runtime scan (rAF-gate v2, which walks the live DOM and emits
- * unambiguous child-combinator paths) covers them. Selectors containing { } < or
- * backslash are dropped too (SIM_UI_UNSAFE_SELECTOR_RE — wrap templates reject them).
+ * Selectors: ONLY PROVEN ones — #id or [name="…"], and only when the id/name is a clean
+ * CSS ident AND occurs exactly once in the document (counted in a first pass). Gate v5
+ * taught the reason the hard way: an id like `odd:id.v2` or `123numeric` is legal HTML
+ * and unparseable raw CSS, a duplicate id makes `#id` match two nodes, and a radio
+ * group's shared name matches the whole group — and every one of those failures is
+ * SILENT, because the selector's destination is a <style> block that drops what it
+ * cannot use. Escaping is not an option (the /[{}<\]/ filters at seven sites reject
+ * backslashes), so the unprovable are DROPPED here and left to the runtime scan, which
+ * walks the live DOM and emits unambiguous child-combinator structural paths for them —
+ * the same divide this scanner already uses for unnamed controls.
  * Deduped by selector, capped at SIM_UI_CONTROLS_MAX. System-injected gate/bridge
  * blocks — and all other scripts/styles/comments — are stripped first so injected
  * system code and JS template strings can never contribute phantom controls.
@@ -262,6 +266,25 @@ export function scanSimUiControls(html: string): SimUiControl[] {
 
   const controls: SimUiControl[] = [];
   const seen = new Set<string>();
+
+  // First pass: how many times does each id / name occur in the WHOLE document? Ambiguity is a
+  // property of the document, not of the control list — a duplicate id on a non-control element
+  // still breaks `#id`. Counted over every open tag, before any candidate filtering.
+  const idCount = new Map<string, number>();
+  const nameCount = new Map<string, number>();
+  {
+    const tagRe = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^"'>])*)>/g;
+    let t: RegExpExecArray | null;
+    while ((t = tagRe.exec(src)) !== null) {
+      const a = t[2] ?? '';
+      const tid = attrValue(a, 'id');
+      const tname = attrValue(a, 'name');
+      if (tid) idCount.set(tid, (idCount.get(tid) ?? 0) + 1);
+      if (tname) nameCount.set(tname, (nameCount.get(tname) ?? 0) + 1);
+    }
+  }
+  /** Safe to concatenate raw into a selector: letter/underscore start, then word chars/hyphens. */
+  const cleanIdent = (v: string): boolean => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(v);
 
   // Wrapped-label pass: `<label …>TEXT…<input …>…</label>` (text before OR after the
   // control) labels the FIRST #id/[name] control inside the label. The label's own text is
@@ -310,8 +333,12 @@ export function scanSimUiControls(html: string): SimUiControl[] {
 
     const id   = attrValue(attrs, 'id');
     const name = attrValue(attrs, 'name');
-    // Unambiguous selectors only — unnamed controls are the runtime scanner's job.
-    const selector = id ? `#${id}` : name ? `[name="${name}"]` : null;
+    // PROVEN selectors only — clean ident, occurring exactly once in the document. Everything
+    // else (dirty ids, duplicate ids, group-shared names, unnamed controls) is the runtime
+    // scanner's job: it can walk the real DOM and emit a structural path this parser cannot.
+    const idOk = !!id && cleanIdent(id) && idCount.get(id) === 1;
+    const nameOk = !!name && cleanIdent(name) && nameCount.get(name) === 1;
+    const selector = idOk ? `#${id}` : nameOk ? `[name="${name}"]` : null;
     if (!selector) continue;
     if (selector.length > SIM_UI_SELECTOR_MAX_CHARS || SIM_UI_UNSAFE_SELECTOR_RE.test(selector)) continue;
     if (seen.has(selector)) continue;

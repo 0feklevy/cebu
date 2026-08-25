@@ -130,10 +130,39 @@ describe('scanSimUiControls — kinds, labels, selectors', () => {
     expect(m.get('#q3')?.label).toBe('Go');
   });
 
-  it('dedupes by selector', () => {
+  it('a DUPLICATE id yields no control at all — ambiguity is dropped, not adjudicated', () => {
+    // This test used to assert "first occurrence wins", which pinned the defect: `#dup` matches
+    // BOTH elements, so the one row it kept was a selector that over-hides, and the second
+    // control silently vanished. A selector that cannot be proven unique is not offered; the
+    // runtime scanner addresses both elements via structural paths instead.
     const out = scanSimUiControls('<input type="range" id="dup"><input type="text" id="dup">');
-    expect(out).toHaveLength(1);
-    expect(out[0].kind).toBe('slider');   // first occurrence wins
+    expect(out).toHaveLength(0);
+  });
+
+  it('an id that is not a clean CSS ident is dropped — querySelector could not use it', () => {
+    // Legal HTML, unparseable raw CSS: a colon reads as a pseudo-class, a leading digit is not
+    // an ident, a space is a descendant combinator. Escaping is not available (the /[{}<\\]/
+    // filters at seven sites drop backslashes), so these fall to the runtime scanner.
+    const out = scanSimUiControls(
+      '<input type="range" id="odd:id.v2"><input type="range" id="123numeric">' +
+      '<input type="range" id="has space"><input type="range" id="ok">',
+    );
+    expect(out.map((c) => c.selector)).toEqual(['#ok']);
+  });
+
+  it('a name shared by a group is never a selector — it names the group, not the control', () => {
+    const out = scanSimUiControls(
+      '<input type="radio" name="mode" value="a"><input type="radio" name="mode" value="b">' +
+      '<input type="radio" name="solo" value="x">',
+    );
+    expect(out.map((c) => c.selector)).toEqual(['[name="solo"]']);
+  });
+
+  it('a duplicate id on a NON-control element still poisons the control selector', () => {
+    // Ambiguity is a property of the document, not the control list: `#x` matching a <div> too
+    // means hide-by-#x hides the div as well.
+    const out = scanSimUiControls('<div id="x"></div><input type="range" id="x">');
+    expect(out).toHaveLength(0);
   });
 
   it('caps at 100 controls', () => {

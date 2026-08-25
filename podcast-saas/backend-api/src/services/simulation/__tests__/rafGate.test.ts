@@ -18,7 +18,7 @@ import {
 } from '../SimulationService.js';
 import { wrapGuidanceCombined, type GuidanceEntryStored } from '../GuidanceService.js';
 
-const GATE_MARKER = '<!-- sim-raf-gate v4 -->';
+const GATE_MARKER = '<!-- sim-raf-gate v5 -->';
 const NO_FNS: BridgeFunction[] = [];
 
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
@@ -86,13 +86,13 @@ describe('injection idempotency', () => {
     const once = injectRafGate(SIM_HTML);
     const twice = injectRafGate(once);
     expect(count(twice, GATE_MARKER)).toBe(1);
-    expect(count(twice, 'sim-raf-gate v4 — auto-injected')).toBe(1);
+    expect(count(twice, 'sim-raf-gate v5 — auto-injected')).toBe(1);
     expect(twice).toBe(once);
   });
 
   it('replaces a stale v1/v2/v3 gate block with exactly one v4 block (version bump path)', () => {
     for (const stale of ['sim-raf-gate v1', 'sim-raf-gate v2', 'sim-raf-gate v3']) {
-      const withStale = injectRafGate(SIM_HTML).replace(/sim-raf-gate v4/g, stale);
+      const withStale = injectRafGate(SIM_HTML).replace(/sim-raf-gate v5/g, stale);
       expect(count(withStale, `<!-- ${stale} -->`)).toBe(1);
       const upgraded = injectRafGate(withStale);
       expect(count(upgraded, GATE_MARKER)).toBe(1);
@@ -211,7 +211,7 @@ describe('rAF gate snippet content', () => {
   });
 
   it('v4: posts SIM_PAINTED exactly once from the first real (unpaused) rAF frame', () => {
-    expect(out).toContain("postMessage({ type: 'SIM_PAINTED', v: 4 }, '*')");
+    expect(out).toContain("postMessage({ type: 'SIM_PAINTED', v: 5 }, '*')");
     expect(out).toContain('function firstPaintWrap(cb)');
     // Both the live rAF path and the resume-flush path route through firstPaintWrap so a sim
     // first driven unpaused via simResume (not a hidden warm) still acks its first frame.
@@ -229,7 +229,7 @@ describe('rAF gate snippet content', () => {
   it('v4: answers PING_SIM_PAINTED with a SIM_PAINTED re-post once painted (recoverable ack)', () => {
     expect(out).toContain("d.type === 'PING_SIM_PAINTED'");
     // Two post sites: the one-shot broadcast from the first frame + the ping re-post.
-    expect(count(out, "postMessage({ type: 'SIM_PAINTED', v: 4 }, '*')")).toBe(2);
+    expect(count(out, "postMessage({ type: 'SIM_PAINTED', v: 5 }, '*')")).toBe(2);
   });
 
   it('v4: handles parent-controlled mute/unmute and relayout messages', () => {
@@ -314,20 +314,17 @@ describe('rAF gate snippet content', () => {
     expect(out).toContain('s.length > 60');          // ~60-char label cap
   });
 
-  it('v3: selector preference #id → [name] → unambiguous CHILD-combinator nth-of-type path', () => {
-    expect(out).toContain("if (el.id) return '#' + el.id;");
-    expect(out).toContain('[name=');
-    // Child-path builder: per-level tag:nth-of-type(i) (i counted among same-TAG siblings),
-    // joined with ' > ', anchored at the nearest #id ancestor (or body/html fallback).
-    // A descendant-scoped fallback ('#anc button:nth-of-type(2)') is ambiguous and must
-    // not be emitted — every structural hop uses the child combinator.
+  it('v5: selector policy is PROOF-gated — #id/[name] only when clean and unique, else structural', () => {
+    // DELIBERATELY NOT a line-by-line source match any more. The previous form of this test
+    // pinned `if (el.id) return '#' + el.id;` — the defective line itself — as if it were the
+    // specification, and went red on the correct fix (mutation-proven, 2026-08-25). The
+    // BEHAVIOUR — every emitted selector parses and resolves to exactly one element, on the DOM
+    // shapes that used to break it — is owned by rafGateRuntimeScanner.test.ts, which executes
+    // the gate. What this keeps is the structural signature that the policy pieces exist at all:
+    expect(out).toContain('function cleanIdent(');
+    expect(out).toContain('function uniqueMatch(');
     expect(out).toContain("':nth-of-type(' + n + ')'");
-    expect(out).toContain("if (sib.tagName === el.tagName) n++;");
     expect(out).toContain("parts.join(' > ')");
-    expect(out).toContain("anchor = '#' + parent.id;");
-    expect(out).toContain("else if (parent === document.body) anchor = 'body';");
-    expect(out).toContain("(anchor ? anchor + ' > ' : '') + parts.join(' > ')");
-    expect(out).toContain('parts.unshift(nthOfType(node));');
   });
 
   it('v3: never emits selectors containing { } < or backslash (or over 300 chars)', () => {
