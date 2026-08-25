@@ -158,6 +158,13 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       // it names nothing. Checked BEFORE the storage read, so the bytes are never fetched, and
       // before the binary branch, which would otherwise hand out the bucket's own public URL.
       if (revision.verified && !isRevisionStatusPublic(revision.status)) {
+        // Logged, not silent. The allow-list inversion moved `canary_passed` from served to
+        // refused on the argument that nothing hands out a URL into one — three independent
+        // checks, none of which is a substitute for production disagreeing. If that argument is
+        // wrong, this line is how it becomes visible instead of arriving as a support ticket.
+        // It cannot be spammed by arbitrary input: the gate runs only for a VERIFIED revision, so
+        // reaching it requires a real revision id that really belongs to that simulation.
+        logger.warn({ key, status: revision.status }, 'sim-public: refused a non-public revision');
         return reply.code(404).send({ message: 'Not found' });
       }
       const isRevision = revision.verified;

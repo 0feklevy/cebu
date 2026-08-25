@@ -178,19 +178,50 @@ describe('revisionServingFacts — status travels with the existence answer', ()
   });
 });
 
-describe('isRevisionStatusPublic — only never-published statuses are withheld', () => {
+describe('isRevisionStatusPublic — an ALLOW-list, so an unrecognised status is refused', () => {
+  // `retired`/`rolled_back` bytes WERE served and are retained for rollback (mustRetainBytes), and
+  // a viewer whose page loaded a moment before a rollback still holds their URLs. Withdrawing them
+  // is a product decision about revocation, not this gate — which is the same sentence, read the
+  // other way, as: rollback is not revocation.
+  it.each(['active', 'retired', 'rolled_back'])('serves %s', (status) => {
+    expect(isRevisionStatusPublic(status)).toBe(true);
+  });
+
   it.each(['draft', 'uploading', 'validating', 'failed'])('withholds %s', (status) => {
     expect(isRevisionStatusPublic(status)).toBe(false);
   });
 
-  // `retired`/`rolled_back` bytes WERE served and are retained for rollback (mustRetainBytes);
-  // `canary_passed` is what the pre-activation canary drives. Withdrawing any of them is a separate
-  // product decision, not this gate.
-  it.each(['active', 'retired', 'rolled_back', 'canary_passed'])('serves %s', (status) => {
-    expect(isRevisionStatusPublic(status)).toBe(true);
+  it('withholds canary_passed, which is a staging state and not a published one', () => {
+    // This assertion was `true` until 2026-08-25, on the strength of a comment saying "the
+    // pre-activation canary drives the real document over this route". Nothing does:
+    // RevisionService.validate() reads bytes FROM STORAGE and that file contains no fetch/http at
+    // all; sim-canary-publish.ts consumes a --report file; sim-canary.spec.ts routes
+    // API_ORIGIN/** to an in-process server that 404s any real revision key. And
+    // shared/src/sim/simRevision.ts says outright that canary_passed is "NOT proof that a canary
+    // ran… the name is historical".
+    expect(isRevisionStatusPublic('canary_passed')).toBe(false);
+  });
+
+  it('withholds a status this build has never heard of', () => {
+    // THE REASON THE LIST WAS INVERTED. The deny-list form conceded, in its own comment,
+    // "Unknown status ⇒ yes (legacy)" — so a status an image did not recognise was PUBLIC. That
+    // makes introducing a non-public status unsafe by construction: during a rolling deploy, and
+    // on every image not yet replaced, a new `proof_pending` would be served precisely BECAUSE it
+    // is new, serving exactly the unproven bytes it exists to protect.
+    //
+    // So the inversion ships alone, in its own release, and the new statuses follow in a later
+    // one. This assertion is what holds that order.
+    expect(isRevisionStatusPublic('proof_pending')).toBe(false);
+    expect(isRevisionStatusPublic('proof_passed')).toBe(false);
+    expect(isRevisionStatusPublic('anything-at-all')).toBe(false);
   });
 
   it('serves a key with no revision row at all — legacy packages have no status', () => {
+    // `null` is not "unknown status". sim_revisions.status is TEXT NOT NULL, so a verified row
+    // always has one; null means the key is not a verified revision, or the database faulted.
+    // revisionServingFacts documents why a fault must leave the gate OPEN — failing closed there
+    // would 404 every revisioned simulation on the platform on a blip, and this is a publication
+    // check, not a secrecy boundary.
     expect(isRevisionStatusPublic(null)).toBe(true);
   });
 });
