@@ -637,6 +637,33 @@ export const sim_posters = pgTable(
  * Identity is the PAIR (sha256, byte_size) — see contentIdentity.ts for why the hash alone is not
  * the key, and 078_media_blobs.sql for why there is no ref_count column.
  */
+/**
+ * "Save bridge" (migration 079): a section's bridge setup, saved under a user-chosen label,
+ * loadable onto another simulation. RECIPE fields (prompt/toggles/selection) apply anywhere;
+ * the ARTIFACT (main_body) applies only after SimBridgeContract verification proves every anchor
+ * it binds to exists in the target — otherwise the load regenerates from the recipe.
+ */
+export const saved_bridges = pgTable('saved_bridges', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  created_by:  uuid('created_by').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  label:       text('label').notNull(),
+  // The recipe — always applicable.
+  sim_prompt:  text('sim_prompt'),
+  simple_ui:   boolean('simple_ui').notNull().default(false),
+  auto_script: boolean('auto_script').notNull().default(true),
+  ui_controls: jsonb('ui_controls'),
+  // The artifact — gated behind contract verification.
+  main_body:   text('main_body'),
+  contract:    jsonb('contract'),
+  // Provenance and drift detection; never a hard link — a preset must outlive its source.
+  source_simulation_id: uuid('source_simulation_id').references(() => simulations.id, { onDelete: 'set null' }),
+  source_bridge_hash:   text('source_bridge_hash'),
+  source_hash:          text('source_hash'),
+  conversation_history: jsonb('conversation_history'),
+  created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const media_blobs = pgTable('media_blobs', {
   id:               uuid('id').primaryKey().defaultRandom(),
   sha256:           text('sha256').notNull(),
