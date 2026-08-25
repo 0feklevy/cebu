@@ -106,13 +106,45 @@ revision CAS inside the transaction that updates the section.
 
 ### D8 — Proof happens on a **non-public** state, before activation.
 
-The existing `canary_passed` revision status is **publicly served** (`revisionIdentity.ts`), so it
-cannot host a candidate that has not been proven. Phase 0 must add a non-public proof state, or hold
-the row in `validating` until proof completes.
+The existing `canary_passed` revision status is **publicly served**, so it cannot host a candidate
+that has not been proven.
 
-There is no publish-then-verify fallback. `retired` and `rolled_back` revisions also remain publicly
-reachable, so **rollback is not revocation** — recovery moves the active pointer, it does not unpublish
-a URL. That containment limit goes in the runbook verbatim.
+**The justification for it being public does not survive contact with the code.**
+`revisionIdentity.ts:43-44` says `canary_passed` is served because "the pre-activation canary drives
+the real document over this route". Verified on 2026-08-25 — nothing does:
+
+- `RevisionService.validate()` reads bytes back from **storage**, not over HTTP; `RevisionService.ts`
+  contains no `fetch(`, no `http`, and no `getSimPublicUrl` at all.
+- `sim-canary-publish.ts` consumes a **report file** (`--report <path>`). It does not drive a browser.
+- `sim-canary.spec.ts:1710` intercepts `${API_ORIGIN}/**` and fulfils from an in-process server;
+  `localPathFor:304` maps only `/sim-public/__e2e/…` and 404s everything else, so a real revision key
+  is unreachable by construction.
+
+And `shared/src/sim/simRevision.ts:33-42` states the opposite outright: `canary_passed` is *"NOT
+proof that a canary ran"* — `validate()` moves a revision there on byte verification alone, and the
+legacy migration publishes straight into it. **The name is historical.** So today a package that was
+never canaried sits in a publicly-served status, justified by a comment describing a mechanism that
+does not exist.
+
+**Therefore the fix is the allow-list inversion, and it is ordered.** `isRevisionStatusPublic`
+currently reads `status === null || !NEVER_PUBLISHED_STATUSES.has(status)` — an **unknown status is
+public** ("Unknown status ⇒ yes (legacy)"). Adding a `proof_pending` status first would mean any
+backend image that predates it serves unproven bytes. So:
+
+1. **Release N** — invert `isRevisionStatusPublic` to an explicit allow-list (`active`, `retired`,
+   `rolled_back`). This alone makes `validating` and `canary_passed` non-public and satisfies §6.4
+   with no migration and no new status.
+2. **Release N+1** — add the `proof_pending` / `proof_passed` statuses, once every serving image
+   already refuses what it does not recognise.
+
+`sim_revisions.status` is `text` with an inline `CHECK` (`050_sim_revisions.sql:41-43`), not a
+Postgres enum — so a later status addition is a `DROP`/`ADD CONSTRAINT`, which this migration runner
+can do inside its transaction. `ALTER TYPE … ADD VALUE` could not.
+
+There is no publish-then-verify fallback. `retired` and `rolled_back` stay publicly reachable
+deliberately — their bytes were served and an in-flight viewer still holds their URLs — so
+**rollback is not revocation**. Recovery moves the active pointer; it does not unpublish a URL. That
+containment limit goes in the runbook verbatim.
 
 ### D9 — Raw capture is ephemeral; the published artifact carries allowlisted values only.
 
@@ -224,7 +256,9 @@ block an `executorVersion` at serve time. The bootstrap itself stays inert regar
    duplicate ids, radio groups, a hidden Advanced panel, and an unsupported canvas.
 3. Serve-time bootstrap proven on an **old** revision and a **new** one, on both the local and cloud
    storage paths, with no rebuild and no stored-byte change.
-4. A non-public proof state exists.
+4. `isRevisionStatusPublic` is an explicit allow-list, so an unrecognised status is refused rather
+   than served. The `proof_pending` / `proof_passed` statuses follow in the *next* release, not this
+   one — see D8 for why the order is not negotiable.
 5. The scheduler is proven against a fake clock: pause, resume, rate, restart-on-seek, adapter seek
    both directions.
 6. The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines,

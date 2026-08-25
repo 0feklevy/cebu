@@ -142,6 +142,10 @@ const REACT_TRACKER = `
       window.__CONTROL_STATE__[probe] = live;
     });
     protoSet.call(el, initial);
+    // Seed the probe the way a mounted React component would: the value is in state from the
+    // first render, not only after the first ACCEPTED change. Without this seed a test cannot
+    // distinguish "the write was swallowed" from "the listener never ran" — both leave undefined.
+    window.__CONTROL_STATE__[probe] = initial;
   }
 
   function installControlledCheckbox(el, initial, probe) {
@@ -163,6 +167,7 @@ const REACT_TRACKER = `
       window.__CONTROL_STATE__[probe] = live;
     });
     protoSet.call(el, initial);
+    window.__CONTROL_STATE__[probe] = initial;
   }
 `;
 
@@ -269,7 +274,7 @@ export const CONTROLS_ENTRY_HTML = `<!doctype html>
           el.addEventListener('change', function () {
             S[probe(el)] = kind === 'checked' ? el.checked : el.value;
           });
-        })(el);
+        })(plain[i]);
       }
 
       // ── radio + checkbox groups ──
@@ -284,7 +289,7 @@ export const CONTROLS_ENTRY_HTML = `<!doctype html>
             for (var k = 0; k < peers.length; k++) S[probe(peers[k])] = peers[k].checked;
             if (el.name === 'mode') S.modeGroup = el.value;
           });
-        })(el);
+        })(grouped[j]);
       }
 
       // ── react-controlled ──
@@ -309,11 +314,13 @@ export const CONTROLS_ENTRY_HTML = `<!doctype html>
 
       // ── canvas: interactive, and semantically opaque on purpose ──
       var cv = document.getElementById('sim-canvas');
+      // A DOM-only harness (jsdom without the optional canvas package) returns null here. Guard
+      // it so the interaction is still RECORDED — what matters for the recorder is that a pointer
+      // gesture on a canvas produces a diagnostic, not that pixels were drawn.
       var ctx = cv.getContext('2d');
       var dragging = false;
       function paintAt(x, y) {
-        ctx.fillStyle = '#0af';
-        ctx.fillRect(x - 2, y - 2, 4, 4);
+        if (ctx) { ctx.fillStyle = '#0af'; ctx.fillRect(x - 2, y - 2, 4, 4); }
         S.canvasStrokes = (S.canvasStrokes || 0) + 1;
       }
       cv.addEventListener('pointerdown', function (e) { dragging = true; paintAt(e.offsetX, e.offsetY); });
@@ -333,7 +340,7 @@ export const CONTROLS_ENTRY_HTML = `<!doctype html>
     // A real sim paints inside its OWN rAF — this is what may legitimately ack SIM_PAINTED.
     requestAnimationFrame(function () {
       var c = document.getElementById('scene').getContext('2d');
-      c.fillStyle = '#000'; c.fillRect(0, 0, 10, 10);
+      if (c) { c.fillStyle = '#000'; c.fillRect(0, 0, 10, 10); }
       window.__SIM_PAINTED_SELF__ = true;
     });
   </script>

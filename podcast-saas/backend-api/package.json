@@ -62,6 +62,7 @@
     "@vitest/coverage-v8": "^4.1.7",
     "drizzle-kit": "^0.22.8",
     "eslint": "^9.39.4",
+    "jsdom": "^26.1.0",
     "pino-pretty": "^11.2.1",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",

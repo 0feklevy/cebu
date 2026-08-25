@@ -66,6 +66,58 @@ Fix shape: portal both overlays to `document.body` (the ConfirmDialog pattern), 
 test that CLICKING the button makes the dialog VISIBLE in the document — not merely that state
 changed, which is exactly the assertion that would have missed this.
 
+## 🔴 OPEN (found 2026-08-25) — a revision that was never canaried is publicly served, on the strength of a comment describing a mechanism that does not exist
+
+Found during Phase 0 of the action-recording work, while looking for somewhere safe to stage an
+unproven candidate. Independent of that feature.
+
+`isRevisionStatusPublic` (`revisionIdentity.ts:51-53`) is a **deny**-list:
+
+```ts
+return status === null || !NEVER_PUBLISHED_STATUSES.has(status);   // {draft,uploading,validating,failed}
+```
+
+Two consequences, both live:
+
+**1. `canary_passed` is served, and the stated reason is false.** The comment at
+`revisionIdentity.ts:43-44` justifies it: *"`canary_passed` is served too: the pre-activation canary
+drives the real document over this route."* Checked three independent ways — nothing does.
+
+- `RevisionService.validate()` reads bytes back **from storage**. `RevisionService.ts` contains no
+  `fetch(`, no `http`, no `getSimPublicUrl`.
+- `sim-canary-publish.ts` consumes a **report file** (`--report <path>`); it never drives a browser.
+- `sim-canary.spec.ts:1710` routes `${API_ORIGIN}/**` to an in-process server, and `localPathFor:304`
+  maps only `/sim-public/__e2e/…`, 404-ing everything else. A real revision key is unreachable there
+  by construction.
+
+The repo already contradicts the comment in its own words. `shared/src/sim/simRevision.ts:33-42`:
+*"NOT proof that a canary ran. `validate()` moves a revision here on byte verification alone, and
+the legacy migration publishes straight into this state, so a migrated package can sit in
+`canary_passed` having never been canaried. The name is historical."*
+
+So the file that gates public serving relies on a claim the file that defines the status denies.
+
+**2. An UNKNOWN status is public.** `status === null || !deny.has(status)` — the trailing comment
+says so explicitly, *"Unknown status ⇒ yes (legacy)"*. Any status a given backend image has not
+heard of is served. That makes the obvious fix ordering-sensitive: shipping a new `proof_pending`
+status **first** would have older images serve exactly the unproven bytes it was added to protect.
+
+**Fix, in this order — the order is the fix:**
+
+1. Invert to an explicit **allow**-list: `active`, `retired`, `rolled_back`. One function, no
+   migration, no new status. This alone makes `validating` and `canary_passed` non-public.
+2. Only in a **later** release, add `proof_pending`/`proof_passed`, once every serving image already
+   refuses what it does not recognise. `sim_revisions.status` is `text` + inline `CHECK`
+   (`050_sim_revisions.sql:41-43`), not a PG enum, so that is a `DROP`/`ADD CONSTRAINT` and runs
+   inside the runner's transaction.
+
+Keep `retired` and `rolled_back` public deliberately — their bytes were served and an in-flight
+viewer still holds those URLs. Which is the same reason **rollback is not revocation**: recovery
+moves the active pointer, it does not unpublish a URL. That belongs in the runbook.
+
+Full options analysis, with the migration DDL and the idempotency/lease/`section_version` design:
+`md-files/PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md`.
+
 ## 🔴 OPEN (found 2026-08-25, measured) — "hide this control" silently does nothing, or hides too much
 
 Found during Phase 0 of the action-recording work, while building the golden fixtures. It is a
@@ -105,11 +157,33 @@ one of them matches the gate's SOURCE TEXT — including
 were the specification. A correct fix would turn that suite red. This is the
 `tests-that-read-source-are-theatre` pattern again, on a second subsystem.
 
-**Fix shape** (belongs with the action-recording picker, which needs the same thing):
-extract the rule into a pure, executable module — `CSS.escape` on the id branch, `querySelectorAll`
-length === 1 as the uniqueness proof, and a radio option identified by its own id rather than the
-group's shared `name`. Then replace the source-text assertions with behavioural ones and
-mutation-check both directions. The golden fixture package that reproduces all five rows exists:
+**Fix shape — and escaping alone is NOT it.** The obvious fix (`CSS.escape` on the id branch,
+`querySelectorAll(...).length === 1` as the uniqueness proof, a radio option identified by its own
+id rather than the group's shared `name`) was applied as a mutation and measured. It works, and it
+is not sufficient:
+
+- the duplicate id **is** fixed — both `#dup` elements fall through to distinct structural
+  selectors and both resolve to exactly one node;
+- but `#odd:id.v2`, `#123numeric` and `#has space` **disappeared from the control list entirely**.
+  A correctly escaped selector contains a backslash, and `listSimControls` drops anything matching
+  `/[{}<\\]/`. The same regex guards `SimUiControls.ts:61`, `client-web/lib/simUiControls.ts:49`
+  and `SIM_BOOT_SNIPPET` — four copies, all rejecting backslash, because the string is destined for
+  a `<style>` block and that filter is what keeps CSS injection out of it.
+
+So escaping converts *"the wrong control was hidden"* into *"the control is not offered at all"*.
+Still silent, still wrong. Relaxing the filter means letting backslashes into a stylesheet, which
+is the thing it exists to prevent.
+
+That measurement is the argument for the action-recording ADR's answer: the wire carries **locator
+ids**, never free selector strings, and `data-sim-control` is the first locator strategy — neither
+needs the filter relaxed. The two fixes are the same fix, which is why this one waits for that one
+rather than being patched ahead of it.
+
+A behavioural harness now exists and is green:
+`backend-api/src/services/simulation/__tests__/rafGateRuntimeScanner.test.ts` executes the gate in
+jsdom against the fixture and resolves every selector it emits. Mutation-proven both directions on
+2026-08-25: under the correct fix the OLD source-text suite goes **red** and exactly the four
+defect-describing tests in the new one flip. The golden fixture is
 `backend-api/src/scripts/fixtures/controlsFixture.ts`, emitted as the `controls` package by
 `gen-sim-fixture.ts`.
 
