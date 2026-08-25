@@ -41,6 +41,24 @@ export type SimRevisionStatus =
    * — check those if that is the question being asked.
    */
   | 'canary_passed'
+  /**
+   * Bytes are staged and a replay proof is RUNNING against them. NON-PUBLIC.
+   *
+   * This is the state `canary_passed` could not be. A candidate here has bytes in storage under a
+   * real revision prefix — inside `simulations/`, which `/sim-public/*` serves without
+   * authentication — and nothing has yet demonstrated that the plan they carry does what it
+   * claims. `isRevisionStatusPublic` is an allow-list precisely so this status is withheld by
+   * default rather than by remembering to add it to a deny-list.
+   */
+  | 'proof_pending'
+  /**
+   * The replay proof passed against these exact bytes. Still NON-PUBLIC, and still not active.
+   *
+   * The gap between this and `active` is deliberate: proof is about the artifact, activation is
+   * about the pointer, and a proof that passed does not by itself decide that this revision
+   * should be the one serving.
+   */
+  | 'proof_passed'
   /** The pointer points here. Exactly one per simulation. */
   | 'active'
   /** Was active, superseded. Bytes retained for rollback. */
@@ -51,7 +69,9 @@ export type SimRevisionStatus =
   | 'rolled_back';
 
 export const SIM_REVISION_STATUSES: readonly SimRevisionStatus[] = [
-  'draft', 'uploading', 'validating', 'canary_passed', 'active', 'retired', 'failed', 'rolled_back',
+  'draft', 'uploading', 'validating', 'canary_passed',
+  'proof_pending', 'proof_passed',
+  'active', 'retired', 'failed', 'rolled_back',
 ];
 
 /**
@@ -66,7 +86,14 @@ const TRANSITIONS: Readonly<Record<SimRevisionStatus, readonly SimRevisionStatus
   draft: ['uploading', 'failed'],
   uploading: ['validating', 'failed'],
   validating: ['canary_passed', 'failed'],
-  canary_passed: ['active', 'failed'],
+  // canary_passed → proof_pending is the new road. → active is KEPT so the existing publication
+  // path, and every legacy row already sitting in canary_passed, still work unchanged; the proof
+  // states are additive until a caller opts into them.
+  canary_passed: ['proof_pending', 'active', 'failed'],
+  proof_pending: ['proof_passed', 'failed'],
+  // NOT back to proof_pending: a proof is about specific bytes, and re-proving the same bytes
+  // proves nothing new while re-proving different bytes is a different candidate.
+  proof_passed: ['active', 'failed'],
   // A revision can be re-activated from retired (that IS rollback) — the bytes never moved.
   active: ['retired', 'rolled_back', 'failed'],
   retired: ['active', 'failed'],

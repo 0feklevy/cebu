@@ -113,7 +113,12 @@ export interface VerificationReport {
   problems: VerificationProblem[];
 }
 
-const ACTIVATABLE_FROM: readonly SimRevisionStatus[] = ['canary_passed', 'retired', 'rolled_back'];
+// `proof_passed` joins the set; `proof_pending` deliberately does NOT. A candidate whose proof is
+// still running must not be promotable by a concurrent caller — that is the whole point of having
+// two states rather than a boolean, and the activation CAS is where the distinction has to bite.
+const ACTIVATABLE_FROM: readonly SimRevisionStatus[] = [
+  'canary_passed', 'proof_passed', 'retired', 'rolled_back',
+];
 
 /** Row → the shared record shape. Timestamps become ISO strings; Drizzle hands back Date objects. */
 /**
