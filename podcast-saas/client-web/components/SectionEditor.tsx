@@ -2,6 +2,7 @@
 
 import { ConfirmDialog } from './ConfirmDialog';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
 import type { TimelineSection, Simulation, VideoFile, VideoGenerationJob, SimFile, SimMeta, ImageFile, GuidanceEntry, GuidanceMeta, GuidanceStatus, BridgePreset, BridgePresetFit } from 'shared/src/generated/client-v1';
@@ -3324,10 +3325,14 @@ export function SectionEditor({
       `}</style>
 
       {/* ── SAVE BRIDGE: name the current setup ─────────────────────────────────────────── */}
-      {presetSaveOpen && (
+      {/* PORTALED to document.body, exactly as ConfirmDialog below does and for the same
+          reason: the editor modal sits at zIndex 800/801, and an overlay rendered INSIDE its
+          tree at a lower z opens BEHIND it — the click works, the dialog opens, and nobody
+          sees it. That was the owner-reported "Save bridge does nothing" bug. */}
+      {presetSaveOpen && createPortal(
         <div
           role="dialog" aria-modal="true" aria-label="Save bridge"
-          style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+          style={{ position: 'fixed', inset: 0, zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
           onClick={() => !presetBusy && setPresetSaveOpen(false)}
         >
           <form
@@ -3360,14 +3365,15 @@ export function SectionEditor({
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── LOAD BRIDGE: pick a saved setup; the server says which path the load takes ────── */}
-      {loadOpen && (
+      {loadOpen && createPortal(
         <div
           role="dialog" aria-modal="true" aria-label="Load bridge"
-          style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+          style={{ position: 'fixed', inset: 0, zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
           onClick={() => !presetBusy && setLoadOpen(false)}
         >
           <div
@@ -3464,7 +3470,8 @@ export function SectionEditor({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {showDeleteConfirm && (
