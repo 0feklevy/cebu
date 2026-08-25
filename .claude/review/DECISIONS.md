@@ -1134,3 +1134,40 @@ four-phase build plan) is intact and committed.
 **Next:** re-run the deep review before any build starts, and write its ruling INTO the file in the
 same pass that changes the status line. The report's own §1 still says "טרם הוחלט על בנייה", which
 is now the honest state.
+
+## ✅ CLOSED — fixed + mechanism proven (2026-08-25) — `release:verify` was not a gate: its exit code was `tee`'s
+
+**`CLAUDE.md §4` calls `release:verify` "the real gate, and it is what CI runs". In the RELEASE
+workflow it could not fail.**
+
+```yaml
+run: pnpm release:verify 2>&1 | tee "$ART/release-verify.log"     # release.yml:236, before
+```
+
+A `run:` step with no explicit `shell:` runs under GitHub's default `bash -e` — which does **not**
+set `pipefail`. So the step's status is `tee`'s, always 0. Proven locally, not asserted:
+`bash -e -c 'false | tee /dev/null'` → **exit 0**; with `set -euo pipefail` → **exit 1**.
+
+**This already shipped a failure to production.** Run `32854681109`, the v0.2.5 release, printed
+in that very step:
+
+```
+backend-api lint: ✖ 8 problems (1 error, 7 warnings)
+backend-api lint: Failed
+```
+
+…and the job reported **success**, the pre-deploy gate passed, and it deployed. The error was real:
+`simFileResolver.ts:76` initialised `blobKey` to null where the catch returns, so the initialiser
+was dead code (`no-useless-assignment`). PR #140's `ci.yml` lane caught it immediately — **`ci.yml`
+sets `pipefail` and `release.yml` did not**, so the weaker check was the one guarding production.
+
+**Both fixed here:** the dead initialiser is gone (declared without one, since the catch returning
+is what makes the assignment total), and line 236 now sets `set -euo pipefail` — matching the
+**eleven** other piped steps in the same file that already did. This was an isolated one-line
+`run:` among multi-line blocks that all got it right, which is exactly how it survived review.
+
+**Related gap, NOT fixed — owner's call.** `SENSITIVE_PATH_PATTERNS` covers `deploy/docker-compose`,
+nginx and systemd, but **not `.github/workflows/`**. So this very PR — which edits the release
+pipeline's own verification gate — does not require human approval, while a one-line `APP_VERSION`
+change to compose did. If deployment configuration deserves an eye, the pipeline that decides what
+deploys deserves one at least as much.

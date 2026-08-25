@@ -73,7 +73,11 @@ export async function resolveSimFileKey(requestedKey: string): Promise<string> {
     return hit.key ?? requestedKey;
   }
 
-  let blobKey: string | null = null;
+  // Declared WITHOUT an initialiser on purpose: the catch below returns, so the only way to
+  // reach the cache write is the try completing and assigning. A `= null` here would be dead,
+  // and worse, it would read as "not deduplicated" being a real outcome of a failed query — the
+  // exact confusion the catch's own comment warns against.
+  let blobKey: string | null;
   try {
     const [row] = await db
       .select({ storage_key: media_blobs.storage_key })
