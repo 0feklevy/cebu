@@ -49,8 +49,15 @@ uploadSectionBridge (guard test updated 2→3 by name), and the SectionEditor UI
 bridge…, server-composed fit sentence, applyDone extracted to applyPersistedSection shared by both
 paths). client-v1 extended; request() errors now carry {status, body}. Client 1708/1708.
 
-**Not built yet:** upload-path wiring to `claimBlob`, the `+` import UI + endpoint, the orphan
-sweeper.
+**The `+` import SHIPPED too (2026-08-25):** `SimulationImportService` (bucket-side copyObject,
+served-content-to-legacy-layout that migration-on-write upgrades later; bridge.js/guidance/posters
+deliberately excluded, package_class null — nothing claimed the copy did not produce),
+`POST /projects/:id/simulations/import` (sim names its own project; destination-first 404-safe
+eligibility), Import button + two-step picker in the editor. 9 tests.
+
+**Owner directive (2026-08-25):** after this feature → RELEASE → STOP; remaining work hands to
+the next session. **Not built yet (for that session):** upload-path wiring of media files to
+`claimBlob`, the orphan sweeper, share-token import UI, A2.3.
 
 ## ✅ RESOLVED (2026-08-22) — EVERY DUBBED LANGUAGE HAD AN AMERICAN ACCENT
 
