@@ -66,6 +66,130 @@ Fix shape: portal both overlays to `document.body` (the ConfirmDialog pattern), 
 test that CLICKING the button makes the dialog VISIBLE in the document — not merely that state
 changed, which is exactly the assertion that would have missed this.
 
+## 🔴 OPEN (found 2026-08-25) — a revision that was never canaried is publicly served, on the strength of a comment describing a mechanism that does not exist
+
+Found during Phase 0 of the action-recording work, while looking for somewhere safe to stage an
+unproven candidate. Independent of that feature.
+
+`isRevisionStatusPublic` (`revisionIdentity.ts:51-53`) is a **deny**-list:
+
+```ts
+return status === null || !NEVER_PUBLISHED_STATUSES.has(status);   // {draft,uploading,validating,failed}
+```
+
+Two consequences, both live:
+
+**1. `canary_passed` is served, and the stated reason is false.** The comment at
+`revisionIdentity.ts:43-44` justifies it: *"`canary_passed` is served too: the pre-activation canary
+drives the real document over this route."* Checked three independent ways — nothing does.
+
+- `RevisionService.validate()` reads bytes back **from storage**. `RevisionService.ts` contains no
+  `fetch(`, no `http`, no `getSimPublicUrl`.
+- `sim-canary-publish.ts` consumes a **report file** (`--report <path>`); it never drives a browser.
+- `sim-canary.spec.ts:1710` routes `${API_ORIGIN}/**` to an in-process server, and `localPathFor:304`
+  maps only `/sim-public/__e2e/…`, 404-ing everything else. A real revision key is unreachable there
+  by construction.
+
+The repo already contradicts the comment in its own words. `shared/src/sim/simRevision.ts:33-42`:
+*"NOT proof that a canary ran. `validate()` moves a revision here on byte verification alone, and
+the legacy migration publishes straight into this state, so a migrated package can sit in
+`canary_passed` having never been canaried. The name is historical."*
+
+So the file that gates public serving relies on a claim the file that defines the status denies.
+
+**2. An UNKNOWN status is public.** `status === null || !deny.has(status)` — the trailing comment
+says so explicitly, *"Unknown status ⇒ yes (legacy)"*. Any status a given backend image has not
+heard of is served. That makes the obvious fix ordering-sensitive: shipping a new `proof_pending`
+status **first** would have older images serve exactly the unproven bytes it was added to protect.
+
+**Fix, in this order — the order is the fix:**
+
+1. Invert to an explicit **allow**-list: `active`, `retired`, `rolled_back`. One function, no
+   migration, no new status. This alone makes `validating` and `canary_passed` non-public.
+2. Only in a **later** release, add `proof_pending`/`proof_passed`, once every serving image already
+   refuses what it does not recognise. `sim_revisions.status` is `text` + inline `CHECK`
+   (`050_sim_revisions.sql:41-43`), not a PG enum, so that is a `DROP`/`ADD CONSTRAINT` and runs
+   inside the runner's transaction.
+
+Keep `retired` and `rolled_back` public deliberately — their bytes were served and an in-flight
+viewer still holds those URLs. Which is the same reason **rollback is not revocation**: recovery
+moves the active pointer, it does not unpublish a URL. That belongs in the runbook.
+
+Full options analysis, with the migration DDL and the idempotency/lease/`section_version` design:
+`md-files/PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md`.
+
+## 🔴 OPEN (found 2026-08-25, measured) — "hide this control" silently does nothing, or hides too much
+
+Found during Phase 0 of the action-recording work, while building the golden fixtures. It is a
+**live viewer defect today** and has nothing to do with that feature — the feature is only what
+made someone finally execute the code instead of reading it.
+
+`controlSelector` (`SimulationService.ts:541-563`, inside `RAF_GATE_TEMPLATE`) builds a selector by
+raw string concatenation: `'#' + el.id`, else `'[name="' + name + '"]'`, else a structural path. No
+`CSS.escape` (CSSOM defines it for exactly this), and no uniqueness check on the first two branches.
+
+**The selector is never resolved — it becomes a CSS rule.** `listSimControls` only filters
+`/[{}<\\]/` and length ≤300, then the string travels: gate → `simControlsList` → `SectionEditor` →
+`ui_controls` → `sim_meta.uiControls.hide` → `buildPlayerConfig.uiHide` → `bootHideFor` →
+`#simboot=` → `SIM_BOOT_SNIPPET`'s `<style id="__simBootHide">`, and separately →
+`startScript.params.hideSelectors` → `applyHideUi`'s `<style id="__simHideUi">`. There is no
+`querySelector` anywhere on that path, so there is nothing that can fail loudly. CSS drops an
+invalid rule silently, by design.
+
+**Measured, not reasoned** (jsdom, one rule per selector, exactly as both snippets build them):
+
+| selector | element's effective `display` |
+|---|---|
+| `#odd:id.v2` | `inline-block` — **not hidden** |
+| `#123numeric` | `inline-block` — **not hidden** |
+| `#has space` | `inline-block` — **not hidden** |
+| `#dup` (duplicate id) | `none` on **both** elements |
+| `[name="mode"]` (radio group) | `none` on the **whole group** |
+| `#ok` (control) | `none` — correct |
+
+A real browser drops the first two rules at parse time rather than keeping and not matching them;
+the end state is identical. So: **any control whose id contains a CSS-special character cannot be
+hidden, and the author gets no error.** Duplicate ids and radio groups over-hide.
+
+**Why it survived review.** `rafGate.test.ts` has ~90 assertions covering this scanner and every
+one of them matches the gate's SOURCE TEXT — including
+`expect(out).toContain("if (el.id) return '#' + el.id;")`, which pins the defective line as if it
+were the specification. A correct fix would turn that suite red. This is the
+`tests-that-read-source-are-theatre` pattern again, on a second subsystem.
+
+**Fix shape — and escaping alone is NOT it.** The obvious fix (`CSS.escape` on the id branch,
+`querySelectorAll(...).length === 1` as the uniqueness proof, a radio option identified by its own
+id rather than the group's shared `name`) was applied as a mutation and measured. It works, and it
+is not sufficient:
+
+- the duplicate id **is** fixed — both `#dup` elements fall through to distinct structural
+  selectors and both resolve to exactly one node;
+- but `#odd:id.v2`, `#123numeric` and `#has space` **disappeared from the control list entirely**.
+  A correctly escaped selector contains a backslash, and `listSimControls` drops anything matching
+  `/[{}<\\]/`. The same regex guards `SimUiControls.ts:61`, `client-web/lib/simUiControls.ts:49`
+  and `SIM_BOOT_SNIPPET` — four copies, all rejecting backslash, because the string is destined for
+  a `<style>` block and that filter is what keeps CSS injection out of it.
+
+So escaping converts *"the wrong control was hidden"* into *"the control is not offered at all"*.
+Still silent, still wrong. Relaxing the filter means letting backslashes into a stylesheet, which
+is the thing it exists to prevent.
+
+That measurement is the argument for the action-recording ADR's answer: the wire carries **locator
+ids**, never free selector strings, and `data-sim-control` is the first locator strategy — neither
+needs the filter relaxed. The two fixes are the same fix, which is why this one waits for that one
+rather than being patched ahead of it.
+
+A behavioural harness now exists and is green:
+`backend-api/src/services/simulation/__tests__/rafGateRuntimeScanner.test.ts` executes the gate in
+jsdom against the fixture and resolves every selector it emits. Mutation-proven both directions on
+2026-08-25: under the correct fix the OLD source-text suite goes **red** and exactly the four
+defect-describing tests in the new one flip. The golden fixture is
+`backend-api/src/scripts/fixtures/controlsFixture.ts`, emitted as the `controls` package by
+`gen-sim-fixture.ts`.
+
+**Not fixed in this pass** — it is a viewer-behaviour change that deserves its own PR and its own
+mutation proof, not a drive-by inside a Phase 0 research branch.
+
 ## 🟡 OPEN BY DECISION — video is the one media type NOT deduplicated, and it is the largest
 
 Checked 2026-08-25 while wiring images and audio. Video is not an oversight; it is structurally
@@ -1134,6 +1258,105 @@ four-phase build plan) is intact and committed.
 **Next:** re-run the deep review before any build starts, and write its ruling INTO the file in the
 same pass that changes the status line. The report's own §1 still says "טרם הוחלט על בנייה", which
 is now the honest state.
+
+**Update 2026-08-25 — the deep review was re-run and IS written in, but is UNCOMMITTED.** The
+working tree now carries 2,647 lines against 264 committed: §§6–11 are the revised ruling in
+Hebrew, §§12–17 the full English parallel, and §§1–5 are explicitly marked as the superseded
+original proposal. The ruling is a **conditional GO for the visual picker** and a **NO-GO for the
+recording architecture as proposed**, with the contracts and blockers enumerated.
+
+So the document is no longer a header without its sections — but it is once again 2,384 lines
+living only in a working tree, which is exactly the state that lost the first attempt. **It must be
+committed before anything else happens on this branch.**
+
+All 13 evidence claims in §6.3 were re-verified against source on 2026-08-25: **13/13 CONFIRMED**,
+no line drift beyond ≤3 lines of leading comment. Two precision notes worth carrying: the
+structural `nth-of-type` branch IS single-match by construction, so the uniqueness hole is
+specifically the `#id` and `[name]` branches that run before it; and `canary_passed` is public by
+OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
+proof flow relying on that status would be relying on a doc comment.
+
+## 📋 PR #141 (opened 2026-08-25) — action-recording Phase 0
+
+`feat/action-recording-phase0`, seven commits, **zero behaviour change** — docs, fixtures and tests
+only. Carries the deep review (§ the entry further down), the owner-approved ADR, the nine-shape
+golden fixture package, three mutation-proven test files, and M2's measured byte half. Phase 0 exit
+criteria 6 of 9. Belongs to the action-recording round opened by the research report.
+
+The two live defects it uncovered — `ui_hide` silently failing, and the publicly-served
+`canary_passed` — are **not** in it. They are 🔴 entries below with their own PRs, deliberately, so
+a research branch does not carry viewer- and serving-behaviour changes.
+
+## ✅ OWNER-APPROVED (2026-08-25) — the action-recording ADR, and four rulings with it
+
+Approved in one pass, after the evidence below was measured rather than argued. Recording the
+approvals separately from the work, because "the owner approved this" and "the code proves this"
+are different claims and a ledger that blurs them is worth less than one that admits the difference.
+
+1. **The ADR is approved** — `md-files/ADR-ACTION-RECORDING-SEMANTICS.md`. Its twelve decisions are
+   settled and the build may not reopen them. Approved with exit criteria 4, 6 and most of 8 still
+   open, on the explicit ruling that none of them can move a §2 decision.
+2. **The public-status fix is ordered, and the order IS the fix.** Release N inverts
+   `isRevisionStatusPublic` to an allow-list; `proof_pending`/`proof_passed` land in a LATER
+   release. Shipping a new status first would have older images serve exactly the unproven bytes it
+   was added to protect, because an unknown status is currently public.
+3. **The `ui_hide` defect waits for Phase 1** rather than getting its own patch. Measured: escaping
+   alone converts "the wrong control was hidden" into "the control is not offered at all", because
+   a correctly escaped selector carries a backslash and four separate copies of `/[{}<\\]/` drop it.
+   The real fix is LocatorV1 — locator ids on the wire instead of selector strings — which is the
+   same fix. Patching ahead of it would ship a second silent failure mode.
+4. **M2's target is 1KB gzip dormant, not the report's 5KB.** Measured: the rAF gate is already
+   5,878 gzip bytes on every entry document, so a 5KB bootstrap would nearly double what every
+   viewer downloads to buy a capability only an author reaches. The serve-time precedent
+   (`SIM_BOOT_SNIPPET`) is 457.
+
+## 🟢 IN PROGRESS (2026-08-25) — action recording, Phase 0
+
+Per the report's own final recommendation: **not** the original Phases B–D, but a short Phase 0
+(blocking ADRs and spikes) and a hardened picker first, then one vertical slice.
+
+Delivered so far:
+
+- **`md-files/ADR-ACTION-RECORDING-SEMANTICS.md`** — the twelve decisions the build is not allowed
+  to re-open (data-not-code, reload-document default, entry-relative clock with restart-on-seek,
+  no generic click, blocking locator diagnostics, non-public proof state, ephemeral raw capture,
+  tri-state picker with list fallback, typed LLM patches, zero new dependencies), the five Phase-0
+  measurements that are deliberately left open, the module boundaries, and the exit criteria.
+- **`backend-api/src/scripts/fixtures/controlsFixture.ts`** — the golden fixture package, emitted
+  as `controls` by `gen-sim-fixture.ts` through the same `emit()` as every other package, so it
+  carries the real gate, the real boot snippet and the real combined bridge. Nine DOM shapes, each
+  present because something in the code or a cited standard says it will fail: vanilla controls, a
+  faithful React controlled-input value-tracker, node replacement under a stable id, CSS-special
+  ids, a duplicate id, radio and checkbox groups sharing a `name`, a `display:none` Advanced panel,
+  an interactive canvas, and a button gated on `event.isTrusted`.
+
+That fixture is what produced the 🔴 `ui_hide` entry above.
+
+**Completed after the approval** (same branch, PR #141):
+
+- **`rafGateRuntimeScanner.test.ts`** — the gate's control scanner, EXECUTED in jsdom against the
+  fixture, with every emitted selector resolved. Mutation-proven both directions.
+- **`sim-public.localParity.test.ts`** — the local-disk serve branch, which had no test, and its
+  parity with cloud, which had none either. It doubles as the exit-criterion-3 proof: a
+  legacy-shaped stored document gains the capability at serve time, on both storage paths, with the
+  stored bytes untouched.
+- **`actionPlanScheduler.test.ts`** — one handle ever, pause/resume on the REMAINING delay, rate,
+  restart-on-seek, adapter seek both ways, graded drift. Four mutations; the fourth initially
+  survived and produced a second test on a deliberately leaky clock.
+- **`actionPlanLifecycle.test.ts`** — one reset generation, ordered generation-stamped barriers,
+  per-barrier deadlines, and a reveal that is emitted from exactly one place after freshness is
+  re-checked. Five mutations, all caught. Writing them found a real bug in the coordinator:
+  generation 1's freshness evidence vouched for generation 2 whenever both landed on the same
+  documentId, which after reloading the same section is the ordinary case.
+
+**Phase 0 exit criteria: 8 of 9 met, the ninth partial.** Criterion 4 is PR #142. What remains is
+M1 and M3–M5 — fresh-document proof p95, draft TTL, reload cost and the rebase source hash — all of
+which need a running stack or a browser, and none of which can move a settled ADR decision.
+
+A note worth keeping: `pnpm --filter backend-api typecheck` runs `tsconfig.json`, which EXCLUDES
+`*.test.ts`. "Typecheck clean" therefore says nothing about a test file, and vitest runs TypeScript
+without checking it. `deploy/scripts/typecheck-tests-ratchet.sh` is the only thing that looks, and
+it caught this branch. Run it before claiming a test file typechecks.
 
 ## ✅ CLOSED — fixed + mechanism proven (2026-08-25) — `release:verify` was not a gate: its exit code was `tee`'s
 

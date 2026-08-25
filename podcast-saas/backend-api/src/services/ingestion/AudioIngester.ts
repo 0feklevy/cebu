@@ -27,7 +27,8 @@ export class AudioIngester {
   async transcribe(audioBuffer: Buffer, filename: string): Promise<TranscriptionResult> {
     if (!this.client) throw new Error('GROQ_API_KEY not configured');
 
-    const file = new File([audioBuffer], filename, { type: this.mimeType(filename) });
+    // `new Uint8Array(...)` — Buffer<ArrayBufferLike> does not satisfy DOM's BlobPart. Byte-identical.
+    const file = new File([new Uint8Array(audioBuffer)], filename, { type: this.mimeType(filename) });
 
     logger.debug({ filename, size: audioBuffer.length }, 'Transcribing audio via Groq Whisper');
 

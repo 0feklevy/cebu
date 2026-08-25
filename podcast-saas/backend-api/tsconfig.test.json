@@ -11,8 +11,26 @@
   // for reference, its imports point at modules that have since moved, and type-checking it would
   // bury the 4 real errors under 240 dead ones. Overriding `exclude` without carrying that entry
   // forward is what made this config unusable even for anyone who tried to run it.
+  // `lib` adds DOM **here and only here**. `tsconfig.base.json` sets `lib: ["ES2022"]` with no DOM,
+  // deliberately: this is a Node server, and a production file that reaches for `document` or
+  // `window` should fail to compile rather than fail at runtime. That guarantee is unchanged —
+  // `tsconfig.json` still has no DOM, so nothing under `src/` outside a test can see those globals.
+  //
+  // The tests need them because some of this package's output IS browser code: the rAF gate, the
+  // combined bridge and the v3 child runtime are all authored as ES5 strings and shipped into a
+  // document. Until now the only way to test them was to assert on their source text, which is how
+  // a defective selector line ended up pinned as if it were the specification. Running them in
+  // jsdom means the test file legitimately handles `Window`, `Document` and `HTMLInputElement`.
+  //
+  // Declared EXPLICITLY even though it is redundant: `@types/jsdom/index.d.ts` opens with
+  // `/// <reference lib="dom" />`, so any file importing jsdom pulls lib.dom into the whole program
+  // whatever this says. Stating it here means the next reader finds the reason in the config rather
+  // than inferring it from a transitive reference — and it is why four `new Blob([buffer])` call
+  // sites in production now pass `new Uint8Array(buffer)`: `Buffer<ArrayBufferLike>` does not
+  // satisfy DOM's `BlobPart`, and that resolution changes for `src/**` the moment DOM is present.
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
     "types": ["vitest/globals"]
   },
   "include": ["src/**/*"],

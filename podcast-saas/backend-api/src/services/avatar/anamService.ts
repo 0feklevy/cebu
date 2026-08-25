@@ -1052,7 +1052,11 @@ export async function uploadKnowledgeDocument(groupId: string, buffer: Buffer, f
   const key = apiKey || ANAM_ENV.ANAM_API_KEY;
   if (!key) throw new Error('No Anam API key available.');
   const fd = new FormData();
-  fd.append('file', new Blob([buffer], { type: contentType || 'application/octet-stream' }), filename);
+  // `new Uint8Array(buffer)`, not `buffer`: a Node Buffer is typed `Buffer<ArrayBufferLike>`, which
+  // does not satisfy the DOM `BlobPart` the compiler resolves once lib.dom is in the program (any
+  // file importing jsdom pulls it in — see backend-api/tsconfig.test.json). Byte-identical at
+  // runtime; Blob copies its parts either way.
+  fd.append('file', new Blob([new Uint8Array(buffer)], { type: contentType || 'application/octet-stream' }), filename);
   const res = await anamFetch(`/knowledge/groups/${groupId}/documents`, key, { method: 'POST', body: fd }, 'upload');
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

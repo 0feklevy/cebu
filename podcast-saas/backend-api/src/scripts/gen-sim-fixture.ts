@@ -54,6 +54,11 @@ import {
 } from '../services/simulation/SimulationService.js';
 import { injectSimBootSnippet } from '../controllers/sim-public.controller.js';
 import { buildChildRuntimeSource } from '../services/simulation/simRuntimeChild.js';
+import {
+  CONTROLS_ENTRY_HTML,
+  CONTROL_SECTION_BODIES,
+  FIXTURE_CONTROL_SECTIONS,
+} from './fixtures/controlsFixture.js';
 
 export const FIXTURE_SECTIONS = {
   A: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
@@ -940,11 +945,21 @@ function main(): void {
     'v3allmanaged',
     v3ManagedBridge(new Map(Object.entries(V3_ALL_MANAGED_SECTION_BODIES)), V3_ALL_MANAGED_DESCRIPTOR),
   );
+  // Phase-0 golden fixtures for action recording: the DOM shapes that break locator generation,
+  // semantic capture and replay. Real gate, real boot snippet, real combined bridge — only the
+  // ENTRY DOCUMENT is fixture-specific. See fixtures/controlsFixture.ts for what each shape proves.
+  emit(
+    outDir,
+    'controls',
+    wrapBridgeCombined(new Map(Object.entries(CONTROL_SECTION_BODIES))),
+    CONTROLS_ENTRY_HTML,
+  );
 
   console.log(JSON.stringify({
     outDir,
-    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack', 'v3managed', 'v3allmanaged', 'dirtyui'],
+    packages: ['modern', 'legacy', 'noraf', 'nopaint', 'delayedack', 'v3managed', 'v3allmanaged', 'dirtyui', 'controls'],
     sections: FIXTURE_SECTIONS,
+    controlSections: FIXTURE_CONTROL_SECTIONS,
     delayedOnlySections: FIXTURE_DELAYED_SECTIONS,
     delayedAckPolicy: DELAYED_ACK_POLICY,
     v3Sections: FIXTURE_V3_SECTIONS,
