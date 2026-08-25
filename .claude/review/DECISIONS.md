@@ -1009,3 +1009,165 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
   `simulation-004`).
 - Sweep caveat: code, tests and local probes only; §5 names the seven determinations resting on
   inference and the one cheap observation that settles each.
+
+## 🔴 OPEN (found 2026-08-25, release engineering) — `release-risk` measures from the last TAG, not the last DEPLOYED version, so a gated change can reach production ungated
+
+**The gate did its job once and was then bypassed by its own bookkeeping — OBSERVED, not predicted.**
+
+Confirmed live at 2026-08-25 while this entry was being written: run `32854681109` reported
+`Human approval (risky release only): skipped` and proceeded to deploy, carrying `8c4fa66`'s
+compose change to production. The prediction below was made from the source before that job
+reported, and the run then produced exactly it.
+
+Verified chain, every link from a log or the source — not inference:
+
+1. **v0.2.4 (run `32850636945`) was correctly gated.** The reason, verbatim from the run log:
+   `release-risk: HUMAN APPROVAL REQUIRED — 1 reason(s):`
+   `  - touches production deployment configuration: podcast-saas/deploy/docker-compose.yml`
+   That is `SENSITIVE_PATH_PATTERNS` entry 8 in `ops/release/src/release-risk.ts` firing on commit
+   `8c4fa66 fix(health): report the version that is actually running`. `--backfill-policy report-only`
+   was passed, so reason 2 did not fire; there was exactly one reason.
+2. **The tag was created BEFORE the gate ran.** Job order in that run: `Manifest, tag & draft
+   release :: success`, THEN `Human approval :: failure`, THEN `Deploy to production :: skipped`.
+   `refs/tags/v0.2.4` exists on origin. Production never received it.
+3. **`currentTag` has no idea whether a tag deployed.** `computeNextVersion` (`ops/release/src/semver.ts:56-67`)
+   sorts the semver tag list and takes the highest. Nothing consults deployment state.
+4. **So the next release measures from a version that never shipped.** `release.yml:125` runs
+   `git diff --name-only "$current_tag"..HEAD`. For the release after v0.2.4 that range is
+   `v0.2.4..HEAD` — ten files, none matching any of the nine sensitive patterns. The compose
+   change sits in `v0.2.3..v0.2.4`, outside the window.
+5. **But the deploy ships HEAD's tree, not the window's.** `release.yml:756` pins the VM checkout
+   to `plan.outputs.git_sha` and compose runs from that checkout — which contains `8c4fa66`.
+
+**⇒ A change the gate demanded a human for reaches production with no human, and the release
+report will correctly say no approval was required.** Silent in exactly the way §3b warns about.
+
+**Blast radius is the rule, not this instance.** The change in flight (`APP_VERSION` into the
+container) is one the owner wants, so the outcome this time is benign. The hole is general: any
+auth, secret, media-token, billing or deploy-config change that lands in a tagged-but-undeployed
+release is invisible to the next release's classifier. Every failed or rejected approval creates
+one of these windows, and a rejected approval is precisely when the change was most suspect.
+
+**Why no fix is committed yet.** The classifier is not wrong — `assessReleaseRisk` correctly
+judges what it is handed. The defect is the base ref, and fixing it needs a source of truth for
+"what is actually deployed", which is a mechanism choice with several defensible shapes:
+
+* a moving `deployed-production` ref pushed by the deploy job — most inspectable, but sits badly
+  beside `assertTagAvailable`'s "refuse to reuse or overwrite an existing tag under any circumstances";
+* a GitHub Deployment recorded on success — purpose-built, needs `deployments: write`;
+* derive it from the last run of this workflow whose deploy job succeeded — no new state, most brittle.
+
+A fail-closed addition is available under all three: pass the deployed version alongside
+`currentTag` and have `assessReleaseRisk` add a reason when they differ ("the previous release was
+tagged but never deployed — measuring from it would hide its changes"). That keeps the failure
+mode on the safe side whatever the mechanism.
+
+**Owner decision needed: which mechanism.** Nothing here blocks the release in flight.
+
+## ✅ CLOSED — verified in code + mutation-checked (2026-08-25) — the share block's Library row could never render
+
+`ProjectShareLinks` accepts `hasLibrary?: boolean` and its test proves the Library row appears when
+it is true — but **neither mount site passes it**. `PermalinkEditor.tsx:220` renders
+`<ProjectShareLinks projectId={contentId} permalinkUrl={info.permalinkUrl} />` and that is the only
+mount for projects (`ProjectHeader.tsx:364`; the `PlaylistEditorDialog` mount is correctly excluded
+by the `contentType === 'project'` guard).
+
+So the block the owner asked for — "all the links are terribly confusing, organise everything" —
+lists two of the three addresses. `/{slug}/library` is still reachable only by someone who already
+knows the URL shape, which is the exact complaint.
+
+**Same dead-capability class as `MEDIA_DEDUP_STRICT_COMPARE`** (documented, tested, read by nothing —
+removed earlier the same day). A prop with a passing test and no caller is not a feature.
+
+**Why it is not a one-line wire.** A library is a PUBLIC SHARE, not a project attribute: the
+mini-site reads `GET /api/v1/public/library/{slug}` (`client-web/lib/libraryApi.ts:32`) and 200 comes
+back only when a share is active. So the honest signal is "is there a live library share for this
+slug", which the editor does not currently hold. Two defensible shapes:
+
+* **surface it** — have the project/permalink payload carry whether a library share is active, and
+  pass it through. Correct, costs a field on an existing response;
+* **link unconditionally** — show the Library row always. Cheaper, but re-creates the rule the
+  podcast row exists to honour: never offer a URL that 404s.
+
+**FIXED, and neither of the two shapes above was the right one.** The server already computes the
+answer: `LibraryShareInfo.cleanUrl` IS the `/{permalink}/library` form, returned null unless a LIVE
+share (not revoked, not expired — `liveShareForProject`) exists on a project that is public with a
+permalink (`LibraryShareService.ts:82`). So the 404 rule is enforced where the truth lives instead
+of being guessed in the component, and **no backend change was needed at all** — `api.getLibraryShare`
+was already in the typed client.
+
+What shipped:
+* the `hasLibrary` prop is GONE (no caller ever passed it, so no caller changed);
+* the row reads `library?.cleanUrl ?? library?.url ?? null` — the coded `{title}-{code}/library`
+  form is the fallback, so a live share whose project is not public still gets a working link
+  rather than no link;
+* read ONCE, not polled: a library share is created by a person in another dialog, not derived by
+  a job, so there is no build to watch settle;
+* a failed read hides that row only — the same trade the audio row already makes.
+
+Mutation-checked, both directions: reverting to the string-built URL fails three tests
+(`shows NO library row when the project has no live share`, the coded fallback, and the
+failed-read isolation); dropping the `?? library?.url` fallback fails exactly the coded-fallback
+test and nothing else. 1820 client-web tests green, typecheck clean.
+
+## 🟡 OPEN (found 2026-08-25) — a deep review of the action-recording research was started and lost; its header outlived it
+
+The working tree carried an uncommitted edit to `RESEARCH-ACTION-RECORDING-2026-08-25.md` that
+changed the status line to *"סקירת עומק הושלמה — GO מותנה לבוחר, NO-GO לארכיטקטורת ההקלטה
+המקורית"* and added a reading-rule saying sections 6–11 are the revised architectural ruling and
+12–17 its English parallel.
+
+**Those sections do not exist.** The file has sections 1–5 and ends at line 270. The verdict —
+a conditional GO for the element picker and a NO-GO for the recording architecture as proposed —
+was reached somewhere and only its header survived.
+
+**Reverted, deliberately.** A document whose own reading-rule points at sections it does not
+contain is worse than one with no ruling: the next reader trusts the status line, goes looking for
+the reasoning, and finds nothing. That is the exact failure `CLAUDE.md`'s opening paragraph was
+written about.
+
+**What is actually lost:** the reasoning behind the NO-GO — which contracts and blockers the
+recording architecture has to close first. The research report itself (sections 1–5: the
+recommended architecture, the licence-verified open-source survey for both halves, and the
+four-phase build plan) is intact and committed.
+
+**Next:** re-run the deep review before any build starts, and write its ruling INTO the file in the
+same pass that changes the status line. The report's own §1 still says "טרם הוחלט על בנייה", which
+is now the honest state.
+
+## ✅ CLOSED — fixed + mechanism proven (2026-08-25) — `release:verify` was not a gate: its exit code was `tee`'s
+
+**`CLAUDE.md §4` calls `release:verify` "the real gate, and it is what CI runs". In the RELEASE
+workflow it could not fail.**
+
+```yaml
+run: pnpm release:verify 2>&1 | tee "$ART/release-verify.log"     # release.yml:236, before
+```
+
+A `run:` step with no explicit `shell:` runs under GitHub's default `bash -e` — which does **not**
+set `pipefail`. So the step's status is `tee`'s, always 0. Proven locally, not asserted:
+`bash -e -c 'false | tee /dev/null'` → **exit 0**; with `set -euo pipefail` → **exit 1**.
+
+**This already shipped a failure to production.** Run `32854681109`, the v0.2.5 release, printed
+in that very step:
+
+```
+backend-api lint: ✖ 8 problems (1 error, 7 warnings)
+backend-api lint: Failed
+```
+
+…and the job reported **success**, the pre-deploy gate passed, and it deployed. The error was real:
+`simFileResolver.ts:76` initialised `blobKey` to null where the catch returns, so the initialiser
+was dead code (`no-useless-assignment`). PR #140's `ci.yml` lane caught it immediately — **`ci.yml`
+sets `pipefail` and `release.yml` did not**, so the weaker check was the one guarding production.
+
+**Both fixed here:** the dead initialiser is gone (declared without one, since the catch returning
+is what makes the assignment total), and line 236 now sets `set -euo pipefail` — matching the
+**eleven** other piped steps in the same file that already did. This was an isolated one-line
+`run:` among multi-line blocks that all got it right, which is exactly how it survived review.
+
+**Related gap, NOT fixed — owner's call.** `SENSITIVE_PATH_PATTERNS` covers `deploy/docker-compose`,
+nginx and systemd, but **not `.github/workflows/`**. So this very PR — which edits the release
+pipeline's own verification gate — does not require human approval, while a one-line `APP_VERSION`
+change to compose did. If deployment configuration deserves an eye, the pipeline that decides what
+deploys deserves one at least as much.

@@ -233,7 +233,15 @@ jobs:
       - uses: actions/download-artifact@v6
         with: { name: release-artifacts, path: release-artifacts }
       - name: release:verify (frozen install → typecheck → lint → tests → prod builds → bundle scan)
-        run: pnpm release:verify 2>&1 | tee "$ART/release-verify.log"
+        run: |
+          # `set -o pipefail` is LOAD-BEARING, not tidiness. Without it this step's exit status is
+          # `tee`'s — always 0 — and a failing release:verify is swallowed whole. That is not
+          # hypothetical: v0.2.5 printed "backend-api lint: ✖ 8 problems (1 error, ...)" followed
+          # by "Failed", this step reported success, the gate passed, and it deployed to
+          # production. CLAUDE.md §4 calls release:verify "the real gate"; for one lint error it
+          # was not a gate at all. Every other piped step in this file already sets this.
+          set -euo pipefail
+          pnpm release:verify 2>&1 | tee "$ART/release-verify.log"
       - name: Record test counts (best effort)
         run: |
           {
