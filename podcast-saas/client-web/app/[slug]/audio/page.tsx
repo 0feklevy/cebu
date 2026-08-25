@@ -74,7 +74,7 @@ export default async function AudioEditionPage({ params }: Params) {
         {data.description && <p className="mt-3 text-sm leading-relaxed">{data.description}</p>}
       </header>
 
-      <AudioEditionPlayer view={data} />
+      <AudioEditionPlayer view={data} slug={slug} />
 
       <footer className="mx-auto max-w-2xl mt-10 text-xs text-muted-foreground">
         {/* The listener arrived here from a link, possibly without ever seeing the lesson. The way

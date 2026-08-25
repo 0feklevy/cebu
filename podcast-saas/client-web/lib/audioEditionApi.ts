@@ -116,3 +116,54 @@ export function chapterIndexAt(chapters: readonly AudioChapter[], positionMs: nu
   if (chapters.length && positionMs >= chapters[chapters.length - 1].endMs) return chapters.length - 1;
   return -1;
 }
+
+// ── Raise your hand (A2.4, client half) ───────────────────────────────────────────────────────
+
+export const AskQuestionResponseSchema = z.object({
+  status: z.enum(['answered', 'saved', 'refused']),
+  answer: z.string().nullable(),
+  /** Present when the answer was withheld — WHY, so the listener never watches a silent non-response. */
+  message: z.string().nullable(),
+});
+export type AskQuestionResponse = z.infer<typeof AskQuestionResponseSchema>;
+
+/**
+ * Ask a question at a moment in the audio.
+ *
+ * The client always requests `intent: 'answer'` — the full experience — and the SERVER decides
+ * what the budget allows: it downgrades to `saved` (with the reason) or refuses outright. Spend
+ * control belongs to the side that knows the budget; a client-side default of 'save' would just
+ * mean nobody ever gets an answer, silently, which is the worse failure.
+ *
+ * Failures return `refused` with a human sentence rather than throwing: on a locked phone in a
+ * car there is nobody to read a stack trace, and the ONE thing this function must never do is
+ * leave the asker without any response at all.
+ */
+export async function askQuestion(
+  slug: string,
+  input: { question: string; positionMs: number; language?: string | null },
+): Promise<AskQuestionResponse> {
+  try {
+    const res = await fetch(`${BACKEND}/api/v1/public/audio/${encodeURIComponent(slug)}/questions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: input.question,
+        position_ms: Math.max(0, Math.round(input.positionMs)),
+        language: input.language ?? null,
+        intent: 'answer',
+      }),
+    });
+    const body: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      const message = (body as { message?: string } | null)?.message
+        ?? (res.status === 429 ? 'Too many questions — please slow down.' : 'Could not send your question.');
+      return { status: 'refused', answer: null, message };
+    }
+    const parsed = AskQuestionResponseSchema.safeParse(body);
+    if (!parsed.success) return { status: 'refused', answer: null, message: 'Could not read the answer.' };
+    return parsed.data;
+  } catch {
+    return { status: 'refused', answer: null, message: 'You appear to be offline — your question was not sent.' };
+  }
+}

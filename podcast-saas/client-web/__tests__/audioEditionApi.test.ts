@@ -4,8 +4,8 @@
  * Two of these decide whether the steering-wheel skip button appears to work, and both fail in
  * ways nobody would notice while testing at a desk with the screen on.
  */
-import { describe, it, expect } from 'vitest';
-import { chapterIndexAt, formatClock, formatDuration, type AudioChapter } from '../lib/audioEditionApi';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { askQuestion, chapterIndexAt, formatClock, formatDuration, type AudioChapter } from '../lib/audioEditionApi';
 
 const ch = (startMs: number, endMs: number, title = 't'): AudioChapter => ({ startMs, endMs, title });
 
@@ -87,5 +87,60 @@ describe('the running clock beside a scrubber', () => {
   it('is zero-padded, so a chapter list does not jitter as it scrolls', () => {
     expect(formatClock(9_000)).toBe('00:09');
     expect(formatClock(540_000)).toBe('09:00');
+  });
+});
+
+describe('askQuestion — the hand that must never get silence back', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  const respond = (status: number, body: unknown) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(body), {
+      status, headers: { 'Content-Type': 'application/json' },
+    })) as unknown as typeof fetch;
+  };
+
+  it('always requests the FULL experience and lets the server downgrade', async () => {
+    // Spend control belongs to the side that knows the budget. A client default of 'save' would
+    // mean nobody ever gets an answer — silently.
+    respond(200, { status: 'answered', answer: 'Because the flock re-forms.', message: null });
+    await askQuestion('my-lesson', { question: 'why?', positionMs: 12_345 });
+    const sent = JSON.parse(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
+    expect(sent.intent).toBe('answer');
+    expect(sent.position_ms).toBe(12_345);
+  });
+
+  it('passes a server downgrade through with its reason', async () => {
+    respond(200, { status: 'saved', answer: null, message: 'answer budget reached' });
+    const r = await askQuestion('s', { question: 'q', positionMs: 0 });
+    expect(r.status).toBe('saved');
+    expect(r.message).toBe('answer budget reached');
+  });
+
+  it('turns an HTTP failure into a refused WITH a sentence, never a throw', async () => {
+    // On a locked phone in a car there is nobody to read a stack trace.
+    respond(429, { message: 'Too many questions — please slow down.' });
+    const r = await askQuestion('s', { question: 'q', positionMs: 0 });
+    expect(r).toEqual({ status: 'refused', answer: null, message: 'Too many questions — please slow down.' });
+  });
+
+  it('turns a network failure into refused-with-a-sentence too', async () => {
+    globalThis.fetch = vi.fn(async () => { throw new TypeError('Failed to fetch'); }) as unknown as typeof fetch;
+    const r = await askQuestion('s', { question: 'q', positionMs: 0 });
+    expect(r.status).toBe('refused');
+    expect(r.message).toMatch(/offline/i);
+  });
+
+  it('refuses a malformed body rather than rendering garbage as an answer', async () => {
+    respond(200, { status: 'answered', answer: 42 });
+    const r = await askQuestion('s', { question: 'q', positionMs: 0 });
+    expect(r.status).toBe('refused');
+  });
+
+  it('rounds and floors the position — a negative or fractional ms must not reach the wire', async () => {
+    respond(200, { status: 'saved', answer: null, message: null });
+    await askQuestion('s', { question: 'q', positionMs: -3.7 });
+    const sent = JSON.parse(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]?.body));
+    expect(sent.position_ms).toBe(0);
   });
 });
