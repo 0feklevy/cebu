@@ -11,6 +11,7 @@ import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { cacheControlForKey } from 'shared/sim/simRevision';
 import { revisionServingFacts, isRevisionStatusPublic } from '../services/simulation/revisionIdentity.js';
+import { resolveSimFileKey } from '../services/simulation/simFileResolver.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';
@@ -250,14 +251,18 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         // readObject per request), which made image-heavy sims crawl.
         // Still a 302, not a 308: a permanently-cached redirect to an immutable response has no
         // revalidation path at all. The bounded hour stays the fallback for legacy keys.
+        // DEDUPLICATED PACKAGES (migration 080): the requested path is a NAME; the bytes may live
+        // at `blobs/<digest>`, shared with every other simulation containing the same file.
+        // Resolved here — after every access check above has passed on the requested key — so
+        // sharing bytes can never widen who may read them.
         return reply
           .header('Cache-Control', revisionCacheControl ?? 'public, max-age=3600')
           .header('Access-Control-Allow-Origin', '*')
-          .redirect(storage.getPublicUrl(key), 302);
+          .redirect(storage.getPublicUrl(await resolveSimFileKey(key)), 302);
       }
 
       try {
-        let buf = await storage.readObject(key);
+        let buf = await storage.readObject(await resolveSimFileKey(key));
         // Entry HTML gets the minimal-UI boot bootstrap injected at serve time (see
         // SIM_BOOT_SNIPPET) — BEFORE the ETag, so the tag matches the served bytes.
         if (ext === '.html' || ext === '.htm') {

@@ -9,8 +9,16 @@
  * bridge is generated on it. The import does not need to understand revisions to produce
  * something revisions understand.
  *
- * The copy is SERVER-SIDE (`storage.copyObject`) — the bytes never leave the bucket, which is
- * where "don't upload and store again" actually pays: no round trip through this process at all.
+ * ── NO BYTES ARE DUPLICATED (migration 080) ──────────────────────────────────────────────────
+ * The first version of this service copied every file into the destination's prefix. That is
+ * cheap in TIME — a server-side copy never leaves the bucket — and wrong in SPACE: importing one
+ * 31 MB package into five projects stored it five times, which is the exact duplication the dedup
+ * work exists to remove and the opposite of what was asked for.
+ *
+ * Now each file is CLAIMED as a blob: hashed, uploaded to `blobs/<digest>` only if nobody already
+ * has those bytes, and recorded in `sim_files` as "this simulation's file at this path IS that
+ * blob". The second import of a package writes rows and nothing else — no upload, no copy, no
+ * bytes. `simFileResolver` turns the path back into a location at serve time.
  *
  * ── WHAT IS DELIBERATELY NOT COPIED ───────────────────────────────────────────────────────────
  *   revisions/ and posters/  — regenerable, system-owned, and meaningless under a new sim id.
@@ -39,11 +47,15 @@ import { logger } from '../../lib/logger.js';
 import { judgeImport, type ImportVerdict, type Requester, type ProjectFacts } from '../storage/importEligibility.js';
 import { isCollaborator, type CollabUser } from '../collabAccess.js';
 import { readReplaceCompatibilitySource } from './replaceCompatibilitySource.js';
+import { claimBlob } from '../storage/MediaBlobStore.js';
+import { identifyBuffer } from '../storage/contentIdentity.js';
+import { sim_files } from '../../db/schema.js';
+import { extname } from 'node:path';
 import { isSystemOwnedKey } from 'shared/sim/simRevision';
 import type { StorageService } from '../storage/StorageService.js';
 
 export type ImportResult =
-  | { ok: true; simulation: typeof simulations.$inferSelect; copiedObjects: number }
+  | { ok: true; simulation: typeof simulations.$inferSelect; copiedObjects: number; reusedObjects: number }
   | { ok: false; status: 400 | 403 | 404 | 409; message: string };
 
 export class SimulationImportService {
@@ -127,13 +139,23 @@ export class SimulationImportService {
     }
     if (pairs.length === 0) return { ok: false, status: 409, message: 'This simulation has no files to import' };
 
-    // ── Server-side copy, bytes first ──────────────────────────────────────────────────────────
-    // Row AFTER bytes, same asymmetry as the blob store: a crash here leaks objects a sweep can
-    // collect; the other order creates a sim row that serves nothing.
+    // ── Claim each file as a blob; upload only what nobody already has ─────────────────────────
+    // Bytes before rows, the same asymmetry the blob store keeps: a crash here leaks an object a
+    // sweep collects, while the other order records a file that does not exist yet.
     let copied = 0;
+    let reused = 0;
+    const mappings: { rel: string; blobId: string }[] = [];
     for (const p of pairs) {
-      await this.storage.copyObject(p.from, `${destPrefix}/${p.toRel}`);
-      copied += 1;
+      const buf = await this.storage.readObject(p.from);
+      const identity = identifyBuffer(buf);
+      const claim = await claimBlob({
+        identity,
+        adapter: this.storage,
+        ext: extname(p.toRel).replace(/^\./, ''),
+        upload: async (key) => { await this.storage.uploadFile(key, buf, contentTypeFor(p.toRel)); },
+      });
+      mappings.push({ rel: p.toRel, blobId: claim.blob.id });
+      if (claim.deduped) reused += 1; else copied += 1;
     }
 
     const [row] = await db.insert(simulations).values({
@@ -151,10 +173,47 @@ export class SimulationImportService {
       guidance_status: 'none',
     }).returning();
 
+    // The mapping is what makes the blobs findable. Written AFTER the simulation row so the FK
+    // holds, and in one statement so a partially-mapped simulation cannot be served.
+    if (mappings.length > 0) {
+      await db.insert(sim_files).values(
+        mappings.map((m) => ({ simulation_id: newSimId, rel_path: m.rel, blob_id: m.blobId })),
+      );
+    }
+
     logger.info(
-      { evt: 'simulation_imported', from: source.id, to: newSimId, destProject: input.destProjectId, copied },
-      '[SimImport] imported without re-upload',
+      { evt: 'simulation_imported', from: source.id, to: newSimId, destProject: input.destProjectId,
+        filesStored: copied, filesReused: reused },
+      '[SimImport] imported — only unseen bytes were stored',
     );
-    return { ok: true, simulation: row, copiedObjects: copied };
+    return { ok: true, simulation: row, copiedObjects: copied, reusedObjects: reused };
+  }
+}
+
+
+/**
+ * The content type an imported file is stored with.
+ *
+ * It matters more than it looks: binary assets are served by REDIRECTING the browser to the
+ * bucket, so the type recorded at upload is the type the browser receives — a wrong one there is
+ * a texture the GPU refuses or a script the browser will not execute.
+ */
+function contentTypeFor(relPath: string): string {
+  const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
+  switch (ext) {
+    case '.html': case '.htm': return 'text/html; charset=utf-8';
+    case '.js': case '.mjs': return 'text/javascript; charset=utf-8';
+    case '.css': return 'text/css; charset=utf-8';
+    case '.json': return 'application/json; charset=utf-8';
+    case '.svg': return 'image/svg+xml';
+    case '.png': return 'image/png';
+    case '.jpg': case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.gif': return 'image/gif';
+    case '.wasm': return 'application/wasm';
+    case '.mp3': return 'audio/mpeg';
+    case '.mp4': return 'video/mp4';
+    case '.woff2': return 'font/woff2';
+    default: return 'application/octet-stream';
   }
 }

@@ -15,6 +15,7 @@ import {
   real,
   doublePrecision,
   pgEnum,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -643,6 +644,20 @@ export const sim_posters = pgTable(
  * the ARTIFACT (main_body) applies only after SimBridgeContract verification proves every anchor
  * it binds to exists in the target — otherwise the load regenerates from the recipe.
  */
+/**
+ * A simulation's files, stored ONCE however many simulations contain them (migration 080).
+ * `blob_id` has no ON DELETE action on purpose: Postgres then refuses to drop a blob any
+ * simulation still references — the same enforced invariant 078 relies on.
+ */
+export const sim_files = pgTable('sim_files', {
+  simulation_id: uuid('simulation_id').notNull().references(() => simulations.id, { onDelete: 'cascade' }),
+  rel_path:      text('rel_path').notNull(),
+  blob_id:       uuid('blob_id').notNull().references(() => media_blobs.id),
+  created_at:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.simulation_id, t.rel_path] }),
+}));
+
 export const saved_bridges = pgTable('saved_bridges', {
   id:          uuid('id').primaryKey().defaultRandom(),
   created_by:  uuid('created_by').notNull().references(() => users.id, { onDelete: 'cascade' }),
