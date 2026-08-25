@@ -14,6 +14,12 @@ export async function GET() {
     'Disallow: /pl/',         // legacy token playlist viewer
     'Disallow: /projects/',   // editor / authenticated views
     'Disallow: /playlists/',
+    // The podcast EDITOR, in the same category as the two above and missed until the P3-A rename
+    // made the omission visible. Both forms: the new home, and the legacy tree that now serves
+    // 308s — a crawler following those spends a round trip to be told what robots.txt could have
+    // said for free, and the redirect targets are disallowed anyway.
+    'Disallow: /edit-podcasts/',
+    'Disallow: /podcasts/',
     'Disallow: /new',
     'Disallow: /unlock',
     'Disallow: /api/',
