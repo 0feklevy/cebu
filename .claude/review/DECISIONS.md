@@ -1332,6 +1332,32 @@ Delivered so far:
 
 That fixture is what produced the 🔴 `ui_hide` entry above.
 
+**Completed after the approval** (same branch, PR #141):
+
+- **`rafGateRuntimeScanner.test.ts`** — the gate's control scanner, EXECUTED in jsdom against the
+  fixture, with every emitted selector resolved. Mutation-proven both directions.
+- **`sim-public.localParity.test.ts`** — the local-disk serve branch, which had no test, and its
+  parity with cloud, which had none either. It doubles as the exit-criterion-3 proof: a
+  legacy-shaped stored document gains the capability at serve time, on both storage paths, with the
+  stored bytes untouched.
+- **`actionPlanScheduler.test.ts`** — one handle ever, pause/resume on the REMAINING delay, rate,
+  restart-on-seek, adapter seek both ways, graded drift. Four mutations; the fourth initially
+  survived and produced a second test on a deliberately leaky clock.
+- **`actionPlanLifecycle.test.ts`** — one reset generation, ordered generation-stamped barriers,
+  per-barrier deadlines, and a reveal that is emitted from exactly one place after freshness is
+  re-checked. Five mutations, all caught. Writing them found a real bug in the coordinator:
+  generation 1's freshness evidence vouched for generation 2 whenever both landed on the same
+  documentId, which after reloading the same section is the ordinary case.
+
+**Phase 0 exit criteria: 8 of 9 met, the ninth partial.** Criterion 4 is PR #142. What remains is
+M1 and M3–M5 — fresh-document proof p95, draft TTL, reload cost and the rebase source hash — all of
+which need a running stack or a browser, and none of which can move a settled ADR decision.
+
+A note worth keeping: `pnpm --filter backend-api typecheck` runs `tsconfig.json`, which EXCLUDES
+`*.test.ts`. "Typecheck clean" therefore says nothing about a test file, and vitest runs TypeScript
+without checking it. `deploy/scripts/typecheck-tests-ratchet.sh` is the only thing that looks, and
+it caught this branch. Run it before claiming a test file typechecks.
+
 ## ✅ CLOSED — fixed + mechanism proven (2026-08-25) — `release:verify` was not a gate: its exit code was `tee`'s
 
 **`CLAUDE.md §4` calls `release:verify` "the real gate, and it is what CI runs". In the RELEASE
