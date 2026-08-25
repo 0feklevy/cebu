@@ -103,7 +103,7 @@ describe('GET /sim-public/* — unpublished revisions are not public', () => {
       .not.toHaveBeenCalled();
   });
 
-  it.each(['active', 'retired', 'rolled_back', 'canary_passed'])(
+  it.each(['active', 'retired', 'rolled_back'])(
     'still serves a %s revision', async (status) => {
       statusByRevision.set(REV, status);
       const app = await makeApp();
@@ -112,6 +112,41 @@ describe('GET /sim-public/* — unpublished revisions are not public', () => {
 
       expect(res.statusCode).toBe(200);
     });
+
+  it('refuses a canary_passed revision — it is a staging state, not a published one', async () => {
+    // This test previously asserted the OPPOSITE, on the strength of a comment claiming "the
+    // pre-activation canary drives the real document over this route". Checked three ways on
+    // 2026-08-25 and nothing does: RevisionService.validate() reads bytes from storage and that
+    // file has no fetch/http at all, sim-canary-publish.ts consumes a --report file, and
+    // sim-canary.spec.ts routes API_ORIGIN/** to an in-process server that 404s any real revision
+    // key. simRevision.ts states outright that canary_passed is "NOT proof that a canary ran".
+    statusByRevision.set(REV, 'canary_passed');
+    const app = await makeApp();
+
+    const res = await app.inject({ method: 'GET', url: `/sim-public/${revKey('index.html')}` });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockStorage.readObject).not.toHaveBeenCalled();
+  });
+
+  it('refuses a status this build has never heard of — the reason the list had to be inverted', async () => {
+    // THE POINT OF THE WHOLE CHANGE. The old deny-list read
+    // `status === null || !NEVER_PUBLISHED.has(status)`, so any status it did not recognise was
+    // PUBLIC — its own comment said "Unknown status ⇒ yes (legacy)".
+    //
+    // That makes adding a non-public status impossible to do safely: during a rolling deploy, and
+    // on any image not yet replaced, a new `proof_pending` would be served precisely BECAUSE it is
+    // new — serving exactly the unproven bytes it was added to protect. So the allow-list ships
+    // first, in its own release, and the new statuses follow in a later one. The order is the fix,
+    // and this test is what holds it.
+    statusByRevision.set(REV, 'proof_pending');
+    const app = await makeApp();
+
+    const res = await app.inject({ method: 'GET', url: `/sim-public/${revKey('index.html')}` });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).not.toContain('secret draft');
+  });
 
   it('still serves a legacy (non-revision) key, which has no status at all', async () => {
     const app = await makeApp();

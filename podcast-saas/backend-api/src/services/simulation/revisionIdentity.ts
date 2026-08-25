@@ -30,26 +30,62 @@ import { logger } from '../../lib/logger.js';
 import { revisionIdFromKey } from 'shared/sim/simRevision';
 
 /**
- * Statuses whose bytes the revision pointer has NEVER named, so no player config, poster or
- * share link has ever carried a URL into them (simulation-007).
+ * Statuses whose bytes MAY be handed to an anonymous caller (simulation-007).
  *
- * `/sim-public/*` is unauthenticated and a revision prefix sits inside `simulations/`, so before
- * this list the bytes of an aborted publication were served exactly like the active revision's —
+ * `/sim-public/*` is unauthenticated and a revision prefix sits inside `simulations/`, so without
+ * this gate the bytes of an aborted publication were served exactly like the active revision's —
  * indefinitely, because `RevisionService.gc()` has no production caller.
  *
- * DELIBERATELY NOT HERE: `retired` and `rolled_back`. Their bytes WERE served, `mustRetainBytes`
- * keeps them for rollback, and a viewer whose page loaded a moment before a rollback still holds
+ * THIS IS AN ALLOW-LIST, AND IT USED TO BE A DENY-LIST. The difference is what happens to a status
+ * this build has never heard of. The old form read
+ * `status === null || !NEVER_PUBLISHED.has(status)`, whose own comment conceded
+ * "Unknown status ⇒ yes (legacy)" — so every status a given image did not recognise was PUBLIC.
+ * That makes adding a new non-public status impossible to do safely: during any rolling deploy,
+ * and on any image that has not been replaced yet, the new status would be served precisely
+ * because it is new. The allow-list has to land first, in its own release, before a
+ * `proof_pending` can exist at all.
+ *
+ * WHY `active`, `retired` AND `rolled_back`. Their bytes WERE served, `mustRetainBytes` keeps the
+ * latter two for rollback, and a viewer whose page loaded a moment before a rollback still holds
  * their URLs — withdrawing those is a product decision about revocation, not a leak of unpublished
- * work, and it would turn an in-flight session into 404s. `canary_passed` is served too: the
- * pre-activation canary drives the real document over this route.
+ * work, and it would turn an in-flight session into 404s. A corollary worth stating plainly
+ * because it belongs in the runbook: **rollback is not revocation.** Recovery moves the active
+ * pointer; it does not unpublish a URL that has already been handed out.
+ *
+ * WHY `canary_passed` IS NOT HERE, having previously been served. The comment that justified it
+ * said "the pre-activation canary drives the real document over this route". Checked three
+ * independent ways on 2026-08-25, and nothing does:
+ *
+ *   - `RevisionService.validate()` reads the revision's bytes back FROM STORAGE; that file
+ *     contains no `fetch(`, no `http` and no `getSimPublicUrl` at all;
+ *   - `sim-canary-publish.ts` consumes a `--report <path>` file — it never drives a browser;
+ *   - `sim-canary.spec.ts` routes `${API_ORIGIN}/**` to an in-process server whose `localPathFor`
+ *     maps only `/sim-public/__e2e/…` and 404s everything else, so a real revision key is
+ *     unreachable there by construction.
+ *
+ * `shared/src/sim/simRevision.ts` says so outright in its own docs: `canary_passed` is "NOT proof
+ * that a canary ran… the name is historical." It is a staging state on the way to `active`, and
+ * nothing hands out a URL into one — `uploadSectionBridge` persists `sectionUrl` only inside the
+ * `onActivated` transaction hook, and `migrate-sim-revisions.ts` states that "nothing will be
+ * activated", so a migrated package resting in this state is not linked from anywhere either.
  */
-const NEVER_PUBLISHED_STATUSES: ReadonlySet<string> = new Set([
-  'draft', 'uploading', 'validating', 'failed',
+const PUBLICLY_SERVED_STATUSES: ReadonlySet<string> = new Set([
+  'active', 'retired', 'rolled_back',
 ]);
 
-/** May a revision in this status be handed to an anonymous caller? Unknown status ⇒ yes (legacy). */
+/**
+ * May a revision in this status be handed to an anonymous caller?
+ *
+ * `null` stays public, and that is deliberate rather than an oversight. It does not mean "unknown
+ * status" — `sim_revisions.status` is `TEXT NOT NULL`, so a verified row always has one. It means
+ * the key is not a verified revision at all: a legacy non-revision path, or a transient database
+ * fault. The caller guards with `revision.verified && !isRevisionStatusPublic(...)` for exactly
+ * that reason, and `revisionServingFacts` documents why a fault must leave the gate open —
+ * failing closed there would 404 every revisioned simulation on the platform on a database blip,
+ * and this gate is a publication check, not a secrecy boundary.
+ */
 export function isRevisionStatusPublic(status: string | null): boolean {
-  return status === null || !NEVER_PUBLISHED_STATUSES.has(status);
+  return status === null || PUBLICLY_SERVED_STATUSES.has(status);
 }
 
 /** Real revision ids are database UUIDs. Cheap pre-filter so ordinary paths never reach the DB. */
