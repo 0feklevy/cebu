@@ -15,7 +15,6 @@ import {
   judgeReuse,
   isWellFormedSha256,
   blobStorageKey,
-  strictCompareEnabled,
   ContentTruncatedError,
   type BlobRecord,
 } from '../contentIdentity.js';
@@ -190,18 +189,5 @@ describe('the storage key', () => {
     const h = sha('hello');
     expect(blobStorageKey({ sha256: h, byteSize: 5 }, 'mp4')).toBe(`blobs/${h.slice(0, 2)}/${h.slice(2, 4)}/${h}.mp4`);
     expect(blobStorageKey({ sha256: h, byteSize: 5 }, '.mp4')).toBe(`blobs/${h.slice(0, 2)}/${h.slice(2, 4)}/${h}.mp4`);
-  });
-});
-
-describe('the strict byte-comparison switch', () => {
-  it('is OFF unless an operator turns it on', () => {
-    // It costs a full download of the existing object on every dedup hit, and defends only against
-    // an SHA-256 collision — the one risk here nobody can currently produce.
-    expect(strictCompareEnabled({})).toBe(false);
-    expect(strictCompareEnabled({ MEDIA_DEDUP_STRICT_COMPARE: '1' })).toBe(false);
-    expect(strictCompareEnabled({ MEDIA_DEDUP_STRICT_COMPARE: 'yes' })).toBe(false);
-  });
-  it('takes an explicit true', () => {
-    expect(strictCompareEnabled({ MEDIA_DEDUP_STRICT_COMPARE: 'true' })).toBe(true);
   });
 });

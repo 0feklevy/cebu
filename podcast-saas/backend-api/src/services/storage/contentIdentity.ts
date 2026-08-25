@@ -30,10 +30,12 @@
  *      gives the new project a reference to nothing, which is worse than uploading again. So the
  *      last gate before reuse is a HEAD against storage, comparing the length it reports.
  *
- * Mechanism 5, a full byte-for-byte comparison, is available behind `MEDIA_DEDUP_STRICT_COMPARE`
- * and OFF by default. It costs a complete download of the existing object on every dedup hit, and
- * it defends only against an SHA-256 collision — the one risk in this list that no one can
- * currently produce. It exists so that an operator who wants to pay for that certainty can.
+ * A fifth mechanism — a full byte-for-byte comparison — is deliberately NOT here. It would cost a
+ * complete download of the existing object on every dedup hit and defends only against an SHA-256
+ * collision, the one risk in this list nobody can currently produce. An earlier draft shipped an
+ * env flag for it that nothing consulted: a documented knob that does nothing is worse than no
+ * knob, because an operator can set it and believe they bought certainty. If it is ever wanted,
+ * it belongs in `claimBlob` alongside the code that does the comparing.
  */
 
 import { createHash } from 'node:crypto';
@@ -155,10 +157,6 @@ export function judgeReuse(input: {
   return { reuse: true, blob: candidate };
 }
 
-/** Is the paranoid full-byte comparison switched on? Off unless an operator says otherwise. */
-export function strictCompareEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.MEDIA_DEDUP_STRICT_COMPARE === 'true';
-}
 
 /**
  * The storage key a blob gets. Content-addressed, so the key cannot outlive its meaning: if the

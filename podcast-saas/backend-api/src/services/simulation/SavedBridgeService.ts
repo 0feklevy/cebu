@@ -18,14 +18,14 @@
  *   the silently-dead section the whole design exists to prevent.
  */
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { saved_bridges, timeline_sections, simulations } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { parseSectionEntries } from './SimulationService.js';
 import { extractBridgeContract, verifyContract, buildSources, type BridgeContract, type CandidateBundle } from './SimBridgeContract.js';
 import { readReplaceCompatibilitySource } from './replaceCompatibilitySource.js';
-import { readStoredUiControls, normalizeSimUiSelection, SimUiSelectionSchema, type SimUiSelection } from './SimUiControls.js';
+import { readStoredUiControls, type SimUiSelection } from './SimUiControls.js';
 import { judgeBridgeLoad, describeLoadPath, type LoadPath } from './bridgePresetDecision.js';
 import type { StorageService } from '../storage/StorageService.js';
 
@@ -233,15 +233,4 @@ export class SavedBridgeService {
   }
 }
 
-/** Validate a preset's ui_controls at the API boundary — the shared schema, one more ingress. */
-export function parseUiControlsInput(value: unknown): SimUiSelection | null {
-  if (value == null) return null;
-  const parsed = SimUiSelectionSchema.safeParse(value);
-  return parsed.success ? normalizeSimUiSelection(parsed.data) : null;
-}
 
-/** Test seam: expose the drizzle count the sweep will need. */
-export async function presetCountForUser(userId: string): Promise<number> {
-  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(saved_bridges).where(eq(saved_bridges.created_by, userId));
-  return row?.n ?? 0;
-}
