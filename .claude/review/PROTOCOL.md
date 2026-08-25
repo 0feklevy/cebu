@@ -178,6 +178,24 @@ Write findings expecting an adversary to read them. That is the point.
 5. **Be concrete to this repo.** Real files, real line numbers, real commands from `stack.md`.
    Generic best-practice advice with no call site is noise, and noise is a defect.
 6. **Time-box.** Aim for ~15 high-value findings. When you have swept your scope, stop; do not pad.
+7. **A green test is not evidence until you know what it can SEE.** Before citing a suite as
+   coverage — or accepting "this is tested" as a reason a defect cannot exist — establish that the
+   test could have failed. Three defects found on 2026-08-25 shared exactly one shape, and in every
+   one the suite was green while being structurally incapable of observing the thing it named:
+
+   | where | what the test did | what it therefore could not see |
+   |---|---|---|
+   | `rafGate.test.ts` | asserted the gate's SOURCE TEXT — `expect(out).toContain("if (el.id) return '#' + el.id;")` | anything about behaviour. It pinned the DEFECTIVE line as the specification, and went **red on the correct fix** |
+   | `sim-public.test.ts` | mocked storage with a plain object *specifically* so `instanceof LocalStorageAdapter` is false | the entire local-disk branch, and its divergence from the cloud one — a bug already fixed once, with no regression test |
+   | `audioEditionAccess.test.ts` | mocked `findMany` ignoring its `where`, and `eq` as `vi.fn(() => ({}))` | **which column was compared.** `projects.id` and `video_files.project_id` were both bare `'id'`/`'project_id'`, so the wrong table was indistinguishable from the right one |
+
+   The check is one question, asked before the claim: **what mutation would turn this red?** If the
+   answer is "an edit to the test's own string", or "nothing", the test is documentation of the
+   current implementation, not a guarantee about it.
+
+   Applies to your own findings too. "Covered by tests" is a claim about a suite's reach, and a
+   finding that rests on it inherits whatever that suite cannot see. Say which test, and say what
+   would break it.
 
 If the guard blocks you, it is telling you the approach is wrong — **do not look for a way around
 it.** Record what you wanted and why, and move on. If the guard *fails* to block something on this
