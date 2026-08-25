@@ -42,6 +42,32 @@ Deliberately not fixed in the same breath as the release it was found during: th
 instruction was ship-then-stop, and a change made after the images were built would not be in
 v0.2.0 anyway.
 
+## ✅ SHIPPED (2026-08-25, v0.2.1 + v0.2.2) — the storage promise kept, and the incident's own path guarded
+
+**v0.2.1:** `/podcasts` → `/edit-podcasts` (P3-A item 2) with three `permanentRedirect` shims so
+every shared deep link still lands on its exact destination — verified in production:
+`/podcasts/abc/episodes/xyz` → 308 → `/edit-podcasts/abc/episodes/xyz`. `podcasts` STAYS reserved,
+because releasing it would hand those old links to a creator. Also: the podcast editor was the
+only one of three editor trees `robots.txt` never disallowed.
+
+**v0.2.2 — the correction that matters.** The owner asked for simulation storage NOT to be
+duplicated. The `+` import shipped in v0.2.0 did `copyObject` on every file, so importing one
+31 MB package into five projects stored it five times — the exact opposite. Migration 080
+(`sim_files`) makes a simulation's files content-addressed: each is claimed as a blob, uploaded
+only if nobody already holds those bytes, and resolved back at serve time by `simFileResolver`
+(AFTER every access check, so sharing can never widen who may read). Proven:
+`copiedObjects: 0, reusedObjects: 2` on the second import. A preset can now also bring its source
+simulation along, which since 080 costs nothing.
+
+**And the podcast finding, from auditing for the INCIDENT'S SHAPE rather than a reported symptom:**
+`PodcastRenderer` had consulted the spend ceiling since it was written; `previewTurn` and
+`revoiceTurn` never did. That is backwards — a render is ONE action with a knowable cost, a
+preview is unbounded by construction — and it is precisely what happened on 22 August: not one
+expensive render but a creator auditioning voices, four auto-top-ups in three and a half hours,
+every click through those two functions, metered but unceilinged. Both now check first, still in
+shadow. Mutation-proven with the vendor doubles failing loudly if reached, because a guard placed
+AFTER the call satisfies "throws when refused" with the money already gone.
+
 ## ✅ SHIPPED (2026-08-25) — three features, one release
 
 **#139 + #138 merged; v0.2.0 dispatched with deploy.** Full detail in `HANDOFF-2026-08-25.md`,
