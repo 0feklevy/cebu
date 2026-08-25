@@ -148,13 +148,14 @@ describe('the ceiling guards a guidance publish', () => {
     reason: 'elevenlabs spend this month would reach $90.00, over the $50.00 ceiling (SPEND_CEILING_ELEVENLABS_CENTS).',
   };
 
-  const publish = (svc: GuidanceService) => svc.publishGuidance({
+  /** The file's own factory, so this block is wired exactly as every test above it. */
+  const publish = () => service().svc.publishGuidance({
     simId: 'sim-1', projectId: 'proj-1',
     entries: [{ atMs: 0, text: 'one' }] as never,
   });
 
   it('asks the ceiling about ElevenLabs', async () => {
-    await publish(new GuidanceService()).catch(() => { /* the rest of the publish is not the subject */ });
+    await publish().catch(() => { /* the rest of the publish is not the subject */ });
     expect(evaluateSpendCeiling).toHaveBeenCalledWith(expect.objectContaining({ provider: 'elevenlabs' }));
   });
 
@@ -162,13 +163,13 @@ describe('the ceiling guards a guidance publish', () => {
     // The reason the check is at the top rather than per cue: a publish that stops halfway leaves
     // a simulation with some cues voiced and some silent, which is worse than one that never ran.
     evaluateSpendCeiling.mockResolvedValue(REFUSED);
-    await expect(publish(new GuidanceService())).rejects.toThrow(/ceiling/i);
+    await expect(publish()).rejects.toThrow(/ceiling/i);
     expect(recordTtsSpend, 'a refused publish still paid for something').not.toHaveBeenCalled();
   });
 
   it('carries the wording that names the variable to change', async () => {
     evaluateSpendCeiling.mockResolvedValue(REFUSED);
-    await expect(publish(new GuidanceService())).rejects.toThrow(/SPEND_CEILING_ELEVENLABS_CENTS/);
+    await expect(publish()).rejects.toThrow(/SPEND_CEILING_ELEVENLABS_CENTS/);
   });
 
   it('does NOT block in shadow mode, even when it would have refused', async () => {
@@ -176,7 +177,7 @@ describe('the ceiling guards a guidance publish', () => {
       mode: 'shadow', refuse: false, wouldRefuse: true, spentCents: 9_000, ceilingCents: 5_000,
       reason: 'would have refused',
     });
-    await publish(new GuidanceService()).catch((e: Error) => {
+    await publish().catch((e: Error) => {
       expect(e.message, 'shadow mode refused a publish').not.toMatch(/ceiling/i);
     });
   });
