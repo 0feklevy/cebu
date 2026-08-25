@@ -22,6 +22,10 @@ const state = {
   asked: [] as Array<Record<string, unknown>>,
   askResult: { status: 'answered', answer: 'Because.' } as Record<string, unknown>,
   questions: [] as Array<Record<string, unknown>>,
+  /** Rows `video_files.findMany` answers with — settable, so "no media" can be tested honestly. */
+  videoFiles: [{ storage_key: 'k', duration_sec: 10 }] as Array<Record<string, unknown>>,
+  /** Every `where` that reached `video_files.findMany`, so the PREDICATE itself is assertable. */
+  videoQueries: [] as unknown[],
 };
 
 vi.mock('../../../db/index.js', () => ({
@@ -30,17 +34,33 @@ vi.mock('../../../db/index.js', () => ({
       projects: { findFirst: async () => state.project },
       project_audio_editions: { findFirst: async () => state.edition },
       listener_questions: { findMany: async () => state.questions },
-      video_files: { findMany: async () => [{ storage_key: 'k', duration_sec: 10 }] },
+      video_files: {
+        findMany: async (args: { where?: unknown }) => {
+          state.videoQueries.push(args?.where);
+          return state.videoFiles;
+        },
+      },
     },
   },
 }));
+// Column identities are FULLY QUALIFIED here on purpose. The previous mock gave both
+// `projects.id` and `video_files.project_id` the bare string 'project_id'/'id', so a predicate
+// naming the wrong table was indistinguishable from the right one — which is exactly how the
+// production defect below stayed invisible to this suite.
 vi.mock('../../../db/schema.js', () => ({
-  project_audio_editions: { project_id: 'project_id', language: 'language' },
-  listener_questions: { id: 'id', project_id: 'project_id', created_at: 'created_at' },
-  projects: { id: 'id' },
-  video_files: { project_id: 'project_id' },
+  project_audio_editions: { project_id: 'project_audio_editions.project_id', language: 'project_audio_editions.language' },
+  listener_questions: { id: 'listener_questions.id', project_id: 'listener_questions.project_id', created_at: 'listener_questions.created_at' },
+  projects: { id: 'projects.id', slug: 'projects.slug' },
+  video_files: { project_id: 'video_files.project_id' },
 }));
-vi.mock('drizzle-orm', () => ({ and: vi.fn(() => ({})), eq: vi.fn(() => ({})), isNull: vi.fn(() => ({})), desc: vi.fn(() => ({})) }));
+// `eq` CARRIES its arguments through instead of discarding them. A mock that returns `{}` makes
+// every predicate look identical, so no assertion downstream can tell which column was compared.
+vi.mock('drizzle-orm', () => ({
+  and: vi.fn((...parts: unknown[]) => ({ and: parts })),
+  eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  isNull: vi.fn(() => ({})),
+  desc: vi.fn(() => ({})),
+}));
 vi.mock('../../../middleware/firebase-auth.js', () => ({
   firebaseAuthMiddleware: vi.fn(),
   firebaseAuthOptionalMiddleware: vi.fn(),
@@ -117,6 +137,60 @@ beforeEach(() => {
   state.asked = [];
   state.askResult = { status: 'answered', answer: 'Because.' };
   state.questions = [];
+  state.videoFiles = [{ storage_key: 'k', duration_sec: 10 }];
+  state.videoQueries = [];
+});
+
+/**
+ * The pre-flight refusal query — the one that decided every "Create podcast" click.
+ *
+ * OBSERVED IN PRODUCTION 2026-08-25: three 409s and "This project has no media to derive audio
+ * from." on a project full of media. The cause was one identifier: the query ran
+ * `db.query.video_files.findMany({ where: eq(projects.id, project.id) })` — a predicate naming a
+ * column from a table the query does not select from. Postgres refuses that outright, and the
+ * `.catch(() => [])` beside it turned the refusal into an empty list, which `editionRefusalReason`
+ * reads as "no media". Every podcast build, on every project, was refused for a reason that was
+ * never true.
+ *
+ * WHY THIS SUITE COULD NOT SEE IT. Its `video_files.findMany` mock ignored the `where` entirely
+ * and always returned one segment, and its `eq` mock returned `{}` — discarding the arguments, so
+ * every predicate looked identical. Both are now fixed: the mock records what it was asked, and
+ * `eq` carries the column through. These tests assert on the predicate, not on the fact that a
+ * query happened.
+ */
+describe('the pre-flight refusal asks about THIS project\'s media', () => {
+  it('filters on video_files.project_id, not on projects.id', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(state.videoQueries).toHaveLength(1);
+    expect(state.videoQueries[0]).toEqual({ col: 'video_files.project_id', val: 'p1' });
+  });
+
+  it('queues the build when the project HAS playable media', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(r.code).toBe(202);
+    expect(state.enqueued).toHaveLength(1);
+  });
+
+  it('still refuses, with the reason, when the project genuinely has none', async () => {
+    // The refusal is a real product answer and must survive the fix — the defect was that it
+    // fired ALWAYS, not that it existed.
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.videoFiles = [];
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(r.code).toBe(409);
+    expect(String((r.body as { message?: string }).message)).toContain('no media');
+    expect(state.enqueued).toHaveLength(0);
+  });
+
+  it('refuses when media exists but none of it has playable audio', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.videoFiles = [{ storage_key: null, duration_sec: 0 }];
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(r.code).toBe(409);
+    expect(state.enqueued).toHaveLength(0);
+  });
 });
 
 describe('an edition is exactly as public as its project', () => {
