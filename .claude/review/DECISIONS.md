@@ -18,6 +18,30 @@ Last updated: **2026-08-22**, during the post-sweep fix round.
 
 ---
 
+## 🔴 OPEN — `/health` cannot tell you which version is running
+
+Found 2026-08-25 while verifying the v0.2.0 deploy.
+
+`health.controller.ts:191` returns `version: process.env.npm_package_version ?? '0.1.0'`.
+`npm_package_version` is set only when a process is started THROUGH npm/pnpm; production runs
+`node dist/server.js` directly (docker-compose.yml), so the variable is never set and the field
+reports the literal fallback **`0.1.0` forever** — before and after every release.
+
+**Why it matters:** confirming "the new code is live" is the first question after any deploy, and
+the first question during an incident. Yesterday's avatar outage was prolonged partly by not being
+able to state plainly what was deployed. Today the only way to verify v0.2.0 actually landed was to
+probe a NEW ROUTE and check it answers 401 rather than 404 — which works, but is a workaround.
+
+**The fix is small and the input already exists:** `APP_VERSION` is the git short SHA the deploy
+sets to select the image tag (docker-compose.yml:25, and `pgBossDriver.ts:221` already reasons
+about it). Pass it into the backend container's environment and report it here, keeping the
+package version as a secondary field. Add a test that the field is NOT the hardcoded fallback when
+APP_VERSION is present.
+
+Deliberately not fixed in the same breath as the release it was found during: the owner's
+instruction was ship-then-stop, and a change made after the images were built would not be in
+v0.2.0 anyway.
+
 ## ✅ SHIPPED (2026-08-25) — three features, one release
 
 **#139 + #138 merged; v0.2.0 dispatched with deploy.** Full detail in `HANDOFF-2026-08-25.md`,
