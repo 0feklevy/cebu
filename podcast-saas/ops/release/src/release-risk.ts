@@ -84,6 +84,11 @@ const SENSITIVE_PATH_PATTERNS: ReadonlyArray<{ re: RegExp; why: string }> = [
   // APP_VERSION change to compose did (ledger, 2026-08-25). This makes the gate self-protecting —
   // including against the PR that adds this very line.
   { re: /(^|\/)\.github\/workflows\//i, why: 'the release/CI pipeline itself' },
+  // The OTHER public-serving gate. `mediaAccess` above covers videos/exports/hls; this is the
+  // one that decides which simulation revisions an unauthenticated caller may read. Its own
+  // defect — an unrecognised status was PUBLIC — shipped in v0.2.7 classified as routine, which
+  // is the evidence for this line rather than the argument for it.
+  { re: /revisionIdentity|isRevisionStatusPublic|sim-public\.controller/i, why: 'the public simulation-serving gate' },
 ];
 
 /** Migration findings a human is meant to accept rather than a machine. */

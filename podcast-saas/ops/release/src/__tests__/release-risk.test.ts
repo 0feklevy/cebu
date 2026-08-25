@@ -69,6 +69,12 @@ describe('a release a human could actually change the outcome of stops', () => {
     ['podcast-saas/deploy/docker-compose.prod.yml', 'deployment configuration'],
     ['podcast-saas/.env.example', 'environment-variable contract'],
     ['podcast-saas/backend-api/src/controllers/stripeWebhook.ts', 'billing'],
+    // The OTHER public-serving gate. mediaAccess above covers videos/exports/hls; this one
+    // decides which simulation revisions an unauthenticated caller may read. Its own defect —
+    // an unrecognised status was PUBLIC — shipped in v0.2.7 classified routine, which is the
+    // evidence for these three entries rather than the argument for them.
+    ['podcast-saas/backend-api/src/services/simulation/revisionIdentity.ts', 'simulation-serving gate'],
+    ['podcast-saas/backend-api/src/controllers/sim-public.controller.ts', 'simulation-serving gate'],
   ])('%s is a security-sensitive surface', (path, expectedWhy) => {
     const v = assessReleaseRisk({ ...routine, changedPaths: [path] });
     expect(v.requiresHuman, `${path} was scored routine`).toBe(true);
