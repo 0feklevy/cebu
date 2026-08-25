@@ -195,12 +195,34 @@ These are Phase-0 **measurements**, not opinions. Each needs a number before the
 | # | Measurement | Decides |
 |---|---|---|
 | M1 | p95 latency of isolated fresh-document proof | whether Apply is synchronous or returns `202` + status URL |
-| M2 | dormant + active bootstrap cost on a low-end device | whether capture code is inlined or lazily fetched after ARM |
+| M2 | dormant + active bootstrap cost on a low-end device | whether capture code is inlined or lazily fetched after ARM — **byte half measured, see below** |
 | M3 | draft-recording TTL and deletion policy on section delete | the retention row in the privacy section |
 | M4 | `reload-document` cost, prewarm viability, re-entry latency | whether D3's restart is acceptable UX or needs pooling |
 | M5 | the source-content hash that excludes the platform bridge | whether a future single rebase is possible instead of a hard 409 |
 
 M2 and M4 can move D3 and D5's *ergonomics*. They cannot move D1, D2, D5, D8 or D9.
+
+### M2, byte half — measured 2026-08-25, and it moves the target
+
+Both existing serve-time/publish-time injections, measured as the fragment each adds to a bare
+document:
+
+| injection | raw | gzip | brotli |
+|---|---:|---:|---:|
+| `SIM_BOOT_SNIPPET` — serve time, today | 673 | **457** | 348 |
+| rAF gate v4 — in every published entry document | 16,826 | **5,878** | 5,039 |
+
+The research report proposes a launch target of "dormant bootstrap up to 5KB gzip". Against these
+numbers that is **too generous by an order of magnitude**: 5KB gzip would nearly double what every
+viewer already downloads on every simulation, to buy a capability that is inert for all of them and
+used only by an author in an editor.
+
+**Revised target: ≤ 1KB gzip dormant**, which is roughly twice the boot snippet's 457 and is
+achievable for what the dormant phase actually has to be — one `message` listener and a capability
+reply. Anything beyond that loads same-origin *after* ARM, which only an authoring session reaches.
+
+The device half of M2 — handler cost at 60fps on low-end hardware — still needs a browser and is
+not measured here.
 
 ---
 
