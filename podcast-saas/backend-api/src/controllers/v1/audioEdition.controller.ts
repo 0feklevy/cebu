@@ -32,6 +32,7 @@ import { requireUuidParams } from '../../lib/uuidParam.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { editionRefusalReason } from '../../services/audio/audioEdition.js';
+import { editionWireStatus } from 'shared';
 import { loadEditionSegments } from '../../services/audio/editionSegments.js';
 import { askListenerQuestion } from '../../services/audio/ListenerQuestionService.js';
 import { listener_questions } from '../../db/schema.js';
@@ -85,7 +86,12 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
       const edition = await findEdition(project.id, language);
       if (!edition || edition.status !== 'ready' || !edition.m4a_key) {
         return reply.send({
-          status: edition?.status ?? 'none',
+          // TRANSLATED, not passed through. The database says `processing`; the wire — and every
+          // client — says `building`. Returning the stored value verbatim is what left the
+          // creator's row saying "Create podcast" while the build was running, because
+          // `processing` matches nothing the client recognises as in-flight. See
+          // shared/src/audio/editionStatus.ts for the three vocabularies and why there is now one.
+          status: editionWireStatus(edition?.status),
           // The creator sees the reason; a listener sees a status they can wait on. Both get the
           // same shape, because a route that changes shape by caller is a route with two contracts.
           error: edition?.error ?? null,

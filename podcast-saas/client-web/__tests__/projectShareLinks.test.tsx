@@ -15,7 +15,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
-import { ProjectShareLinks } from '../components/ProjectShareLinks';
+import { ProjectShareLinks, POLL_MS } from '../components/ProjectShareLinks';
+import { EDITION_DB_STATUSES, editionWireStatus } from 'shared';
+import { api } from '@/lib/api';
 
 const state = {
   status: 'none' as string, built: 0, buildThrows: null as string | null,
@@ -146,6 +148,60 @@ describe('creating the podcast — the answer to "how do I export one"', () => {
     await renderLinks();
     const btn = screen.getByRole('button', { name: /building/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
+  });
+
+  /**
+   * THE OWNER'S BUG, DRIVEN FROM THE SERVER'S OWN VOCABULARY.
+   *
+   * Reported 2026-08-26: the row said "Building — this takes a few minutes", reverted to "Create
+   * podcast" a second later, and stayed there while the build ran fine.
+   *
+   * Every "building" test above sets `state.status = 'building'` BY HAND — a value the server has
+   * never sent. The route returned the database's `processing`, which the component recognises as
+   * nothing at all, so it rendered idle and cleared its poll. A client suite that invents the
+   * server's answers cannot fail when the server's answers change; that is the whole mechanism by
+   * which this shipped past a green suite.
+   *
+   * These tests take the status through `editionWireStatus` — the same function the route calls —
+   * so the two sides cannot drift without one of them going red.
+   */
+  it('a build in progress on the SERVER still reads as building here', async () => {
+    state.status = editionWireStatus('processing');
+    await renderLinks();
+    const btn = screen.getByRole('button', { name: /building/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(screen.getByText(/this takes a few minutes/i)).toBeTruthy();
+  });
+
+  it('keeps polling while the server says a build is running', async () => {
+    // The second half of the defect, and the reason a finished podcast never appeared: the poll
+    // runs only while in flight, so a status the component could not read stopped it on tick one.
+    vi.useFakeTimers();
+    try {
+      state.status = editionWireStatus('processing');
+      render(<ProjectShareLinks projectId="p1" permalinkUrl={PERMALINK} />);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      const calls = () => (api.getAudioEdition as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+      const before = calls();
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_MS * 2); });
+      expect(calls(), 'the component stopped polling a running build').toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no stored status leaves the creator with a dead row', async () => {
+    // The general property. For every status the database can hold, the component must offer
+    // either a working link, a disabled Building control, or a button the creator can press —
+    // never a row that claims nothing is happening while the server works.
+    for (const stored of EDITION_DB_STATUSES) {
+      cleanup();
+      state.status = editionWireStatus(stored);
+      await renderLinks();
+      const actionable = screen.queryByRole('button', { name: /create podcast|try again|building/i })
+        ?? screen.queryByText(`${PERMALINK}/audio`);
+      expect(actionable, `stored status "${stored}" rendered a row with nothing to do`).toBeTruthy();
+    }
   });
 
   it('offers no build button once the podcast exists', async () => {
