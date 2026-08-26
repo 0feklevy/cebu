@@ -163,6 +163,52 @@ describe('least-privilege permissions are preserved', () => {
   });
 });
 
+describe('a job that does not check out cannot use the repo-relative default', () => {
+  /**
+   * THE BUG THIS PINS, and it is the expensive kind: the failure looked like the feature working.
+   *
+   * `defaults.run.working-directory: podcast-saas` applies to EVERY job. The human-approval job
+   * exists only to hold the deployment-environment gate, so it checks nothing out — and its step
+   * died with "An error occurred trying to start process '/usr/bin/bash' … No such file or
+   * directory" BEFORE the environment could request a review. The job failed, `deploy` was skipped
+   * as a dependency, and the release report said approval had not been given.
+   *
+   * Which is true, and useless: nobody was ever ASKED. Two releases (v0.2.4 and the 2026-08-26
+   * run) were read as "waiting on the owner" while no approval request existed anywhere in GitHub.
+   * A gate that cannot ask is indistinguishable from one that was refused.
+   */
+  const workflow = wf['release.yml'];
+
+  /** Job bodies, split on two-space-indented job keys. */
+  function jobBodies(text: string): Map<string, string> {
+    const out = new Map<string, string>();
+    const re = /\n {2}([a-z][a-z0-9-]*):\n([\s\S]*?)(?=\n {2}[a-z][a-z0-9-]*:\n|$)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) out.set(m[1], m[2]);
+    return out;
+  }
+
+  it('the workflow-level default is repo-relative, which is the precondition for this trap', () => {
+    // If this ever stops being true the rule below becomes unnecessary rather than wrong — but it
+    // should be a deliberate change, not a silent one.
+    expect(workflow).toMatch(/^defaults:\n {2}run:\n {4}working-directory: podcast-saas$/m);
+  });
+
+  it('every job that runs a command without checking out overrides working-directory', () => {
+    const offenders: string[] = [];
+    for (const [name, body] of jobBodies(workflow)) {
+      // Comments are stripped inline: a `# … run: …` line in prose would otherwise read as a
+      // command, and a job explaining why it has none would fail its own rule.
+      const text = body.replace(/^\s*#.*$/gm, '');
+      if (!/^\s+run:/m.test(text)) continue;                    // no commands, nothing to break
+      if (/uses: actions\/checkout/.test(text)) continue;        // has a repo, default is fine
+      if (!/working-directory:\s*\.\s*$/m.test(text)) offenders.push(name);
+    }
+    expect(offenders, 'these jobs run commands with no checkout and no working-directory override')
+      .toEqual([]);
+  });
+});
+
 describe('release artifacts never dirty the release checkout (run 29602969853 fix)', () => {
   const REPO_ROOT = join(WF_DIR, '..', '..');
 
