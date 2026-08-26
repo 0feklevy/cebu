@@ -14,9 +14,87 @@ closed rounds belong rather than in an ever-growing archive file. The verificati
 `LEDGER-VERIFICATION-2026-08-22.md`: 164 verdicts, 93 confirmed, of which 10 are now fixed;
 **the remaining confirmed findings are the work queue below.**
 
-Last updated: **2026-08-22**, during the post-sweep fix round.
+Last updated: **2026-08-26**, during the release that unblocked the approval gate.
 
 ---
+
+## ✅ CLOSED (found 2026-08-25, fixed 2026-08-26 in #152) — the human-approval gate could never ask; it crashed before the prompt
+
+**Closure kind: verified in code and against the failed runs.** Reported to the owner for two days
+as "a release is waiting for your approval". Nothing was waiting. The `Human approval (risky
+release only)` job died in its first step:
+
+```
+##[error]An error occurred trying to start process '/usr/bin/bash' with working directory
+'/home/runner/work/cebu/cebu/podcast-saas'. No such file or directory
+```
+
+`defaults.run.working-directory: podcast-saas` applies to EVERY job. This job deliberately checks
+nothing out — it exists only to hold the `production-approval` environment — so the directory it
+was told to run in does not exist on that runner. It crashed **before** the environment could
+raise the approval request, and `deploy` was then skipped as a dependent job.
+
+**Why it read as something else.** A gate that cannot ask looks, from the outside, exactly like a
+gate that asked and was not answered: the run reports `deploy: skipped`, the report says approval
+was not given, and every layer above repeats it. I repeated it for two days without opening the
+job log. **The failure predates the release work of #143** — v0.2.4's run `32850636945` carries the
+identical error, so it has never once succeeded.
+
+**Fix:** `working-directory: .` on that job's step, plus a guard in `ops/release`'s workflow tests
+that walks every job and requires any job running a command WITHOUT a checkout to override the
+default. Mutation-proven: removing the override reddens it.
+
+**Consequence for the next reader:** every release attempt at `a5dcf2f` failed this way (runs
+`32891301629`, `32939272042`), which is why #142–#149 sat on `main` unreleased and production
+stayed on v0.2.7.
+
+---
+
+## ✅ CLOSED (found 2026-08-26, fixed 2026-08-26) — the podcast pre-flight and the worker it gates asked different questions about b-roll
+
+**Closure kind: verified in code, mutation-proven.** The second defect in the same gate in two
+days, and the same shape as the first.
+
+The route's pre-flight selected every `video_files` row of the project. The job's `loadInputs`
+selected only the rows with `is_broll = false`. A project whose only footage is b-roll therefore
+passed the gate — rows exist, so 202 accepted — and was refused by the worker minutes later. That
+delayed, unexplained refusal is the precise failure the pre-flight was written to prevent, so the
+gate was not merely wrong: it was inverted, doing the harm it existed to stop.
+
+**Fix:** both callers now share one query, `services/audio/editionSegments.ts`. The gate cannot
+ask a different question from the worker because there is no longer a second question to ask.
+
+**Test.** The suite's `video_files.findMany` mock previously returned its rows regardless of the
+`where`, which means it could not fail when a filter was DROPPED — it only ever saw that a query
+happened. It now EVALUATES the predicate: it walks the `and`/`eq` tree and keeps only rows equal
+on every column named. A b-roll-only project is refused at the gate; b-roll beside real narration
+still queues. Mutation-proven — removing the `is_broll` clause reddens both.
+
+**The pattern, twice now:** a pre-flight duplicated in prose from the thing it gates drifts from
+it silently, and the drift is invisible to any test that mocks the query instead of the data.
+
+---
+
+## 🔴 OPEN (found 2026-08-26, low severity) — one webkit viewer e2e test is flaky, and the flake reads as a branch failure
+
+`viewer-e2e.spec.ts:1629` — *"the frame is never presented before the matching SCRIPT_APPLIED(B,
+token)"* — failed on `feat/sim-authoring-layer` (run `32942073222`) with its own vacuity guard:
+
+```
+Error: no opacity samples fell between the request and the acknowledgement — vacuous
+Expected: > 5
+```
+
+**It is a flake, not a regression, and the evidence is positive rather than absent:** the identical
+test failed on `main` in run `32891258874`, before that branch existed; and `feat/sim-picker-editor`,
+which contains every commit of `feat/sim-authoring-layer`, passed webkit on the same code.
+
+The test samples opacity between two events and requires more than five samples to land inside the
+window. On webkit under CI load the window closes faster than the sampler fills, and the test
+correctly refuses to pass vacuously. **The guard is right; the sampling strategy is what needs
+fixing** — drive the samples from the frame callback rather than a wall-clock poll, or widen the
+window deliberately. Left open rather than quietly re-run into green, because a flake that is only
+ever re-run is a flake nobody fixes.
 
 ## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 
@@ -73,7 +151,12 @@ Fix shape: portal both overlays to `document.body` (the ConfirmDialog pattern), 
 test that CLICKING the button makes the dialog VISIBLE in the document — not merely that state
 changed, which is exactly the assertion that would have missed this.
 
-## 🔴 OPEN (found 2026-08-25) — a revision that was never canaried is publicly served, on the strength of a comment describing a mechanism that does not exist
+## ✅ CLOSED (found 2026-08-25, fixed 2026-08-25 in #142) — a revision that was never canaried was publicly served, on the strength of a comment describing a mechanism that does not exist
+
+**Closure kind: verified in code.** `isRevisionStatusPublic` (`revisionIdentity.ts`) is now an
+ALLOW-list — a status the code has never heard of is private, not public. The header below stayed
+red for a day after the fix merged, which is its own small lesson: a ledger entry that is not
+flipped in the same pass as the merge asks the next reader to re-diagnose settled work.
 
 Found during Phase 0 of the action-recording work, while looking for somewhere safe to stage an
 unproven candidate. Independent of that feature.
@@ -1209,7 +1292,13 @@ The two dead Trigger.dev files that made this look done are deleted (#95).
 - Sweep caveat: code, tests and local probes only; §5 names the seven determinations resting on
   inference and the one cheap observation that settles each.
 
-## 🔴 OPEN (found 2026-08-25, release engineering) — `release-risk` measures from the last TAG, not the last DEPLOYED version, so a gated change can reach production ungated
+## ✅ CLOSED (found 2026-08-25, fixed 2026-08-25 in #143) — `release-risk` measured from the last TAG, not the last DEPLOYED version, so a gated change could reach production ungated
+
+**Closure kind: verified in code.** `release-risk.ts` and `.github/workflows/release.yml` now
+resolve `refs/deployed/production` and diff from it, failing CLOSED when the ref cannot be
+resolved. The ref does not exist yet — the last successful deploy predates the fix — so the first
+release after it will legitimately report `diff base: unresolved` and demand human approval. That
+is the fail-closed path working, and it self-resolves once one deploy has stamped the ref.
 
 **The gate did its job once and was then bypassed by its own bookkeeping — OBSERVED, not predicted.**
 

@@ -32,6 +32,7 @@ import { requireUuidParams } from '../../lib/uuidParam.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { enqueueJob } from '../../queue/index.js';
 import { editionRefusalReason } from '../../services/audio/audioEdition.js';
+import { loadEditionSegments } from '../../services/audio/editionSegments.js';
 import { askListenerQuestion } from '../../services/audio/ListenerQuestionService.js';
 import { listener_questions } from '../../db/schema.js';
 import { desc } from 'drizzle-orm';
@@ -130,24 +131,22 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
       // Refuse EARLY, with the reason, rather than queueing work that will refuse itself later.
       // A creator who is told "no playable audio yet" can act; one who watches a job go to
       // `failed` two minutes later has to guess, and is likely to guess "this feature is broken".
-      // `video_files.project_id`, NOT `projects.id`. The predicate used to name a column from a
-      // table this query does not select from, which Postgres refuses outright — and the
-      // `.catch(() => [])` below turned that refusal into an empty list, which
-      // `editionRefusalReason` reads as "no media" and answers 409 with a sentence about the
-      // project. Every podcast build, on every project, was refused for a reason that was never
-      // true. Observed in production 2026-08-25: three 409s and "This project has no media to
-      // derive audio from." on a project full of media.
+      // The query is `loadEditionSegments`, not a hand-written one, and that is the whole point:
+      // this gate and the worker it gates have to ask the SAME question. Twice now they have not.
+      //
+      // First (fixed 2026-08-25) the predicate named a column from a table this query does not
+      // select from, which Postgres refuses outright — and the `.catch(() => [])` turned that
+      // refusal into an empty list, which `editionRefusalReason` reads as "no media". Every
+      // podcast build, on every project, was refused for a reason that was never true.
+      //
+      // Second (fixed 2026-08-26) the table was right but the filter was not: the worker excludes
+      // b-roll and this did not, so a b-roll-only project sailed through the gate and was refused
+      // asynchronously — the delayed, unexplained failure the pre-flight exists to prevent.
       //
       // The catch stays: a transient database fault should not 500 a creator's Create-podcast
-      // click. What changes is that it can no longer hide a query that is wrong every time — the
-      // failure it now absorbs is the transient one it was written for.
-      const segments = await db.query.video_files.findMany({
-        where: eq(video_files.project_id, project.id),
-        columns: { storage_key: true, duration_sec: true },
-      }).catch(() => []);
-      const refusal = editionRefusalReason(
-        segments.map((s) => ({ audioKey: s.storage_key ?? '', durationMs: Math.round((s.duration_sec ?? 0) * 1000) })),
-      );
+      // click. What it can no longer hide is a query that is wrong every time.
+      const segments = await loadEditionSegments(project.id).catch(() => []);
+      const refusal = editionRefusalReason(segments);
       if (refusal) return reply.code(409).send({ message: refusal });
 
       enqueueJob('audio_edition', { projectId: project.id, language, force: request.body?.force === true });
