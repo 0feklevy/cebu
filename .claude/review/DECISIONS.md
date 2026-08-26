@@ -1,20 +1,63 @@
 # Open decisions
 
-**State as of 2026-08-22.** Production runs **v0.1.38**, healthy. Merged to `main` and NOT yet
-released: **#57** (dubbing panel — source-language detection, real progress, search/sort),
-**#58** (the D-23 production dubbing outage + both sweep P1s), **#59** (cross-tenant writes, the
-token leak, container ceilings), and **#60** (bounded uploads, scenes over-fetch, −474 KB viewer
-JS — merged 2026-08-22). **The dubbing feature is dead in the deployed build and fixed only in
-`main` — nothing dubbing-related can be tested until the next release ships.**
+**State as of 2026-08-26.** Production runs **v0.2.10**, deployed 12:07 today, healthy. `main` is
+released: nothing sits merged-and-unshipped at the time of writing.
+
+v0.2.10 carried thirteen PRs (#142–#154) after production had sat on **v0.2.7 for four days** — not
+because anything was wrong with the code, but because the release pipeline could not deploy. Two
+separate bugs pointed the same way and each made the other harder to see:
+
+- **The human-approval job crashed before it could ask** (fixed, #152). It reported as an
+  unanswered approval, which is indistinguishable from a refused one unless you open the job log.
+- **`release-risk` measured from the last TAG, not the last DEPLOY** (fixed, #143). `v0.2.8` and
+  `v0.2.9` are tagged and were never deployed, so a tag-based diff compared against code that had
+  never shipped.
+
+`refs/deployed/production` now exists and points at the deployed commit, so the next release
+measures its risk window against what is actually running.
+
+**The previous version of this paragraph said production ran v0.1.38 and listed #57–#60 as
+unreleased.** It had been wrong for four days, and it is the first thing any reader of this file
+sees. That is the same failure the entries below keep recording in other forms: work whose status
+was written once and never revisited. The state header is now part of what a release updates.
 
 The 2026-08-21→22 closed round — v0.1.36→38, the fleet audit, the CSP defects, D-13, D-01b,
 D-20…D-23, and the sweep's entire fix-now queue — is CLOSED, its per-item verification record
 living in git history (the ledger's own commits across PRs #48–#69), which is where
 closed rounds belong rather than in an ever-growing archive file. The verification sweep itself is
-`LEDGER-VERIFICATION-2026-08-22.md`: 164 verdicts, 93 confirmed, of which 10 are now fixed;
-**the remaining confirmed findings are the work queue below.**
+`LEDGER-VERIFICATION-2026-08-22.md`: 164 verdicts, 93 confirmed, of which 10 are now fixed.
 
-Last updated: **2026-08-26**, during the release that unblocked the approval gate.
+Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit closed its findings.
+
+---
+
+## What is actually open, in full
+
+A post-release audit on 2026-08-26 walked every request of the preceding days against the code
+rather than against PR badges. Everything it found is either closed below or listed here. There is
+no third category, and that is the point — the audit exists because "merged" and "in the product"
+turned out to be different claims.
+
+**Needs the owner, or a machine this one is not:**
+
+1. **`sims:reinject-gates --apply`, from the VM.** rAF gate v5 is live in code, but a gate is baked
+   into a package at PUBLICATION time — so every simulation stored before v5 keeps its old gate
+   until this script rewrites it. New and replaced packages are already correct. CLAUDE.md §7
+   forbids running it from a development machine, and it reads `DATABASE_URL`.
+2. **ADR measurements M1, M4, M5, and M3's TTL number.** All four are recorded in
+   `ADR-ACTION-RECORDING-SEMANTICS.md` as needing a running stack or a real browser; M3's TTL is
+   explicitly an owner's product decision rather than a measurement. M2's byte half is measured.
+3. **Owner's own queue:** rotate the Anam key, decide the max session length, supply two smoke
+   variables.
+
+**Deliberate rulings, not gaps:**
+
+- **Four browser suites are not per-PR gates** — canary, leak, protocol, rebuilt, each carrying
+  900–1500s timeouts because they are soak tests. They belong to a scheduled job. The rule that
+  keeps this honest rather than convenient is in `ops/release`: every Playwright config is either
+  wired to a workflow or named with the reason it is not.
+- **Video dedup stays 🟡 OPEN BY DECISION** (see below) — deferred by the owner, not overlooked.
+
 
 ---
 
@@ -171,6 +214,41 @@ feature — not that the PR is marked merged.
 wrong-table entry and the double-stringify entry both still read 🔴 FIXED, NOT YET MERGED after
 #146 and #145 landed, and the lost-deep-review entry still demanded a commit that `ca7a9d8` had
 already made. §3b's rule — close it in the same pass as the merge — is exactly what did not happen.
+## ✅ CLOSED (found 2026-08-26, fixed same day) — eight of eleven browser suites were invoked by nothing, including the only test of the picker's geometry
+
+**Closure kind: verified in code, mutation-proven both directions.** `client-web` carries eleven
+Playwright configs. Three were referenced by a workflow. The other eight ran only if a human typed
+the command.
+
+The one that mattered: `playwright.authoring.config.ts` — the ONLY place the control picker's badge
+geometry is checked anywhere. It caught a genuine product bug on the day it was written (a queued
+rAF rebuilt the overlay after DISARM) and was then wired to nothing, so that class of bug could
+regress silently forever while the repository looked covered.
+
+**This is the second time in this package.** `viewer-e2e` exists at all because audit
+test-quality-013 found exactly the same thing about the viewer suite: 363 tests, passing locally,
+invoked by no workflow. Finding it once is bad luck. Finding it twice means the repository needed a
+RULE rather than another audit.
+
+**Fixed in two parts:**
+
+1. A `browser-suites` job runs the three self-contained suites on chromium — authoring (~5s),
+   transport (~15s), transitions (~11s), measured. They need no app, no database and no network.
+   The four left out (canary, leak, protocol, rebuilt) carry 900–1500s timeouts because they are
+   soak suites: a scheduled job's work, not a per-PR gate. Putting them in a PR gate would buy a
+   slow signal that gets re-run until green, which is worse than none because it looks like one.
+2. A test in `ops/release` that makes the orphan state unreachable: every config is either
+   referenced by a workflow or named in `NOT_A_PR_GATE` with the reason it is not a gate. There is
+   no third state.
+
+**The gate had a hole on its first draft, and the mutation found it.** It matched the workflow text
+as a whole — and every job here carries a long comment naming the suites it runs, so deleting
+`authoring` from the matrix still passed: the word survived in the prose. It now strips comment
+lines and reads the matrix LIST LITERAL. Mutation-proven twice: dropping one matrix value reddens
+it, deleting the whole job reddens it. Reverted, 461 ops-release tests green.
+
+Precisely the lesson already recorded as "mutation-check what a gate can SEE" — written by me,
+four days ago, and re-learned here at my own expense.
 
 ## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 
