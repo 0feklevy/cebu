@@ -190,6 +190,49 @@ debug affordance, not a product contract.
 
 ---
 
+## 2b. Amendment A1 — the pre-recording picker (2026-08-26, owner-approved)
+
+D10 and §5 were written for the picker as it exists *alongside* recording. The picker shipped
+first, on its own, and two of their requirements do not survive contact with that ordering. Both
+changes were put to the owner explicitly and approved; this section records them so the next reader
+does not find the code disagreeing with §2 and assume drift.
+
+**A1.1 — binary Keep/Hide replaces the four-mode toolbar, for now.** D10 specifies
+Interact / Keep visible / Hide / Clear mark, with `Auto` meaning "no manual override, defer to the
+derivation". Before recording exists there is nothing to derive *from*, so `Auto` and `Clear` are
+the same state wearing two names, and a mode toolbar is three clicks guarding a binary. The picker
+therefore ships with badges shown the whole time the panel is open and a single click toggling
+Keep/Hide — the owner chose this over a separate pick mode when asked.
+
+Tri-state returns with Phase-2 recording, where `Auto` becomes a real third state (derive from what
+the recording touched) and `derivationMode` has something to read.
+
+**What is NOT amended, and is implemented as written:** icon+text never colour alone; single click,
+never double; the checkbox list stays a first-class accessible fallback and is the only path to a
+control the simulation itself keeps hidden; Undo; Escape; and "hide everything untouched" is never
+applied without an explicit action — additionally disabled outright when the scan was truncated or
+stale, which §14.7 requires and which the `truncated` flag now carries end to end.
+
+**A1.2 — the `sim_authoring_picker` flag (§5) is replaced by narrower containment.** A default-false
+flag would have shipped the owner an unchanged, broken picker; the feature *is* the fix they asked
+for. In its place:
+
+| | |
+|---|---|
+| viewers | inert by construction — the capability does nothing until an allowlisted parent sends `CONNECT`, and only the editor does |
+| kill switch | `SIM_AUTHORING_DISABLED=1` — the route 404s and the snippet stops advertising the hook, for every already-served document, with no migration and no editor deploy |
+| rollback | revert the editor PR; the backend layer is inert on its own |
+
+`sim_action_recording` and `sim_action_plan_runtime` (§5) are unaffected — recording still ships
+behind its flag.
+
+**Conforming, not deviating:** the transport is MessageChannel with a serve-time-embedded origin
+allowlist, exactly as §7.3 and §8.6 specify. `CONNECT` is the only window-level message and carries
+the port; everything after rides it. The full envelope (seq, ACK, CAPABILITIES) is Phase 2 and is
+named so it replaces these types rather than growing a second vocabulary beside them.
+
+---
+
 ## 3. What this ADR deliberately does not decide
 
 These are Phase-0 **measurements**, not opinions. Each needs a number before the ADR is approved.

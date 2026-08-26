@@ -243,7 +243,10 @@ describe('rAF gate snippet content', () => {
 
   it('v3: answers listSimControls with a simControlsList postMessage', () => {
     expect(out).toContain("d.type === 'listSimControls'");
-    expect(out).toContain("postMessage({ type: 'simControlsList', controls: out }, '*')");
+    // The scanner moved to simScannerSource.ts (shared verbatim with the serve-time authoring
+    // script) and now RETURNS its result; the gate keeps only this thin poster around it.
+    expect(out).toContain('var r = collectSimControls();');
+    expect(out).toContain("postMessage({ type: 'simControlsList', controls: r.controls }, '*')");
   });
 
   it('v3: runtime scan targets interactive elements, dedupes, and includes HIDDEN controls flagged hidden:true', () => {
@@ -262,7 +265,7 @@ describe('rAF gate snippet content', () => {
   it('v3: 100 cap is filled with VISIBLE controls first, then hidden ones', () => {
     expect(out).toContain('if (vis.length >= 100) break;');                // visible alone can fill the cap
     expect(out).toContain('if (hid.length < 100) hid.push(c);');
-    expect(out).toContain('var out = vis.concat(hid).slice(0, 100);');     // visible first, then hidden
+    expect(out).toContain('return { controls: vis.concat(hid).slice(0, 100), truncated: truncated };');
   });
 
   it('v3: kind mapping mirrors the static scanner (self-contained)', () => {
