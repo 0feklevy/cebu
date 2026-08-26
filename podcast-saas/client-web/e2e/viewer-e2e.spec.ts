@@ -68,6 +68,8 @@ const S = {
   LATE: '11111111-6666-4666-8666-111111111111',
   /** Acknowledges after 400ms echoing token + BAD_TOKEN_DELTA — matchesPending must reject it. */
   BADTOKEN: '22222222-7777-4777-8777-222222222222',
+  /** Acknowledges after 1500ms — a pre-ack window a starved sampler can still observe. */
+  WIDEACK: '33333333-8888-4888-8888-333333333333',
 } as const;
 
 /**
@@ -1626,18 +1628,30 @@ test.describe('real React viewer — simulation transitions', () => {
  * not a settle delay, not a fade exemption, not an allowance of wrong frames, not telemetry.
  */
 test.describe('apply gate — proven against the acknowledgement boundary', () => {
-  test('the frame is never presented before the matching SCRIPT_APPLIED(B, token)', async ({ page }) => {
+  test('the frame is never presented before the matching SCRIPT_APPLIED(section, token)', async ({ page }) => {
+    // WIDEACK, not B. Both apply synchronously on receipt and defer only the acknowledgement —
+    // the production parity this scenario needs — but WIDEACK defers it by 1500ms instead of 500ms.
+    // The assertion below requires more than five opacity samples inside the pre-ack window, and
+    // the sampler runs on requestAnimationFrame: CI WebKit under software GL drops to ~7fps, where
+    // a 500ms window yields ~3.5 samples and the test fails as "vacuous" having found nothing wrong.
+    // Observed 2026-08-26 on a backend-only branch, and once before on `main`. The guard is right;
+    // what was wrong was asking a fixed sample count of a window whose size assumed 60fps.
     await bootViewer(page, makeConfig([
       { id: 's1', start: 3, end: 8, pkg: 'delayedack', section: S.A },
-      { id: 's2', start: 8, end: 20, pkg: 'delayedack', section: S.B },
+      { id: 's2', start: 8, end: 20, pkg: 'delayedack', section: S.WIDEACK },
     ]));
     await startPlayback(page);
 
     await seekTo(page, 4);
     await waitForSection(page, 'A');                 // A genuinely presented first
 
-    const sampling = await startSampling(page, 5000);
-    await seekTo(page, 9);                           // request B; its ack is ~500ms away
+    // 7s, not 5s. The sampler must outlive the acknowledgement or the window it is meant to
+    // observe closes after it stops looking — which presents as "the child never acknowledged",
+    // an alarming message for a sampler that simply went home early. The activation itself does
+    // not follow the seek instantly (measured elsewhere in this file at up to ~5.8s on a loaded
+    // runner), so the budget is seek-to-activation plus the 1500ms ack, with room to spare.
+    const sampling = await startSampling(page, 7000);
+    await seekTo(page, 9);                           // request WIDEACK; its ack is 1500ms away
     const samples = await sampling;
 
     // ── the child's own protocol record ────────────────────────────────────────────────────
@@ -1645,8 +1659,8 @@ test.describe('apply gate — proven against the acknowledgement boundary', () =
       () => (window as unknown as { __PROTO_LOG?: unknown[] }).__PROTO_LOG ?? [],
     ) as { type: string; script: string; token: number; receivedAt: number; ackAt: number | null }[];
 
-    const startB = proto.find((e) => e.type === 'startScript' && e.script === S.B);
-    const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.B);
+    const startB = proto.find((e) => e.type === 'startScript' && e.script === S.WIDEACK);
+    const ackB = proto.find((e) => e.type === 'SCRIPT_APPLIED' && e.script === S.WIDEACK);
     expect(startB, 'the child never received startScript(B) — nothing was exercised').toBeTruthy();
     expect(ackB, 'the child never acknowledged B — the gate window cannot be evaluated').toBeTruthy();
     expect(ackB!.token, 'the acknowledgement carried a different token than the request')
@@ -1680,14 +1694,14 @@ test.describe('apply gate — proven against the acknowledgement boundary', () =
       .filter((f) => f.op > 0.05);
     expect(
       presentedEarly.length,
-      `the iframe was PRESENTED BEFORE the matching SCRIPT_APPLIED(B, token=${startB!.token}): `
+      `the iframe was PRESENTED BEFORE the matching SCRIPT_APPLIED(WIDEACK, token=${startB!.token}): `
       + `${presentedEarly.slice(0, 6).map((f) => `t=+${f.t}ms op=${f.op.toFixed(2)} section=${f.section}`).join('; ')}`,
     ).toBe(0);
 
-    // ── and after the acknowledgement, B is actually revealed ───────────────────────────────
-    await waitForSection(page, 'B');
+    // ── and after the acknowledgement, the section is actually revealed ─────────────────────
+    await waitForSection(page, 'WIDEACK');
     const after = await sampleFrames(page, 400);
-    assertVisibleFramesAreCorrect(after, { expect: 'B' });
+    assertVisibleFramesAreCorrect(after, { expect: 'WIDEACK' });
   });
 });
 
