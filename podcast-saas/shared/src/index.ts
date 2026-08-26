@@ -24,3 +24,7 @@ export * from './timeline/hostChange.js';
 // WHICH overlay is on top when two cover the same instant — the one rule the viewer and the export
 // both call, after each having invented a different one (broll-player-002).
 export * from './timeline/overlayStack.js';
+
+// The audio edition's status vocabulary. Exported from the index because BOTH sides need it and
+// the bug it exists to prevent was precisely the two sides each keeping their own list.
+export * from './audio/editionStatus.js';

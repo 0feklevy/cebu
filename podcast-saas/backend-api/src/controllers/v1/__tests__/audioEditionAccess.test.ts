@@ -260,6 +260,59 @@ describe('the pre-flight refusal asks about THIS project\'s media', () => {
   });
 });
 
+/**
+ * THE STATUS THE CREATOR ACTUALLY RECEIVES.
+ *
+ * Owner-reported 2026-08-26: the podcast row said "Building — this takes a few minutes", reverted
+ * to "Create podcast" a second later, and stayed there while the build ran fine on the server.
+ *
+ * This route returned the DATABASE's status verbatim. The database says `processing`; the client
+ * contract declares `none | queued | building | ready | failed`. `processing` is in neither the
+ * client's in-flight set nor its ready set nor its failed set, so the row rendered as idle and the
+ * poll — which only runs while in flight — stopped on its first tick.
+ *
+ * The type could not catch it: `status` was declared `… | string`, which collapses the union to
+ * `string`. This suite is what catches it instead.
+ */
+describe('the wire status is the CLIENT\'s vocabulary, not the database\'s', () => {
+  it('reports a build in progress as building, never as processing', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.edition = { status: 'processing', error: null, m4a_key: null, language: null };
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' } });
+    expect(r.code).toBe(200);
+    expect((r.body as { status?: string }).status).toBe('building');
+  });
+
+  it('reports no row as none', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.edition = null;
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' } });
+    expect((r.body as { status?: string }).status).toBe('none');
+  });
+
+  it('carries a failure through with its reason', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.edition = { status: 'failed', error: 'ffmpeg exploded', m4a_key: null, language: null };
+    const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' } });
+    const body = r.body as { status?: string; error?: string };
+    expect(body.status).toBe('failed');
+    expect(body.error).toBe('ffmpeg exploded');
+  });
+
+  it('never emits a status the client contract does not declare', async () => {
+    // The general form of the defect. Any stored value the mapping has not been taught about must
+    // still leave here as something the client can render — never as raw database vocabulary.
+    const DECLARED = ['none', 'queued', 'building', 'ready', 'failed'];
+    for (const stored of ['none', 'processing', 'ready', 'failed', 'a-status-from-the-future']) {
+      state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+      state.edition = { status: stored, error: null, m4a_key: stored === 'ready' ? 'k' : null, language: null };
+      const r = await call('GET', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' } });
+      expect(DECLARED, `stored "${stored}" left the route as "${(r.body as { status?: string }).status}"`)
+        .toContain((r.body as { status?: string }).status);
+    }
+  });
+});
+
 describe('an edition is exactly as public as its project', () => {
   it('serves a PUBLIC project’s audio to an anonymous listener', () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
@@ -322,12 +375,16 @@ describe('an edition is exactly as public as its project', () => {
 });
 
 describe('an edition that is not ready yet', () => {
-  it('reports a status rather than a broken URL', async () => {
+  // THIS TEST USED TO ASSERT THE BUG. It required `status: 'processing'` — the database's word —
+  // and so it passed for as long as the route leaked the stored value to a client that has never
+  // recognised it. A test can only protect the behaviour it names, and this one named the wrong
+  // side of the translation.
+  it('reports a status the CLIENT understands rather than a broken URL', async () => {
     state.project = { id: 'p1', visibility: 'public', created_by: 'owner' };
     state.edition = { status: 'processing', m4a_key: null, error: null };
     const r = await call('GET', '/api/v1/projects/:id/audio-edition');
     expect(r.code).toBe(200);
-    expect(r.body).toMatchObject({ status: 'processing', audio_url: null, chapters: [] });
+    expect(r.body).toMatchObject({ status: 'building', audio_url: null, chapters: [] });
   });
 
   it('reports "none" when no edition has ever been built', async () => {

@@ -28,6 +28,7 @@ import { Check, Copy, ExternalLink, Loader2, Mic } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AudioEditionStatus, LibraryShareInfo } from 'shared/src/generated/client-v1';
 import { failureMessage } from './failureSurface';
+import { isEditionInFlight } from 'shared';
 
 interface Props {
   projectId: string;
@@ -36,7 +37,10 @@ interface Props {
 }
 
 /** How often to re-ask while a build is running. Slow enough to be polite, fast enough to feel live. */
-const POLL_MS = 4000;
+// Exported so the test advances by the REAL interval instead of a number copied beside it — a
+// duplicated constant drifts, and a poll test that advances less than the interval passes by
+// accident while proving the opposite of what it claims.
+export const POLL_MS = 4000;
 
 function LinkRow({ label, url, hint, trailing }: {
   label: string; url: string | null; hint?: string; trailing?: React.ReactNode;
@@ -122,7 +126,11 @@ export function ProjectShareLinks({ projectId, permalinkUrl }: Props) {
   // Poll only WHILE a build is running, and stop the moment it settles — a timer that outlives
   // the work it watches is how a tab quietly keeps a server busy for an afternoon.
   useEffect(() => {
-    const running = audio?.status === 'queued' || audio?.status === 'building';
+    // ONE definition of "in flight", imported rather than restated. This component used to spell
+    // the test out here AND again below, and both copies listed `queued | building` while the
+    // server was sending `processing` — so the poll stopped on its first tick and the finished
+    // podcast only appeared if the creator reloaded the page.
+    const running = isEditionInFlight(audio?.status);
     if (!running) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       return;
@@ -158,7 +166,7 @@ export function ProjectShareLinks({ projectId, permalinkUrl }: Props) {
   // works whenever a share exists at all.
   const libraryUrl = library?.cleanUrl ?? library?.url ?? null;
   const ready = audio?.status === 'ready';
-  const running = audio?.status === 'queued' || audio?.status === 'building';
+  const running = isEditionInFlight(audio?.status);
 
   return (
     <div className="mt-3 flex flex-col gap-2">

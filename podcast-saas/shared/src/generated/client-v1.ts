@@ -2,6 +2,7 @@
 import type { CreateProject, PlatformSettings } from '../types/project.js';
 import type { Host, CreateHost } from '../types/host.js';
 import type { Corpus } from '../types/corpus.js';
+import type { EditionWireStatus } from '../audio/editionStatus.js';
 import type {
   CreatePodcastShow,
   UpdatePodcastShow,
@@ -563,7 +564,19 @@ export interface AudioFile {
  * with two contracts.
  */
 export interface AudioEditionStatus {
-  status: 'none' | 'queued' | 'building' | 'ready' | 'failed' | string;
+  /**
+   * NO `| string` FALLBACK, and that is the whole point of this line.
+   *
+   * It used to read `… | 'failed' | string`, which collapses the union to `string` — so the server
+   * returning the DATABASE's `processing` type-checked perfectly against a client that only ever
+   * recognised `building`. The creator's podcast row showed "Building" for one tick and then
+   * reverted to "Create podcast" forever, while the build ran fine on the server.
+   *
+   * This file is hand-maintained (CLAUDE.md §5): nothing regenerates it from the routes, so the
+   * type is the only thing standing between the two sides. A permissive union is not a type, it
+   * is a comment. `EditionWireStatus` is shared by both sides and the mapping is tested on both.
+   */
+  status: EditionWireStatus;
   /** Present when a build failed; the creator's explanation. */
   error: string | null;
   /** A short-lived signed URL. Null until `ready`. */

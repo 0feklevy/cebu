@@ -93,6 +93,49 @@ stayed on v0.2.7.
 
 ---
 
+## ✅ CLOSED (owner-reported 2026-08-26, fixed same day) — "Create podcast" showed Building for one tick and then reverted, forever, while the build ran fine
+
+**Closure kind: verified in code, mutation-proven on both sides.** The third podcast defect in two
+days, and unlike the first two nothing was wrong with the build at all — the creator simply could
+not see it.
+
+Three vocabularies had grown for one fact, and nothing forced them to agree:
+
+| where | values |
+|---|---|
+| database (`project_audio_editions.status`) | `none \| processing \| ready \| failed` |
+| the POST's 202 ack | `queued` |
+| the client contract (`client-v1.ts`) | `none \| queued \| building \| ready \| failed` |
+
+The GET route returned the **database** value verbatim. So while a build was running the client
+received `processing` — a value it has never heard of. Its in-flight test is
+`status === 'queued' || status === 'building'`, which `processing` fails, so the row rendered as
+idle, **the polling interval was cleared**, and the finished podcast appeared only if the creator
+reloaded the page. The intersection of "what the server could send while building" and "what the
+client would recognise as building" was **empty**. The one moment "Building" ever appeared was the
+client's own optimistic write on click, which the first poll then overwrote.
+
+**What let it ship, and it is the interesting part.** `AudioEditionStatus.status` was typed
+`'none' | 'queued' | 'building' | 'ready' | 'failed' | string`. The trailing `| string` collapses
+the union to `string`, so every one of these values type-checked and the declared vocabulary was
+decoration. `shared/src/generated/` is hand-maintained (CLAUDE.md §5) — nothing regenerates it from
+the routes — so the type was the only thing that could have caught this, and it had been disarmed.
+
+**Two suites were green throughout, each testing a fiction.** The route test asserted
+`status: 'processing'` — it named the wrong side of a translation that did not exist. The component
+test set `state.status = 'building'` **by hand**, a value the server has never sent; a client suite
+that invents the server's answers cannot fail when the server's answers change.
+
+**Fixed:** one vocabulary in `shared/src/audio/editionStatus.ts`, exhaustive over the database's own
+status list; the route translates at the boundary; the component imports the same in-flight
+predicate instead of restating it (it had restated it twice, identically wrong). `| string` is gone,
+so the next drift is a compile error. Both suites now drive their statuses **through the shared
+mapping**, so the two sides cannot diverge without one going red.
+
+**Mutation-proven:** restoring the pass-through reddens 3 route tests; breaking the client's
+in-flight test reddens 3 component tests. Full suites after: shared 1094, backend-api 4687,
+client-web 1851, 0 lint errors.
+
 ## ✅ CLOSED (found 2026-08-26, fixed 2026-08-26) — the podcast pre-flight and the worker it gates asked different questions about b-roll
 
 **Closure kind: verified in code, mutation-proven.** The second defect in the same gate in two
