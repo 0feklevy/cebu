@@ -23,10 +23,35 @@ const state = {
   askResult: { status: 'answered', answer: 'Because.' } as Record<string, unknown>,
   questions: [] as Array<Record<string, unknown>>,
   /** Rows `video_files.findMany` answers with — settable, so "no media" can be tested honestly. */
-  videoFiles: [{ storage_key: 'k', duration_sec: 10 }] as Array<Record<string, unknown>>,
+  videoFiles: [{ storage_key: 'k', duration_sec: 10, is_broll: false }] as Array<Record<string, unknown>>,
   /** Every `where` that reached `video_files.findMany`, so the PREDICATE itself is assertable. */
   videoQueries: [] as unknown[],
 };
+
+/**
+ * Apply a recorded predicate to the fake rows, the way the database would.
+ *
+ * A mock that returns its rows regardless of the `where` cannot fail when a filter is DROPPED —
+ * and a dropped filter is precisely the defect this suite now guards (the b-roll divergence of
+ * 2026-08-26). So the mock evaluates: it walks the `and`/`eq` tree the drizzle mock builds, and
+ * keeps only rows equal on every column named. Unknown columns are ignored rather than guessed —
+ * a row that does not carry the column simply is not filtered by it.
+ */
+function applyWhere(rows: Array<Record<string, unknown>>, where: unknown): Array<Record<string, unknown>> {
+  const clauses: Array<{ col: string; val: unknown }> = [];
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const n = node as { and?: unknown[]; col?: unknown; val?: unknown };
+    if (Array.isArray(n.and)) { n.and.forEach(walk); return; }
+    if (typeof n.col === 'string') clauses.push({ col: n.col, val: n.val });
+  };
+  walk(where);
+  return rows.filter((row) => clauses.every(({ col, val }) => {
+    const key = col.replace(/^video_files\./, '');
+    if (!(key in row)) return true;
+    return row[key] === val;
+  }));
+}
 
 vi.mock('../../../db/index.js', () => ({
   db: {
@@ -37,7 +62,7 @@ vi.mock('../../../db/index.js', () => ({
       video_files: {
         findMany: async (args: { where?: unknown }) => {
           state.videoQueries.push(args?.where);
-          return state.videoFiles;
+          return applyWhere(state.videoFiles, args?.where);
         },
       },
     },
@@ -51,7 +76,12 @@ vi.mock('../../../db/schema.js', () => ({
   project_audio_editions: { project_id: 'project_audio_editions.project_id', language: 'project_audio_editions.language' },
   listener_questions: { id: 'listener_questions.id', project_id: 'listener_questions.project_id', created_at: 'listener_questions.created_at' },
   projects: { id: 'projects.id', slug: 'projects.slug' },
-  video_files: { project_id: 'video_files.project_id' },
+  video_files: {
+    project_id: 'video_files.project_id',
+    is_broll: 'video_files.is_broll',
+    sequence_order: 'video_files.sequence_order',
+    created_at: 'video_files.created_at',
+  },
 }));
 // `eq` CARRIES its arguments through instead of discarding them. A mock that returns `{}` makes
 // every predicate look identical, so no assertion downstream can tell which column was compared.
@@ -137,7 +167,7 @@ beforeEach(() => {
   state.asked = [];
   state.askResult = { status: 'answered', answer: 'Because.' };
   state.questions = [];
-  state.videoFiles = [{ storage_key: 'k', duration_sec: 10 }];
+  state.videoFiles = [{ storage_key: 'k', duration_sec: 10, is_broll: false }];
   state.videoQueries = [];
 });
 
@@ -163,7 +193,44 @@ describe('the pre-flight refusal asks about THIS project\'s media', () => {
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
     await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
     expect(state.videoQueries).toHaveLength(1);
-    expect(state.videoQueries[0]).toEqual({ col: 'video_files.project_id', val: 'p1' });
+    expect(state.videoQueries[0]).toEqual({
+      and: [
+        { col: 'video_files.project_id', val: 'p1' },
+        { col: 'video_files.is_broll', val: false },
+      ],
+    });
+  });
+
+  // THE GATE AND THE WORKER MUST ASK THE SAME QUESTION.
+  //
+  // Until 2026-08-26 they did not. This pre-flight selected every `video_files` row of the
+  // project; the job's `loadInputs` selected only the non-b-roll ones. So a project whose only
+  // footage is b-roll passed here (rows exist → 202 accepted) and was then refused by the worker
+  // minutes later — the delayed, unexplained failure this whole pre-flight exists to prevent, and
+  // the same shape as the defect fixed the day before. Both callers now share one query
+  // (`editionSegments.ts`); this test is what stops them drifting apart a third time.
+  it('refuses a b-roll-only project HERE, not asynchronously in the worker', async () => {
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.videoFiles = [
+      { storage_key: 'broll-a', duration_sec: 12, is_broll: true },
+      { storage_key: 'broll-b', duration_sec: 8, is_broll: true },
+    ];
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(r.code).toBe(409);
+    expect(String((r.body as { message?: string }).message)).toContain('no media');
+    expect(state.enqueued).toHaveLength(0);
+  });
+
+  it('queues a project whose b-roll sits BESIDE real narration', async () => {
+    // The filter must exclude b-roll, not projects that happen to contain some.
+    state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
+    state.videoFiles = [
+      { storage_key: 'broll', duration_sec: 12, is_broll: true },
+      { storage_key: 'narration', duration_sec: 30, is_broll: false },
+    ];
+    const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
+    expect(r.code).toBe(202);
+    expect(state.enqueued).toHaveLength(1);
   });
 
   it('queues the build when the project HAS playable media', async () => {
@@ -186,7 +253,7 @@ describe('the pre-flight refusal asks about THIS project\'s media', () => {
 
   it('refuses when media exists but none of it has playable audio', async () => {
     state.project = { id: 'p1', visibility: 'private', created_by: 'owner', editable: true };
-    state.videoFiles = [{ storage_key: null, duration_sec: 0 }];
+    state.videoFiles = [{ storage_key: null, duration_sec: 0, is_broll: false }];
     const r = await call('POST', '/api/v1/projects/:id/audio-edition', { user: { id: 'owner' }, body: {} });
     expect(r.code).toBe(409);
     expect(state.enqueued).toHaveLength(0);

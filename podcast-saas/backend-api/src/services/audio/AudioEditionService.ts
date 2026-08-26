@@ -12,7 +12,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { db } from '../../db/index.js';
-import { project_audio_editions, projects, timeline_sections, video_files } from '../../db/schema.js';
+import { project_audio_editions, projects, timeline_sections } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import {
@@ -25,6 +25,7 @@ import {
   type EditionSegment,
 } from './audioEdition.js';
 import { editionStorageKey, joinToM4a, probeDurationMs } from './audioEditionBuilder.js';
+import { loadEditionSegments } from './editionSegments.js';
 
 /**
  * How long a claim may be held before another run may take it.
@@ -49,22 +50,16 @@ export interface BuildResult {
 
 /** The project's segments and sections, in the shape the rules take. */
 async function loadInputs(projectId: string): Promise<{ segments: EditionSegment[]; sections: EditionSection[] }> {
-  const [videos, sections] = await Promise.all([
-    db.query.video_files.findMany({
-      where: and(eq(video_files.project_id, projectId), eq(video_files.is_broll, false)),
-      orderBy: (v, { asc }) => [asc(v.sequence_order), asc(v.created_at)],
-    }),
+  const [segments, sections] = await Promise.all([
+    // The SAME query the route's pre-flight runs — see `editionSegments.ts` for why that matters.
+    loadEditionSegments(projectId),
     db.query.timeline_sections.findMany({
       where: eq(timeline_sections.project_id, projectId),
     }),
   ]);
 
   return {
-    segments: videos.map((v) => ({
-      audioKey: v.storage_key ?? '',
-      durationMs: Math.round((v.duration_sec ?? 0) * 1000),
-      captionsVtt: v.captions_vtt,
-    })),
+    segments,
     sections: sections.map((s) => ({
       startSec: s.start_sec,
       endSec: s.end_sec,
