@@ -28,7 +28,13 @@ function payload(brollAt: number): PlayerConfig {
   } as unknown as PlayerConfig;
 }
 
-/** One long tick — 75s is the top of the jittered range, so exactly one poll has fired. */
+/**
+ * One long tick — 75s is the top of the jittered range, so exactly one poll has fired.
+ *
+ * With `Math.random` pinned to its midpoint in `beforeEach`, every delay is exactly 60s, so this
+ * is one poll per tick by construction rather than by luck. The 75.001s figure is kept because it
+ * still bounds the UNPINNED behaviour, which is what the value documents.
+ */
 const ONE_TICK_MS = 75_001;
 
 interface ProbeProps {
@@ -84,6 +90,19 @@ function stubFetch(responses: Array<{ status: number; etag?: string; body?: unkn
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // PIN THE JITTER. The poll delay is `60s × [0.75, 1.25]`, so how many polls fit inside a fixed
+  // stretch of virtual time is a dice roll, and the tests below that assert an EXACT count were
+  // therefore asserting the weather. Concretely: two 75.001s ticks cover 150.002s, and three
+  // delays fit inside that whenever they sum to ≤150s — which happens on about one run in fifty
+  // (each delay is uniform on [45s, 75s]; the sum clears the floor of 135s by 15s). That is
+  // exactly the failure this suite produced in CI on 2026-08-26, on a branch that touches no
+  // frontend code at all.
+  //
+  // 0.5 is the midpoint, so every delay is precisely `FRESHNESS_INTERVAL_MS`. The jitter itself
+  // is not what these tests are about — `configRevision.test.ts` tests `nextFreshnessDelayMs`
+  // head-on, with its own injected random — and holding it still is what lets a count assertion
+  // mean something. `vi.restoreAllMocks()` in `afterEach` puts `Math.random` back.
+  vi.spyOn(Math, 'random').mockReturnValue(0.5);
   bodyReads.length = 0;
   visibility = 'visible';
   Object.defineProperty(document, 'visibilityState', {
@@ -185,15 +204,11 @@ describe('(b) a 304 leaves the session untouched', () => {
     await advanceOneTick();
     await advanceOneTick();
 
-    // A RANGE, not an exact count, and the jitter is the reason. Delays land in [45s, 75s] and
-    // each tick advances 75.001s, so three ticks cover 225s of virtual time — which fits between
-    // three and five polls depending on how the dice fall. This assertion used to demand exactly
-    // three and therefore failed on roughly the majority of seeds: a test that depends on luck
-    // reports the weather, not the behaviour.
-    //
-    // What is actually under test is that a 304 does not STOP the loop, so the floor is what
-    // matters. The ceiling is kept as a runaway guard: a double-scheduled timer would show up
-    // here as a count well past five.
+    // A RANGE, not an exact count. It was written that way when the jitter was live here and the
+    // dice decided the count; the jitter is now pinned in `beforeEach`, so this lands on exactly
+    // three. The range stays because what is under test is that a 304 does not STOP the loop —
+    // the floor is the assertion, and the ceiling is a runaway guard: a double-scheduled timer
+    // would show up here as a count well past five, pinned jitter or not.
     expect(calls.length).toBeGreaterThanOrEqual(3);
     expect(calls.length).toBeLessThanOrEqual(5);
   });

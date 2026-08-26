@@ -95,6 +95,29 @@ correctly refuses to pass vacuously. **The guard is right; the sampling strategy
 fixing** — drive the samples from the frame callback rather than a wall-clock poll, or widen the
 window deliberately. Left open rather than quietly re-run into green, because a flake that is only
 ever re-run is a flake nobody fixes.
+## ✅ CLOSED (found 2026-08-26, fixed same day) — the viewer freshness-poll suite asserted a dice roll, and failed a release gate on a backend-only branch
+
+**Closure kind: verified in code, diagnosis reproduced on demand.** `release:verify` went red on
+#153 — a branch touching nothing but backend audio code — inside
+`__tests__/configFreshnessPoll.test.tsx`: *expected 2 calls, got 3*.
+
+The poll delay is `60s × [0.75, 1.25]`, so delays land in [45s, 75s]. The test advanced 75.001s
+twice — 150.002s of virtual time — and asserted **exactly two** polls. Three delays fit inside
+150.002s whenever they sum to ≤150s, and the floor of three delays is 135s. So the assertion held
+only when the dice cleared a 15s margin: **about one run in fifty fails**, computable rather than
+mysterious (each delay uniform on [45,75] ⇒ `P = 0.5³/6 ≈ 2%`).
+
+Fixed by pinning `Math.random` to its midpoint in `beforeEach`, so every delay is exactly
+`FRESHNESS_INTERVAL_MS` and a count assertion means what it says. The jitter itself keeps its own
+head-on test in `configRevision.test.ts`, which injects its own random.
+
+**Diagnosis proven, not assumed:** pinning to the MINIMUM instead reproduces the CI failure exactly
+— same test, same assertion, same numbers. Pinned at the midpoint, 25 consecutive runs are green.
+
+**The lesson was already written in this very suite** — a sibling test carries a comment saying
+"a test that depends on luck reports the weather, not the behaviour", added when someone hit this
+in the loudest case and converted that one assertion to a range. The quieter sibling, failing only
+2% of the time, was left alone. A flake rare enough to re-run is a flake nobody fixes.
 
 ## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 
