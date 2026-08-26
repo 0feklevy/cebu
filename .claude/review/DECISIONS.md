@@ -75,26 +75,53 @@ it silently, and the drift is invisible to any test that mocks the query instead
 
 ---
 
-## 🔴 OPEN (found 2026-08-26, low severity) — one webkit viewer e2e test is flaky, and the flake reads as a branch failure
+## ✅ CLOSED (found 2026-08-26, fixed same day) — the apply-gate e2e test asked for a sample count its window could not contain on a starved runner
 
-`viewer-e2e.spec.ts:1629` — *"the frame is never presented before the matching SCRIPT_APPLIED(B,
-token)"* — failed on `feat/sim-authoring-layer` (run `32942073222`) with its own vacuity guard:
+**Closure kind: verified in code, cause computed rather than guessed.**
+`viewer-e2e.spec.ts` — *"the frame is never presented before the matching SCRIPT_APPLIED"* — failed
+on `feat/sim-authoring-layer` with its own vacuity guard:
 
 ```
 Error: no opacity samples fell between the request and the acknowledgement — vacuous
 Expected: > 5
 ```
 
-**It is a flake, not a regression, and the evidence is positive rather than absent:** the identical
-test failed on `main` in run `32891258874`, before that branch existed; and `feat/sim-picker-editor`,
-which contains every commit of `feat/sim-authoring-layer`, passed webkit on the same code.
+**It was never a regression.** The identical test failed on `main` in run `32891258874`, before that
+branch existed, and `feat/sim-picker-editor` — which contains every commit of the branch blamed —
+passed webkit on the same code.
 
-The test samples opacity between two events and requires more than five samples to land inside the
-window. On webkit under CI load the window closes faster than the sampler fills, and the test
-correctly refuses to pass vacuously. **The guard is right; the sampling strategy is what needs
-fixing** — drive the samples from the frame callback rather than a wall-clock poll, or widen the
-window deliberately. Left open rather than quietly re-run into green, because a flake that is only
-ever re-run is a flake nobody fixes.
+**The cause is arithmetic, not luck.** The parent's sampler runs on `requestAnimationFrame`. A
+comment thirty lines above the assertion already records that CI WebKit under software GL drops to
+**~7fps**. The `delayedack` bridge's default acknowledgement delay is **500 ms**. Seven frames per
+second across half a second is **3.5 samples**, and the assertion demands more than five. The test
+was asking a fixed sample count of a window whose size silently assumed 60fps.
+
+**The fix that was NOT taken, and why.** The obvious move — drive the sampler from a timer so its
+density stops depending on the compositor — would have broken something load-bearing. The staleness
+bound in `assertVisibleFramesAreCorrect` is deliberately ADAPTIVE: it reads the sampler's own median
+gap as a proxy for how starved the environment is, and widens the bound exactly when the parent's
+clock is itself coarse. That proxy is what ended three false failures on 2026-08-23. A
+frame-rate-independent sampler would have destroyed it and brought those back.
+
+**The fix taken:** a new `delayedack`-only section, `WIDEACK`, acknowledging after **1500 ms**. The
+number is chosen against the runtime's own constants rather than tuned until green — it clears six
+samples at 7fps with margin, and stays well under `SIM_APPLY_STALL_MS` (3000 ms) so the terminal
+stall bound is never what ends the wait, which would prove a different thing. Adding a section to
+that package touches no other package's bytes, by the generator's existing design.
+
+**A second bug surfaced while proving the first.** With the wider window the test then failed as
+*"the child never acknowledged"* — the sampler's 5s lifetime expired before an acknowledgement that
+now arrived later, because activation does not follow the seek instantly (measured elsewhere in this
+file at up to ~5.8s on a loaded runner). The sampler must outlive the window it observes; it is now
+7s. A sampler that goes home early reports an absence as a product failure.
+
+Verified: passes on chromium and on webkit locally, and the full chromium viewer suite was re-run.
+
+**Note on severity, which the first version of this entry got wrong.** The webkit job is
+`continue-on-error: true` in `ci.yml`, so this never blocked a merge — it only ever produced a red
+line in `gh pr checks` that reads exactly like a real failure. That is still worth fixing, because a
+check nobody can trust is a check everybody learns to skip past.
+
 ## ✅ CLOSED (found 2026-08-26, fixed same day) — the viewer freshness-poll suite asserted a dice roll, and failed a release gate on a backend-only branch
 
 **Closure kind: verified in code, diagnosis reproduced on demand.** `release:verify` went red on

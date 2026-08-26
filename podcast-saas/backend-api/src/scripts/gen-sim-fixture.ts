@@ -83,6 +83,20 @@ export const FIXTURE_DELAYED_SECTIONS = {
   LATE: '11111111-6666-4666-8666-111111111111',
   /** Acknowledges promptly but echoes a token that does NOT match the activation. */
   BADTOKEN: '22222222-7777-4777-8777-222222222222',
+  /**
+   * Acknowledges after 1500 ms — a pre-ack window WIDE ENOUGH TO OBSERVE on a starved runner.
+   *
+   * The apply-gate acceptance test needs more than five opacity samples to land between the
+   * request and the acknowledgement, or it (correctly) refuses to pass vacuously. The parent's
+   * sampler runs on requestAnimationFrame, and CI WebKit under software GL drops to ~7fps — so
+   * the bridge's default 500 ms window yields ~3.5 samples there and the test fails for an
+   * environmental reason, having found nothing wrong with the product.
+   *
+   * 1500 ms is chosen against the runtime's own constants, not tuned until green: it clears six
+   * samples at 7fps with margin, and stays well under SIM_APPLY_STALL_MS (3000 ms) so the
+   * terminal stall bound is never what ends the wait — which would prove a different thing.
+   */
+  WIDEACK: '33333333-8888-4888-8888-333333333333',
 } as const;
 
 /** Token corruption applied by the BADTOKEN section (and by `?badtoken=1`). */
@@ -108,6 +122,10 @@ export const DELAYED_ACK_POLICY: Record<string, { ackDelayMs?: number; tokenDelt
   // Prompt, but mis-tokened: matchesPending() must reject it, and the ONLY thing that may
   // eventually release the hold is the runtime's SIM_APPLY_STALL_MS terminal bound.
   [FIXTURE_DELAYED_SECTIONS.BADTOKEN]: { ackDelayMs: 400, tokenDelta: BAD_TOKEN_DELTA },
+  // See the section's own comment: a window the parent's sampler can actually observe on a
+  // runner whose rAF is starved. Behaviour is otherwise identical to the default — apply on
+  // receipt, acknowledge later, outside every cancellable scope.
+  [FIXTURE_DELAYED_SECTIONS.WIDEACK]: { ackDelayMs: 1500 },
 };
 
 /** Marks the section and paints its colour; cleanup returns to the neutral boot state. */
@@ -196,6 +214,7 @@ const DELAYED_SECTION_BODIES: Record<string, string> = {
   ...SECTION_BODIES,
   [FIXTURE_DELAYED_SECTIONS.LATE]: bodyFor('LATE', '#ff8000'),
   [FIXTURE_DELAYED_SECTIONS.BADTOKEN]: bodyFor('BADTOKEN', '#8000ff'),
+  [FIXTURE_DELAYED_SECTIONS.WIDEACK]: bodyFor('WIDEACK', '#0080ff'),
 };
 
 const NO_RAF_ENTRY = (): string => ENTRY_HTML.replace(
