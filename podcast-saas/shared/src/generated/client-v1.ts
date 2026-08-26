@@ -222,12 +222,32 @@ export interface DegradedExportRefusal {
   warnings: string[];
 }
 
+/**
+ * `projectStatusEnum` in the backend schema — a real Postgres enum, mirrored here by hand.
+ *
+ * Named rather than inlined because more than one place needs it and a copied union drifts one
+ * copy at a time. `shared/src/generated/` is hand-maintained (CLAUDE.md §5); nothing regenerates
+ * it from the schema, so these unions are the only statement of the closed set on this side.
+ */
+export type ProjectStatus =
+  | 'draft' | 'ingesting' | 'scripting' | 'script_ready' | 'approved' | 'generating' | 'ready' | 'failed';
+
+/** `videoFileStatusEnum` in the backend schema. */
+export type VideoFileStatus = 'uploading' | 'ready' | 'failed';
+
 export interface Project {
   id: string;
   org_id: string;
   title: string | null;
   topic: string | null;
-  status: string;
+  /**
+   * A CLOSED set, and it always was — `projectStatusEnum` is a real Postgres enum (schema.ts),
+   * so the database itself refuses anything else. Typing it `string` here meant the contract
+   * declared LESS than the storage guarantees, which is the shape that hid the audio-edition
+   * status bug: the server sent a value the client had never heard of and nothing objected.
+   * `visibility` on the next line was always a proper union; this is now consistent with it.
+   */
+  status: ProjectStatus;
   visibility?: 'private' | 'unlisted' | 'public';
   created_by: string | null;
   share_token?: string | null;
@@ -239,7 +259,8 @@ export interface Project {
   thumbnail_url?: string | null;
   seo_description?: string | null;
   seo_keywords?: string | null;
-  metadata_status?: string;
+  /** `schema.ts` documents the closed set on the column itself. */
+  metadata_status?: 'none' | 'processing' | 'ready' | 'failed';
   view_count?: number;
   created_at: string;
   /** 'owner' for own projects, 'collaborator' for projects shared with you (042). */
@@ -375,7 +396,8 @@ export interface VideoFile {
   filename: string;
   file_size: number | null;
   storage_key: string | null;
-  status: string;
+  /** `videoFileStatusEnum`, a real Postgres enum — as closed as `hls_status` two lines below. */
+  status: VideoFileStatus;
   duration_sec: number | null;
   hls_status: 'pending' | 'processing' | 'ready' | 'failed';
   hls_master_key: string | null;
@@ -384,7 +406,7 @@ export interface VideoFile {
   is_broll: boolean;              // true for AI-generated broll source files
   hls_url: string | null;   // computed: public HLS URL (only set when hls_status === 'ready')
   raw_url?: string | null;  // present in upload response and hls-status poll; absent in list
-  crop_status: string;      // none | processing | ready | failed
+  crop_status: 'none' | 'processing' | 'ready' | 'failed';
   crop_updated_at: string | null;
   created_at: string;
 }

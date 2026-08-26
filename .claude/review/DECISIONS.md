@@ -1,7 +1,14 @@
 # Open decisions
 
-**State as of 2026-08-26.** Production runs **v0.2.10**, deployed 12:07 today, healthy. `main` is
-released: nothing sits merged-and-unshipped at the time of writing.
+**State as of 2026-08-26.** Production runs **v0.2.10**, deployed 12:07 today, healthy. `main` has
+since gained **#155–#159** — the import gallery, the browser-suite CI wiring, the webkit sampling
+fix, and the podcast status-vocabulary fix — and **v0.2.11 is dispatched** to ship them.
+
+An earlier version of this paragraph said "nothing sits merged-and-unshipped", written minutes
+before #158 and #159 merged. It was true when typed and false within the hour, which is the same
+mistake as the four-day-old header it replaced, at a smaller scale: a state sentence is only as
+good as the moment it describes, so it now names the version in flight rather than claiming the
+queue is empty.
 
 v0.2.10 carried thirteen PRs (#142–#154) after production had sat on **v0.2.7 for four days** — not
 because anything was wrong with the code, but because the release pipeline could not deploy. Two
@@ -257,6 +264,33 @@ feature — not that the PR is marked merged.
 wrong-table entry and the double-stringify entry both still read 🔴 FIXED, NOT YET MERGED after
 #146 and #145 landed, and the lost-deep-review entry still demanded a commit that `ca7a9d8` had
 already made. §3b's rule — close it in the same pass as the merge — is exactly what did not happen.
+## ✅ CLOSED (owner-reported 2026-08-25, fixed 2026-08-26 in #150 + #151) — the Minimal-UI control picker on all three axes the owner named
+
+**Closure kind: verified in code, proven in a real browser.** Recorded here on 2026-08-26 after an
+audit found this work had **no ledger entry at all** — three merged PRs' worth of user-visible
+feature work, invisible to anyone reading this file. Exactly what §3b exists to prevent, and the
+second instance found today.
+
+The owner's three complaints, and what each turned out to be:
+
+1. **"It's not scanning the actions right."** The scanner lived in the rAF gate, which is baked into
+   a package at PUBLICATION time — so every already-stored simulation carried an old gate that never
+   answered, and the scan timed out after 2s with no signal about which layer failed. Fixed by a
+   serve-time authoring layer (`SimAuthoringBootstrap.ts`, `GET /sim-authoring.js`) that reaches
+   every stored package instantly, plus a tagged `UiScanOutcome` so "scanned and empty" is
+   distinguishable from "unreachable" — the header and the body can no longer contradict each other.
+2. **"Show green/red on the buttons themselves."** Badges are drawn in an overlay pinned to each
+   control's own client rect, tracking page scroll, nested scroll, viewport resize and node
+   replacement. Proven in `e2e/sim-authoring.spec.ts` — which caught a real bug the day it was
+   written: a queued rAF rebuilt the overlay after DISARM.
+3. **"The panel's UI is horrible and doesn't match the design."** Rebuilt in `SectionEditor.tsx`'s
+   own idiom and tokens.
+
+**Amendment A1** to the ADR (binary Keep/Hide replacing D10's four-mode toolbar; `SIM_AUTHORING_DISABLED`
+replacing the admin flag) is recorded in `ADR-ACTION-RECORDING-SEMANTICS.md`.
+
+The e2e suite that proves axis 2 ran in **no workflow** until the entry below wired it.
+
 ## ✅ CLOSED (found 2026-08-26, fixed same day) — eight of eleven browser suites were invoked by nothing, including the only test of the picker's geometry
 
 **Closure kind: verified in code, mutation-proven both directions.** `client-web` carries eleven
@@ -625,7 +659,13 @@ eight times in half an hour and **no CI round ever reached its test step** — e
 cancelled by the next push, while `gh pr checks` reported `pass=0 fail=0 pending=0`, which reads
 like "not started". Batch commits, push once, then wait.
 
-## 🟢 IN FLIGHT (2026-08-24) — media dedup foundation + the two owner features riding on it
+## ✅ CLOSED (2026-08-24 → merged 2026-08-25 in #138) — media dedup foundation + the two owner features riding on it
+
+**Closure kind: verified in code 2026-08-26.** The header below said IN FLIGHT and the body said
+`claimBlob` "is called from nowhere". Both were true when written and stopped being true when #138
+merged: `claimUploadedMedia` is wired at `images.controller.ts:56,118`, `audio.controller.ts:122,287`
+and `SimulationImportService.ts:151`. Video is the one path still not deduplicated, and that is the
+owner's deferral recorded separately — not an unfinished piece of this.
 
 **PR #138** (`feat/media-dedup`, CI running): store bytes once however many projects reference
 them. Content identity = SHA-256 + byte-size taken in the same pass (truncation cannot mint an
