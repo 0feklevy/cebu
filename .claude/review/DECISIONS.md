@@ -119,6 +119,32 @@ head-on test in `configRevision.test.ts`, which injects its own random.
 in the loudest case and converted that one assertion to a range. The quieter sibling, failing only
 2% of the time, was left alone. A flake rare enough to re-run is a flake nobody fixes.
 
+## ✅ CLOSED (found 2026-08-26) — "Import a simulation" shipped into a feature branch, not into `main`, and the PR said MERGED
+
+**Closure kind: verified in code, then replanted.** PR #147 — the import picker as a gallery with
+previews, search, categories and multi-select — reports `state: MERGED`. It was merged into
+`fix/api-double-stringify`, whose own content reached `main` as a DIFFERENT squash commit (#145).
+The gallery commit therefore never became an ancestor of `main`: production carried the old
+127-line two-list picker while every status surface said the feature had shipped.
+
+**Why it was invisible.** `gh pr list` says MERGED without saying merged INTO WHAT, and a
+squash-merge of the base branch severs the child's commit from `main` while leaving the PR's badge
+green. The ledger line for #147 said "opened", which was true and stopped being the whole truth.
+Found only because an audit asked "is the feature present in the code?" rather than "is the PR
+merged?" — the two questions have different answers and only one of them is about the product.
+
+**Fix:** the gallery commit replanted onto `main` (`git rebase --onto`, dropping the two files
+already there via #145), verified: typecheck clean, its 17 tests green, lint 0 errors.
+
+**The check worth keeping:** for any PR that claims to have shipped a user-visible thing, assert
+the THING is on `main` — `git merge-base --is-ancestor <sha> origin/main`, or grep `main` for the
+feature — not that the PR is marked merged.
+
+**Three ledger headers were also stale in the same pass** and are now corrected: the podcast
+wrong-table entry and the double-stringify entry both still read 🔴 FIXED, NOT YET MERGED after
+#146 and #145 landed, and the lost-deep-review entry still demanded a commit that `ca7a9d8` had
+already made. §3b's rule — close it in the same pass as the merge — is exactly what did not happen.
+
 ## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 
 Found 2026-08-25 while verifying the v0.2.0 deploy.
@@ -312,7 +338,7 @@ Three mutations, all caught (revert to raw concat: 4 failed; weaken uniqueness: 
 count proof: 2). Real-browser e2e green on regenerated v5 fixtures. **Residue: stored packages keep
 v4 bytes until `reinject-sim-gates.ts` runs — an ops step, listed below.**
 
-## 🔴 FIXED, NOT YET MERGED (owner-reported 2026-08-25, PR #146) — "Create podcast" was refused on EVERY project, for a reason that was never true
+## ✅ CLOSED (owner-reported 2026-08-25, merged 2026-08-25 in #146 as `3d28212`) — "Create podcast" was refused on EVERY project, for a reason that was never true
 
 Owner, from a live console: *"Could not start the podcast build (This project has no media to
 derive audio from.)"* — on a project full of media — plus three `409`s on `/audio-edition`.
@@ -1421,7 +1447,7 @@ Mutation-checked, both directions: reverting to the string-built URL fails three
 failed-read isolation); dropping the `?? library?.url` fallback fails exactly the coded-fallback
 test and nothing else. 1820 client-web tests green, typecheck clean.
 
-## 🟡 OPEN (found 2026-08-25) — a deep review of the action-recording research was started and lost; its header outlived it
+## ✅ CLOSED (found 2026-08-25, committed same day as `ca7a9d8`) — a deep review of the action-recording research was started and lost; its header outlived it
 
 The working tree carried an uncommitted edit to `RESEARCH-ACTION-RECORDING-2026-08-25.md` that
 changed the status line to *"סקירת עומק הושלמה — GO מותנה לבוחר, NO-GO לארכיטקטורת ההקלטה
@@ -1463,7 +1489,7 @@ specifically the `#id` and `[name]` branches that run before it; and `canary_pas
 OMISSION from `NEVER_PUBLISHED_STATUSES` rather than by an affirmative allow-list entry — a new
 proof flow relying on that status would be relying on a doc comment.
 
-## 🔴 FIXED, NOT YET MERGED (owner-reported 2026-08-25) — three API bodies were JSON-encoded TWICE
+## ✅ CLOSED (owner-reported 2026-08-25, merged 2026-08-25 in #145 as `4cdfb12`) — three API bodies were JSON-encoded TWICE
 
 Owner: *"Save bridge — stuck with a bug: A label between 1 and 120 characters is required"*, on a
 perfectly good label. Filed as low priority. It was not low priority.
