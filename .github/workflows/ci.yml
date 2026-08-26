@@ -256,18 +256,32 @@ jobs:
       # FAIL CLOSED, for the same reason viewer-e2e does: a Playwright run that collects zero
       # specs exits 0, so a config whose testMatch stops matching would turn this gate green while
       # proving nothing — which is the failure this whole job was added to end.
+      #
+      # The report path is READ FROM THE CONFIG, never hardcoded here. The first version carried a
+      # `{ suite: reportName }` map and got `transport` wrong — its reporter writes
+      # `sim-transport-playwright.json`, not `sim-transport.json` — so this step failed a suite that
+      # had just passed, on its FIRST run in CI. A duplicated fact drifts; the chain
+      # script → --config → outputFile is the one Playwright itself follows, so it cannot disagree.
       - name: The suite must have actually run
         run: |
           node -e '
             const fs = require("fs");
-            const names = { authoring: "sim-authoring", transport: "sim-transport", transitions: "sim-transitions" };
-            const p = "client-web/e2e-results/" + names[process.env.SUITE] + ".json";
+            const suite = process.env.SUITE;
+            const scripts = JSON.parse(fs.readFileSync("client-web/package.json", "utf8")).scripts || {};
+            const cmd = scripts["test:e2e:" + suite];
+            if (!cmd) { console.error("::error::no test:e2e:" + suite + " script — nothing ran"); process.exit(1); }
+            const cfgName = (/--config=(\S+)/.exec(cmd) || [])[1];
+            if (!cfgName) { console.error("::error::test:e2e:" + suite + " names no --config"); process.exit(1); }
+            const cfg = fs.readFileSync("client-web/" + cfgName, "utf8");
+            const out = (/outputFile:\s*.([^\x27"`]+)./.exec(cfg) || [])[1];
+            if (!out) { console.error("::error::" + cfgName + " declares no json reporter outputFile — this gate cannot verify it ran"); process.exit(1); }
+            const p = "client-web/" + out;
             if (!fs.existsSync(p)) { console.error("::error::no report at " + p + " — the suite did not run"); process.exit(1); }
             const r = JSON.parse(fs.readFileSync(p, "utf8"));
             const walk = (s) => [...(s.specs || []), ...((s.suites || []).flatMap(walk))];
             const specs = (r.suites || []).flatMap(walk);
-            if (specs.length === 0) { console.error("::error::" + process.env.SUITE + " collected 0 specs — a green run that proved nothing"); process.exit(1); }
-            console.log(process.env.SUITE + " collected " + specs.length + " specs");
+            if (specs.length === 0) { console.error("::error::" + suite + " collected 0 specs — a green run that proved nothing"); process.exit(1); }
+            console.log(suite + " collected " + specs.length + " specs (report: " + out + ")");
           '
         env:
           SUITE: ${{ matrix.suite }}
