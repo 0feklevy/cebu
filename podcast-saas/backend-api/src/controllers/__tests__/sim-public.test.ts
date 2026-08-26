@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { createHash } from 'crypto';
-import { gunzipSync, brotliDecompressSync } from 'zlib';
+import { gunzipSync, brotliDecompressSync, gzipSync } from 'zlib';
 import { registerSimPublicRoutes, injectSimBootSnippet } from '../sim-public.controller.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -258,18 +258,36 @@ describe('GET /sim-public/* — compression', () => {
   });
 
   it('skips compression below the size threshold', async () => {
-    mockStorage.readObject.mockResolvedValue(Buffer.from(SMALL_HTML));
+    // A .css body, NOT html — deliberately. Entry HTML gets the boot snippet injected before the
+    // size is measured, so an html fixture's served size is `fixture + snippet`. The snippet grew
+    // when the authoring hook landed and pushed the old SMALL_HTML fixture over the 1024-byte
+    // threshold; before that it sat a few hundred bytes under it, which made this assertion a
+    // coin flip waiting on the next byte added to the snippet. CSS is never injected, so its
+    // served size is its own — which is the only thing this test is actually about.
+    const tiny = 'body{color:#000}';
+    mockStorage.readObject.mockResolvedValue(Buffer.from(tiny));
     const app = await makeApp();
 
     const res = await app.inject({
       method: 'GET',
-      url: `/sim-public/${HTML_KEY}`,
+      url: `/sim-public/${CSS_KEY}`,
       headers: { 'accept-encoding': 'br, gzip' },
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-encoding']).toBeUndefined();
-    expect(res.body).toBe(SMALL_HTML_SERVED);
+    expect(res.body).toBe(tiny);
+  });
+
+  it('the boot snippet stays inside the ADR M2 dormant budget', () => {
+    // ADR-ACTION-RECORDING-SEMANTICS.md §3 (M2): the dormant serve-time bootstrap is capped at
+    // 1KB gzip, because it is downloaded by every viewer of every simulation to buy a capability
+    // only an author in the editor ever uses. Asserted as a number so the next thing added to the
+    // snippet has to argue with a failing test rather than with nobody.
+    const served = injectSimBootSnippet('<html><head></head><body></body></html>');
+    const start = served.indexOf('<script data-simboot');
+    const snippet = served.slice(start, served.indexOf('</script>', start) + '</script>'.length);
+    expect(gzipSync(Buffer.from(snippet, 'utf8')).length).toBeLessThanOrEqual(1024);
   });
 });
 

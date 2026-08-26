@@ -15,6 +15,8 @@ import { resolveSimFileKey } from '../services/simulation/simFileResolver.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
 import { browserOrigins } from '../config/publicOrigins.js';
+import { SIM_AUTHORING_NS, SIM_AUTHORING_SCRIPT_PATH } from 'shared/sim/authoringProtocol';
+import { SIM_AUTHORING_SCRIPT, SIM_AUTHORING_SCRIPT_ETAG } from '../services/simulation/SimAuthoringBootstrap.js';
 
 // Cloud (Supabase / R2): only TEXT types need the proxy — they're the ones whose
 // Content-Type the public bucket mangles (text/html → text/plain) or that must
@@ -29,27 +31,79 @@ const PROXIED_TEXT_EXTS = new Set([
 // only for content-addressed revision prefixes (roadmap).
 
 /**
- * Head bootstrap injected into every proxied sim entry HTML. It reads the
- * `#simboot=<urlencoded JSON {hide:[selectors]}>` fragment the player puts on the
- * iframe src and applies `display:none` DURING document parse — so a minimal-UI
- * sim paints minimal from its very first frame instead of flashing the full UI
- * until the postMessage startScript round-trip lands. Selector sanitization
- * mirrors the bridge's applyHideUi ({ } < \ rejected — no style breakouts).
- * The style is removed when the parent posts `clearBootHide` (sent right after
- * every startScript, whose __simHideUi style is the definitive hide set).
- * Injection happens at serve time, so already-stored sims get it too.
+ * Head bootstrap injected into every proxied sim entry HTML.
+ *
+ * It carries TWO capabilities, and the ordering between them is a correctness property:
+ *
+ *  1. THE BOOT CLOAK. Reads the `#simboot=<urlencoded JSON {hide:[selectors]}>` fragment the
+ *     player puts on the iframe src and applies `display:none` DURING document parse — so a
+ *     minimal-UI sim paints minimal from its very first frame instead of flashing the full UI
+ *     until the postMessage startScript round-trip lands. Selector sanitization mirrors the
+ *     bridge's applyHideUi ({ } < \ rejected — no style breakouts). The style is removed when the
+ *     parent posts `clearBootHide`.
+ *
+ *  2. THE AUTHORING HOOK. On a `CONNECT` from an allowlisted parent origin, it adopts the
+ *     transferred MessagePort and loads the authoring script that draws the picker's badges.
+ *
+ * THE LISTENER IS INSTALLED FIRST, AND THE CLOAK PARSE HAS ITS OWN `try`. Originally one `try`
+ * wrapped both, which meant a malformed `#simboot` fragment — a truncated URL, a bad
+ * percent-encoding — would throw before the listener existed and silently disable BOTH the cloak
+ * clear and authoring for that document. A capability must not be destroyable by unrelated
+ * malformed input.
+ *
+ * Injection happens at serve time, so already-stored sims get both capabilities with no
+ * republication. That is the entire reason the authoring hook lives here rather than in the rAF
+ * gate: the gate is baked in at publication, so a capability added there reaches only packages
+ * republished afterwards.
+ *
+ * INERT FOR VIEWERS. The hook does nothing until a CONNECT arrives, and only the editor sends one.
  */
-const SIM_BOOT_SNIPPET =
-  '<script data-simboot>(function(){try{' +
-  'var m=/[#&]simboot=([^&]*)/.exec(location.hash||"");' +
-  'if(m){var c=JSON.parse(decodeURIComponent(m[1]));var s=(c&&c.hide)||[];var r=[];' +
-  'for(var i=0;i<s.length;i++){var x=s[i];if(typeof x==="string"&&!/[{}<\\\\]/.test(x))r.push(x+"{display:none !important}")}' +
-  'if(r.length){var st=document.createElement("style");st.id="__simBootHide";st.textContent=r.join("\\n");' +
-  '(document.head||document.documentElement).appendChild(st)}}' +
-  // Only our own parent may clear the boot cloak (simulation-004) — see the bridge/gate guards.
-  'window.addEventListener("message",function(e){if(e.source!==window.parent)return;var d=e.data||{};' +
-  'if(d&&d.type==="clearBootHide"){var el=document.getElementById("__simBootHide");if(el)el.remove()}});' +
-  '}catch(e){}})()</script>';
+function buildSimBootSnippet(): string {
+  // The allowlist is embedded at SERVE time from the deployment's own origins — the child cannot
+  // be talked into trusting an origin the deployment does not already serve the app from.
+  const origins = JSON.stringify(browserOrigins());
+  const authoringHook = process.env.SIM_AUTHORING_DISABLED === '1'
+    ? ''
+    : 'if(d&&d.ns==="' + SIM_AUTHORING_NS + '"&&d.type==="CONNECT"){' +
+      'if(AO.indexOf(e.origin)<0)return;var p=e.ports&&e.ports[0];if(!p)return;' +
+      'window.__SIM_AUTHORING_PENDING__={port:p,origin:e.origin,sid:d.sid};' +
+      'if(window.__SIM_AUTHORING_ADOPT__){window.__SIM_AUTHORING_ADOPT__(window.__SIM_AUTHORING_PENDING__);return}' +
+      'if(window.__SIM_AUTHORING_LOADING__)return;window.__SIM_AUTHORING_LOADING__=1;' +
+      'var sc=document.createElement("script");sc.src="' + SIM_AUTHORING_SCRIPT_PATH + '";sc.async=true;' +
+      // head||documentElement: the snippet runs inside <head>, so document.body may not exist yet.
+      '(document.head||document.documentElement).appendChild(sc);return}';
+
+  return '<script data-simboot>(function(){' +
+    'var AO=' + origins + ';' +
+    // Listener FIRST. Only our own parent may reach either capability (simulation-004).
+    'try{window.addEventListener("message",function(e){if(e.source!==window.parent)return;var d=e.data||{};' +
+    'if(d&&d.type==="clearBootHide"){var el=document.getElementById("__simBootHide");if(el)el.remove();return}' +
+    authoringHook +
+    '})}catch(e){}' +
+    // Cloak parse SECOND, in its own try — it must not be able to take the listener down with it.
+    'try{var m=/[#&]simboot=([^&]*)/.exec(location.hash||"");' +
+    'if(m){var c=JSON.parse(decodeURIComponent(m[1]));var s=(c&&c.hide)||[];var r=[];' +
+    'for(var i=0;i<s.length;i++){var x=s[i];if(typeof x==="string"&&!/[{}<\\\\]/.test(x))r.push(x+"{display:none !important}")}' +
+    'if(r.length){var st=document.createElement("style");st.id="__simBootHide";st.textContent=r.join("\\n");' +
+    '(document.head||document.documentElement).appendChild(st)}}}catch(e){}' +
+    '})()</script>';
+}
+
+/**
+ * Computed once per process. `browserOrigins()` reads deploy configuration that does not change
+ * while the server runs, and this string is spliced into every entry-HTML response.
+ */
+let _snippet: string | undefined;
+const simBootSnippet = (): string => (_snippet ??= buildSimBootSnippet());
+
+/**
+ * Test seam — the same shape `resetSimFileCache` and `resetRevisionIdentityCacheForTest` already
+ * use in this subsystem. Without it, a test cannot observe what the SIM_AUTHORING_DISABLED branch
+ * actually emits: the snippet is built once per process, so the first call in a suite fixes it.
+ */
+export function resetSimBootSnippetForTest(): void {
+  _snippet = undefined;
+}
 
 /** Inject the boot snippet right after <head> (or <html>, or prepend) in sim entry HTML. */
 export function injectSimBootSnippet(html: string): string {
@@ -62,10 +116,10 @@ export function injectSimBootSnippet(html: string): string {
   // terminates the sim's own script element and destroys the document). Same hardening as
   // injectRafGate, which was fixed for exactly this (audited parity gap).
   const head = /<head(\s[^>]*)?>/i.exec(html);
-  if (head) return html.slice(0, head.index + head[0].length) + SIM_BOOT_SNIPPET + html.slice(head.index + head[0].length);
+  if (head) return html.slice(0, head.index + head[0].length) + simBootSnippet() + html.slice(head.index + head[0].length);
   const root = /<html(\s[^>]*)?>/i.exec(html);
-  if (root) return html.slice(0, root.index + root[0].length) + SIM_BOOT_SNIPPET + html.slice(root.index + root[0].length);
-  return SIM_BOOT_SNIPPET + html;
+  if (root) return html.slice(0, root.index + root[0].length) + simBootSnippet() + html.slice(root.index + root[0].length);
+  return simBootSnippet() + html;
 }
 
 /**
@@ -113,6 +167,42 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         /^text\/(?!event-stream)|(?:\+|\/)json(?:;|$)|(?:\+|\/)xml(?:;|$)|javascript(?:;|$)|octet-stream(?:;|$)/u,
     });
   }
+
+  /**
+   * The picker's in-document half. Unauthenticated static JavaScript, exactly like the bridge and
+   * gate bytes this route already serves — it contains no project data and grants nothing on its
+   * own: it is inert until an allowlisted parent transfers it a MessagePort.
+   *
+   * Root path, NOT under /sim-public/. That wildcard 403s any key not starting `simulations/`,
+   * and the snippet must be able to load this with a root-relative src from the sim's own origin.
+   *
+   * SIM_AUTHORING_DISABLED=1 turns the feature off server-side without a migration or a deploy of
+   * the editor: the hook stops being emitted and this route stops answering, so a live problem is
+   * one env var away from contained.
+   */
+  app.get('/sim-authoring.js', { helmet: false }, async (request, reply) => {
+    if (process.env.SIM_AUTHORING_DISABLED === '1') {
+      return reply.code(404).send({ message: 'Not found' });
+    }
+    if (etagMatches(request.headers['if-none-match'], SIM_AUTHORING_SCRIPT_ETAG)) {
+      return reply
+        .header('ETag', SIM_AUTHORING_SCRIPT_ETAG)
+        .header('Cache-Control', 'no-cache')
+        .code(304)
+        .send();
+    }
+    return reply
+      .header('Content-Type', 'application/javascript')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Cross-Origin-Resource-Policy', 'cross-origin')
+      .header('Access-Control-Allow-Origin', '*')
+      .header('ETag', SIM_AUTHORING_SCRIPT_ETAG)
+      // no-cache, not immutable: the bytes change with a deploy, and a year-cached picker that
+      // disagrees with its editor is the same class of bug as a year-cached entry document.
+      .header('Cache-Control', 'no-cache')
+      .header('Vary', 'accept-encoding')
+      .compress(Buffer.from(SIM_AUTHORING_SCRIPT, 'utf8'));
+  });
 
   app.get<{ Params: { '*': string } }>(
     '/sim-public/*',
