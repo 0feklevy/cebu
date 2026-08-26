@@ -11,6 +11,9 @@
     "start": "next start",
     "test:smoke": "playwright test",
     "test:e2e:viewer": "playwright test --config=playwright.viewer.config.ts",
+    "test:e2e:authoring": "playwright test --config=playwright.authoring.config.ts",
+    "test:e2e:transport": "playwright test --config=playwright.transport.config.ts",
+    "test:e2e:transitions": "playwright test --config=playwright.sim.config.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

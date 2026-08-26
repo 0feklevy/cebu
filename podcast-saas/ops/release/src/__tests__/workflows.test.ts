@@ -280,3 +280,123 @@ describe('a failed remote-sync never touches containers and never stays stuck in
     expect(guard).toMatch(/exit 1/);
   });
 });
+
+/**
+ * EVERY BROWSER SUITE IS EITHER RUN BY A WORKFLOW OR EXPLICITLY EXCUSED.
+ *
+ * `client-web` carries eleven Playwright configs. On 2026-08-26 an audit found that **eight of
+ * them were invoked by nothing** — including `playwright.authoring.config.ts`, the only place the
+ * control-picker's badge geometry is checked anywhere, which had caught a real product bug (a
+ * queued rAF rebuilding the overlay after DISARM) on the day it was written and could then have
+ * regressed silently forever.
+ *
+ * This is the second time in this package. `viewer-e2e` exists because audit test-quality-013
+ * found exactly the same thing about the viewer suite: 363 tests, passing locally, wired to no
+ * workflow. Finding it once is bad luck; finding it twice means the repository needs a rule
+ * rather than another audit.
+ *
+ * THE RULE: a config is either referenced by a workflow, or named below with a reason. There is
+ * no third state, and "nobody noticed" stops being reachable.
+ */
+describe('no Playwright config is invoked by nothing', () => {
+  const CLIENT_WEB = join(WF_DIR, '..', '..', 'podcast-saas', 'client-web');
+
+  /**
+   * Configs deliberately NOT run per PR, each with the reason it is not a gate.
+   *
+   * These are not exemptions from testing — they are statements about WHERE the test belongs. A
+   * soak suite in a per-PR gate buys a slow signal that gets re-run until it is green, which is
+   * worse than no signal because it looks like one.
+   */
+  const NOT_A_PR_GATE: Record<string, string> = {
+    'playwright.config.ts':
+      'the default config has no testMatch and its base URL defaults to the LIVE SITE — running it ' +
+      'aims every spec in e2e/ at production. It must never be wired to anything.',
+    'playwright.canary.config.ts': 'soak suite, 900s timeout — scheduled, not per-PR',
+    'playwright.leak.config.ts': 'memory-leak soak, 900s-1800s timeouts — scheduled, not per-PR',
+    'playwright.protocol.config.ts': 'protocol soak, 1500s timeout — scheduled, not per-PR',
+    'playwright.rebuilt.config.ts': 'rebuilds packages, 180s timeout, needs stored artefacts — not per-PR',
+    'playwright.production.config.ts': 'targets the DEPLOYED site by design — release workflow only',
+    'playwright.candidate.config.ts': 'exercises candidate images — release workflow only',
+  };
+
+  const configs = readdirSync(CLIENT_WEB).filter(
+    (f) => f.startsWith('playwright.') && f.endsWith('.config.ts'),
+  );
+
+  const scripts: Record<string, string> = JSON.parse(
+    readFileSync(join(CLIENT_WEB, 'package.json'), 'utf8'),
+  ).scripts ?? {};
+
+  /**
+   * COMMENTS ARE NOT INVOCATIONS, and this line is the whole reason the gate means anything.
+   *
+   * The first version of this check matched the workflow text as a whole. Every job here carries
+   * a long explanatory comment naming the suites it runs, so deleting `authoring` from the matrix
+   * — the exact regression this exists to catch — still passed: the word survived in the prose.
+   * A gate that reads its own documentation as evidence reports on nothing. Mutation-checked
+   * both ways after this line was added.
+   */
+  const codeOnly = (text: string): string =>
+    text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+
+  /** The values of a `strategy.matrix` key, read from the list literal rather than from prose. */
+  function matrixValues(text: string, key: string): string[] {
+    const m = new RegExp(`^\\s*${key}:\\s*\\[([^\\]]*)\\]`, 'm').exec(text);
+    return m ? m[1].split(',').map((v) => v.trim()).filter(Boolean) : [];
+  }
+
+  /**
+   * Is this config actually invoked? Follows the indirection a workflow really uses.
+   *
+   * A workflow rarely names a config file; it runs a package script (`test:e2e:authoring`) whose
+   * command names the config — and often through a matrix (`test:e2e:${{ matrix.suite }}`). All
+   * three forms count; nothing else does.
+   */
+  function isWired(config: string, text: string): boolean {
+    const code = codeOnly(text);
+    if (code.includes(config)) return true;
+    for (const [name, cmd] of Object.entries(scripts)) {
+      if (!cmd.includes(config)) continue;
+      if (code.includes(name)) return true;
+      const split = /^(.*?:)([a-z0-9-]+)$/.exec(name);
+      if (!split) continue;
+      const [, prefix, leaf] = split;
+      const expansion = new RegExp(`${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\$\\{\\{\\s*matrix\\.(\\w+)`).exec(code);
+      if (expansion && matrixValues(code, expansion[1]).includes(leaf)) return true;
+    }
+    return false;
+  }
+
+  it('finds the configs at all (a rename must not silently empty this gate)', () => {
+    // Without this the whole describe passes vacuously the moment the directory moves — the same
+    // "zero specs collected exits 0" failure the workflows themselves guard against.
+    expect(configs.length).toBeGreaterThan(5);
+  });
+
+  it('every config is referenced by a workflow or excused with a reason', () => {
+    const allWorkflowText = Object.values(wf).join('\n');
+    const orphans = configs.filter(
+      (c) => !isWired(c, allWorkflowText) && !(c in NOT_A_PR_GATE),
+    );
+    expect(
+      orphans,
+      `these Playwright configs are invoked by no workflow and carry no documented reason: ` +
+        `${orphans.join(', ')}. Either wire the suite into .github/workflows/, or add it to ` +
+        `NOT_A_PR_GATE with the reason it is not a gate.`,
+    ).toEqual([]);
+  });
+
+  it('the excuse list names only configs that exist', () => {
+    // A stale excuse is how a suite gets deleted, replaced under a new name, and silently loses
+    // its coverage while this gate keeps reporting green.
+    const ghosts = Object.keys(NOT_A_PR_GATE).filter((c) => !configs.includes(c));
+    expect(ghosts, `excused configs that no longer exist: ${ghosts.join(', ')}`).toEqual([]);
+  });
+
+  it('the three self-contained suites are named in ci.yml\'s matrix, not merely in its prose', () => {
+    const code = codeOnly(wf['ci.yml'] ?? '');
+    expect(code).toContain('test:e2e:${{ matrix.suite }}');
+    expect(matrixValues(code, 'suite').sort()).toEqual(['authoring', 'transitions', 'transport']);
+  });
+});

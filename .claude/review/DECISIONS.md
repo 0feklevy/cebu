@@ -171,6 +171,41 @@ feature — not that the PR is marked merged.
 wrong-table entry and the double-stringify entry both still read 🔴 FIXED, NOT YET MERGED after
 #146 and #145 landed, and the lost-deep-review entry still demanded a commit that `ca7a9d8` had
 already made. §3b's rule — close it in the same pass as the merge — is exactly what did not happen.
+## ✅ CLOSED (found 2026-08-26, fixed same day) — eight of eleven browser suites were invoked by nothing, including the only test of the picker's geometry
+
+**Closure kind: verified in code, mutation-proven both directions.** `client-web` carries eleven
+Playwright configs. Three were referenced by a workflow. The other eight ran only if a human typed
+the command.
+
+The one that mattered: `playwright.authoring.config.ts` — the ONLY place the control picker's badge
+geometry is checked anywhere. It caught a genuine product bug on the day it was written (a queued
+rAF rebuilt the overlay after DISARM) and was then wired to nothing, so that class of bug could
+regress silently forever while the repository looked covered.
+
+**This is the second time in this package.** `viewer-e2e` exists at all because audit
+test-quality-013 found exactly the same thing about the viewer suite: 363 tests, passing locally,
+invoked by no workflow. Finding it once is bad luck. Finding it twice means the repository needed a
+RULE rather than another audit.
+
+**Fixed in two parts:**
+
+1. A `browser-suites` job runs the three self-contained suites on chromium — authoring (~5s),
+   transport (~15s), transitions (~11s), measured. They need no app, no database and no network.
+   The four left out (canary, leak, protocol, rebuilt) carry 900–1500s timeouts because they are
+   soak suites: a scheduled job's work, not a per-PR gate. Putting them in a PR gate would buy a
+   slow signal that gets re-run until green, which is worse than none because it looks like one.
+2. A test in `ops/release` that makes the orphan state unreachable: every config is either
+   referenced by a workflow or named in `NOT_A_PR_GATE` with the reason it is not a gate. There is
+   no third state.
+
+**The gate had a hole on its first draft, and the mutation found it.** It matched the workflow text
+as a whole — and every job here carries a long comment naming the suites it runs, so deleting
+`authoring` from the matrix still passed: the word survived in the prose. It now strips comment
+lines and reads the matrix LIST LITERAL. Mutation-proven twice: dropping one matrix value reddens
+it, deleting the whole job reddens it. Reverted, 461 ops-release tests green.
+
+Precisely the lesson already recorded as "mutation-check what a gate can SEE" — written by me,
+four days ago, and re-learned here at my own expense.
 
 ## ✅ CLOSED (2026-08-25) — `/health` now reports the version that is running
 

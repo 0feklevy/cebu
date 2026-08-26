@@ -198,6 +198,88 @@ jobs:
   # no sensible job timeout covers. Splitting them keeps the three-engine signal — the
   # sim runtime's riskiest surfaces (rVFC, MessageChannel timing, WebGL context loss)
   # genuinely diverge between engines — while each job stays inside its budget.
+  # THE SELF-CONTAINED BROWSER SUITES — wired here because eight of eleven Playwright configs in
+  # this package were invoked by nothing.
+  #
+  # `sim-authoring.spec.ts` is the case that made this urgent: it is the ONLY place the picker's
+  # badge geometry is checked, it caught a genuine product bug the day it was written (a queued
+  # rAF rebuilt the overlay after DISARM), and no workflow ran it. A suite that exists, passes
+  # locally and is invoked by nothing is the exact shape of audit test-quality-013, which is why
+  # `viewer-e2e` above exists at all — the same hole, found again in the same package.
+  #
+  # THESE THREE AND NOT THE OTHERS, deliberately. They run their own in-process fixture server, so
+  # they need no app, no database and no network, and together they take about thirty seconds:
+  # authoring ~5s, transport ~15s, transitions ~11s (measured on 2026-08-26). The four unwired
+  # suites left out — canary, leak, protocol, rebuilt — carry 900s-1500s timeouts because they are
+  # soak tests that watch for drift over minutes. Those are a scheduled job's work, not a
+  # per-PR gate, and pretending otherwise would buy a slow, flaky signal nobody trusts.
+  #
+  # Chromium only. What is under test here is specified behaviour — client rects, fixed
+  # positioning, pointer-events, `isTrusted`, MessageChannel ordering — not engine-dependent
+  # rendering. The genuine cross-engine risk lives in the sim runtime's paint path, which
+  # `viewer-e2e` above already exercises on all three engines.
+  browser-suites:
+    name: Self-contained browser suites (${{ matrix.suite }}, chromium)
+    needs: guard
+    if: ${{ needs.guard.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false # one suite's regression must not hide another's
+      matrix:
+        suite: [authoring, transport, transitions]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: podcast-saas/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: podcast-saas/pnpm-lock.yaml
+      # Full workspace, not --filter client-web: each suite regenerates its sim fixture by running
+      # backend-api's gen-sim-fixture.ts, so backend-api's dependencies must exist. No ffmpeg —
+      # unlike viewer-e2e these synthesise no media.
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+      # shared/sim/* resolves through shared's exports map to its BUILT dist; without this the
+      # specs fail during COLLECTION rather than at a recognisable assertion.
+      - name: Build shared
+        run: pnpm --filter shared build
+      - name: Install Playwright chromium
+        run: pnpm --filter client-web exec playwright install --with-deps chromium
+      - name: Run the suite
+        run: pnpm --filter client-web test:e2e:${{ matrix.suite }} --project=chromium
+      # FAIL CLOSED, for the same reason viewer-e2e does: a Playwright run that collects zero
+      # specs exits 0, so a config whose testMatch stops matching would turn this gate green while
+      # proving nothing — which is the failure this whole job was added to end.
+      - name: The suite must have actually run
+        run: |
+          node -e '
+            const fs = require("fs");
+            const names = { authoring: "sim-authoring", transport: "sim-transport", transitions: "sim-transitions" };
+            const p = "client-web/e2e-results/" + names[process.env.SUITE] + ".json";
+            if (!fs.existsSync(p)) { console.error("::error::no report at " + p + " — the suite did not run"); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(p, "utf8"));
+            const walk = (s) => [...(s.specs || []), ...((s.suites || []).flatMap(walk))];
+            const specs = (r.suites || []).flatMap(walk);
+            if (specs.length === 0) { console.error("::error::" + process.env.SUITE + " collected 0 specs — a green run that proved nothing"); process.exit(1); }
+            console.log(process.env.SUITE + " collected " + specs.length + " specs");
+          '
+        env:
+          SUITE: ${{ matrix.suite }}
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: browser-suite-evidence-${{ matrix.suite }}
+          path: |
+            podcast-saas/client-web/e2e-results
+            podcast-saas/client-web/test-results
+          if-no-files-found: ignore
+
   viewer-e2e:
     name: Viewer end-to-end (${{ matrix.engine }}, real app on loopback)
     needs: guard
