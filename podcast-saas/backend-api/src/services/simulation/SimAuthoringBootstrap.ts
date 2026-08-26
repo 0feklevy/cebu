@@ -46,6 +46,8 @@ ${SIM_SCANNER_SOURCE}
   var overlay = null;
   var pills = {};            // selector -> pill element
   var observing = false;
+  /** Set by DISARM. Guards the paint loop, which is the only thing that can rebuild the overlay. */
+  var disarmed = false;
   var touched = {};
   var touchTimer = 0;
   var rafHandle = 0;
@@ -133,9 +135,16 @@ ${SIM_SCANNER_SOURCE}
   // paused, and badges that stop tracking a scrolling page while the author is picking would look
   // exactly like the feature being broken.
   function schedulePaint() {
-    if (rafHandle) return;
+    if (disarmed || rafHandle) return;
     var raf = (window.__SIM_RAF_GATE__ && window.__SIM_RAF_GATE__.raw) || window.requestAnimationFrame;
-    rafHandle = raf(function () { rafHandle = 0; paint(); });
+    rafHandle = raf(function () {
+      rafHandle = 0;
+      // Checked again HERE, not only at schedule time. DISARM can land between the two, and a
+      // frame that was already queued would then rebuild the overlay it had just removed —
+      // observed in the browser, where the overlay came back within one frame of teardown.
+      if (disarmed) return;
+      paint();
+    });
   }
 
   // Capture phase, so a scroll in ANY nested container reaches this.
@@ -143,6 +152,8 @@ ${SIM_SCANNER_SOURCE}
   window.addEventListener('resize', schedulePaint, true);
 
   function teardown() {
+    disarmed = true;
+    rafHandle = 0;
     if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
     overlay = null;
     pills = {};
@@ -237,6 +248,7 @@ ${SIM_SCANNER_SOURCE}
     marks = {};
     lastScan = [];
     teardown();
+    disarmed = false;   // a fresh session re-arms; teardown above only cleaned the previous one
     port.onmessage = onPortMessage;
     try { port.start(); } catch (e) {}
     send('CONNECTED', {});

@@ -14,6 +14,7 @@ import {
 import { SimSurface } from '../lib/sim/SimSurface';
 import { useSimRuntime } from '../lib/sim/useSimRuntime';
 import { acquireSimulationLease, shouldFirePickerActivation } from '../lib/sim/simulationLease';
+import { useSimAuthoring } from '../hooks/useSimAuthoring';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 
@@ -177,6 +178,26 @@ interface Props {
   onClose: () => void;
 }
 
+/**
+ * Where the control list came from, as ONE fact.
+ *
+ * `live`  — the authoring channel answered: the real document, whatever its package's age.
+ * `gate`  — the old in-package scanner answered (pre-authoring packages that still have a v3+ gate).
+ * `static`— only the server-side HTML parse answered; JS-built controls are invisible to it.
+ */
+type UiScanSource = 'live' | 'gate' | 'static';
+
+type UiScanOutcome =
+  | { phase: 'idle' }
+  /** Restored from what the last generation saved — not a scan. */
+  | { phase: 'stored' }
+  | { phase: 'busy' }
+  | { phase: 'done'; source: UiScanSource; count: number; truncated: boolean }
+  /** Every layer that ANSWERED said there are none. Not the same as nobody answering. */
+  | { phase: 'empty'; scanned: UiScanSource[] }
+  /** Nothing answered at all — no preview, no gate, no endpoint. */
+  | { phase: 'unreachable' };
+
 export function SectionEditor({
   section, projectId, simulations, videos, videoUrls, images = [],
   onUpdate, onDelete, onSimulationUpdate, onClose,
@@ -214,8 +235,23 @@ export function SectionEditor({
   // Untouched panel (never changed) ⇒ generation sends NOTHING and the AI decides —
   // exactly the pre-picker behavior. Only user picks (checkbox/All/None) set this.
   const [uiDirty, setUiDirty]           = useState(false);
-  const [uiScanBusy, setUiScanBusy]     = useState(false);
-  const [uiScanSource, setUiScanSource] = useState<'runtime' | 'static' | 'stored' | null>(null);
+  /**
+   * ONE value describes the scan, and that is the point.
+   *
+   * This used to be three independent pieces of state (`busy`, `source`, `empty`), and an empty
+   * scan updated only one of them — so the header read "Not scanned yet" while the body two lines
+   * below read "No controls detected", simultaneously, and neither was the whole truth. A
+   * discriminated union makes that pair unrepresentable: every message the panel shows is derived
+   * from this single value.
+   *
+   * `empty` carries WHICH layers answered, because "the live document has no controls" and "we
+   * could only reach the stored HTML, which lists none" are different things to tell an author.
+   */
+  const [uiScan, setUiScan] = useState<UiScanOutcome>({ phase: 'idle' });
+  /** Controls the Auto Script appeared to drive — a heuristic, labelled as one wherever shown. */
+  const [uiScriptTouched, setUiScriptTouched] = useState<Set<string>>(new Set());
+  /** Toggle history for Undo (ADR D10). LIFO of the selectors whose mark changed. */
+  const [uiUndoStack, setUiUndoStack] = useState<string[]>([]);
 
   // ── Saved bridges ("save bridge" / "load bridge", 079) ──────────────────────────────────────
   // Transient UI state only — the presets themselves live server-side, user-scoped.
@@ -230,8 +266,6 @@ export function SectionEditor({
   // The server-composed sentence for the selected preset — which path a load would take and why.
   const [presetFit, setPresetFit] = useState<BridgePresetFit | null>(null);
   const [fitLoading, setFitLoading] = useState(false);
-  const [uiScanEmpty, setUiScanEmpty]   = useState(false);  // last scan ran and found nothing
-  const uiScannedRef = useRef(false);                       // auto-scan once per panel open
 
   // Checked selectors = stays-visible set (fed to normalizeSelection on Generate).
   const uiCheckedSelectors = useMemo(
@@ -336,9 +370,8 @@ export function SectionEditor({
   const { state: simState, runtime: simRuntime, frameRef: simFrameRef, onFrameLoad: simOnFrameLoad } =
     useSimRuntime(simPreviewUrl);
 
-  // The Minimal-UI control scanner (requestRuntimeControls, further down) speaks a DIFFERENT
-  // protocol on its own listener and needs the element, so keep the element ref alongside the
-  // runtime's ref callback.
+  // The Minimal-UI control scanner speaks a DIFFERENT protocol on its own channel and needs the
+  // element, so keep the element ref alongside the runtime's ref callback.
   const previewFrameRef = useCallback((el: HTMLIFrameElement | null) => {
     previewIframeRef.current = el;
     simFrameRef(el);
@@ -366,6 +399,82 @@ export function SectionEditor({
 
   // Right-panel tabs (simulation only)
   const [rightTab, setRightTab]               = useState<'preview' | 'files'>('preview');
+
+  /**
+   * The mark set the in-document badges render from — derived, never a second source of truth.
+   *
+   * `uiUnchecked` remains the ONE place a decision lives; this is a projection of it. A badge and
+   * its row can therefore never disagree, because there is nothing for them to disagree about.
+   */
+  const uiMarks = useMemo(
+    () => uiControls.map(c => ({
+      selector: c.selector,
+      mark: (uiUnchecked.has(c.selector) ? 'hide' : 'keep') as 'hide' | 'keep',
+    })),
+    [uiControls, uiUnchecked],
+  );
+
+  /** Flip one control's mark, from either the checkbox or its badge. Records an Undo step. */
+  const toggleUiControl = useCallback((selector: string) => {
+    setUiUnchecked(prev => {
+      const next = new Set(prev);
+      if (next.has(selector)) next.delete(selector); else next.add(selector);
+      return next;
+    });
+    setUiUndoStack(prev => [...prev, selector]);
+    setUiDirty(true);
+  }, []);
+
+  const undoUiToggle = useCallback(() => {
+    setUiUndoStack(prev => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      // Re-applying the same toggle IS the undo — every step in this stack is its own inverse.
+      setUiUnchecked(u => {
+        const next = new Set(u);
+        if (next.has(last)) next.delete(last); else next.add(last);
+        return next;
+      });
+      return prev.slice(0, -1);
+    });
+  }, []);
+
+  /**
+   * Keep exactly the script-driven controls and hide the rest of THIS SCAN.
+   *
+   * Scoped to `uiControls` on purpose: a control the scan never saw must not be hidden by a
+   * suggestion derived from a list it was absent from. The button is disabled outright unless the
+   * latest scan completed and was not capped — the ADR requires the suggestion to fall back to
+   * nothing rather than act on a partial view.
+   */
+  const keepScriptUsed = useCallback(() => {
+    setUiUnchecked(new Set(
+      uiControls.filter(c => !uiScriptTouched.has(c.selector)).map(c => c.selector),
+    ));
+    setUiDirty(true);
+    setUiUndoStack([]);   // a bulk change is not undoable step-by-step; say so by clearing.
+  }, [uiControls, uiScriptTouched]);
+
+  // `handlePreviewFrameLoad` is defined above this hook (it is wired into the surface further up),
+  // so it reaches the session through a ref rather than forcing a reorder of two unrelated blocks.
+  const authoringRef = useRef<ReturnType<typeof useSimAuthoring> | null>(null);
+
+  const authoring = useSimAuthoring({
+    frameRef: previewIframeRef,
+    documentKey: simPreviewUrl,
+    // Sessions exist only while the author is picking. A viewer never opens this panel, and the
+    // in-document half stays dormant until one does.
+    enabled: uiPanelOpen && rightTab === 'preview' && !!simPreviewUrl,
+    marks: uiMarks,
+    onMarkToggled: (sel) => toggleUiControl(sel),
+    onScriptTouched: (sels) => setUiScriptTouched(prev => {
+      const next = new Set(prev);
+      for (const x of sels) next.add(x);
+      return next;
+    }),
+    onEscape: () => setUiPanelOpen(false),
+  });
+
   const [simFiles, setSimFiles]               = useState<SimFile[]>([]);
   const [simFilesLoading, setSimFilesLoading] = useState(false);
   const [simFilesError, setSimFilesError]     = useState<string | null>(null);
@@ -470,17 +579,17 @@ export function SectionEditor({
     // (P1.1a) The picker state a pending debounced re-apply was scheduled from is being reset —
     // that timer must never fire against the new section/simulation.
     previewEpochRef.current += 1;
-    uiScannedRef.current = false;
+    uiAutoScanRef.current = false;
     setUiPanelOpen(false);
-    setUiScanBusy(false);
-    setUiScanEmpty(false);
     setUiDirty(false);
+    setUiScriptTouched(new Set());
+    setUiUndoStack([]);
     const stored = simId && simId === (section.simulation_id ?? '')
       ? getStoredSelection(section.sim_meta)
       : null;
     setUiControls(stored?.controls ?? []);
     setUiUnchecked(new Set(stored?.hide ?? []));
-    setUiScanSource(stored ? 'stored' : null);
+    setUiScan(stored ? { phase: 'stored' } : { phase: 'idle' });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id, simId]);
 
@@ -667,6 +776,11 @@ export function SectionEditor({
   // exactly as the old `onLoad={() => setPreviewRunning(false)}` did.
   const handlePreviewFrameLoad = useCallback(() => {
     simOnFrameLoad();
+    // The transferred port died with the previous document, and the control list describes a DOM
+    // that no longer exists. Reconnecting here is what closes the race the old picker lost: it
+    // scanned once on panel open and never retried, so a scan that beat the frame's load simply
+    // failed forever.
+    authoringRef.current?.notifyFrameLoad();
     setPreviewRunning(false);
   }, [simOnFrameLoad]);
 
@@ -844,7 +958,7 @@ export function SectionEditor({
     setUiControls(doneSelection?.controls ?? []);
     setUiUnchecked(new Set(doneSelection?.hide ?? []));
     setUiDirty(false);
-    setUiScanSource(doneSelection ? 'stored' : null);
+    setUiScan(doneSelection ? { phase: 'stored' } : { phase: 'idle' });
     const mountedDoc = simRuntime.getState().documentKey;
     const nextDoc = s.simulation_served_url ?? s.simulation_url;
     const remountCovers = !!nextDoc && nextDoc !== mountedDoc;
@@ -1095,7 +1209,7 @@ export function SectionEditor({
       setAutoScript(p.auto_script);
       if (sel) {
         setUiUnchecked(new Set(sel.hide));
-        setUiScanSource('stored');
+        setUiScan({ phase: 'stored' });
       }
       setLoadOpen(false);
       setPresetNotice(`Loading “${p.label}” — regenerating for this simulation…`);
@@ -1394,8 +1508,14 @@ export function SectionEditor({
   // (Simple-UI toggled off, or every control re-checked) is a full navigation, which hard-reloaded
   // the live preview. Memoized so the memoized surface is not handed a new array every render.
   const previewBootHide = useMemo(
-    () => (simpleUi && effectiveHideSelectors?.length ? effectiveHideSelectors : NO_BOOT_HIDE),
-    [simpleUi, effectiveHideSelectors],
+    // THE PICKER SUSPENDS THE HIDE. Minimal UI hides an unchecked control, and a hidden control
+    // has no box to anchor a badge to — so with the policy live, marking something red would make
+    // it vanish along with the only affordance for changing your mind, and a control stored as
+    // red would never appear at all. While the panel is open the preview shows everything; the
+    // badges carry the state instead, and closing the panel puts the real policy back.
+    () => (uiPanelOpen ? NO_BOOT_HIDE
+      : simpleUi && effectiveHideSelectors?.length ? effectiveHideSelectors : NO_BOOT_HIDE),
+    [uiPanelOpen, simpleUi, effectiveHideSelectors],
   );
 
   // (P1.1c) Page-wide arbitration: while the preview is actually RUNNING — not merely tab-open,
@@ -1420,10 +1540,25 @@ export function SectionEditor({
   }, [previewRunning]);
 
   // ── Minimal-UI control picker: scanning ───────────────────────────────────
-  // Runtime scan (exact — catches JS-built panels): ask the live preview iframe.
-  // Gate v2 answers {type:'listSimControls'} with {type:'simControlsList', controls};
-  // old gates never answer, so a 2s timeout resolves null and we fall back to static.
-  const requestRuntimeControls = useCallback((): Promise<SimUiControl[] | null> => {
+  //
+  // THREE LAYERS, TRIED IN ORDER, AND EACH ANSWER IS TAGGED.
+  //
+  //   live   — the authoring channel. Injected at SERVE time, so it reaches every package that
+  //            already exists. This is the layer that fixes the reported bug.
+  //   gate   — the scanner baked into the package at publication. Only packages published with a
+  //            v3+ gate answer it at all, which is why it could not be the primary path.
+  //   static — the server parses the stored HTML. Cannot see a control JavaScript built.
+  //
+  // "The scanner answered with nothing" and "nothing answered" are different facts and must stay
+  // different values all the way to the UI. They used to collapse into `null` two layers before
+  // the panel, which is how the header and the body ended up contradicting each other.
+
+  authoringRef.current = authoring;
+
+  /** A tagged result. `null` means this layer did not answer at all. */
+  type LayerResult = { controls: SimUiControl[] } | null;
+
+  const requestRuntimeControls = useCallback((): Promise<LayerResult> => {
     return new Promise(resolve => {
       const win = previewIframeRef.current?.contentWindow;
       if (!win) { resolve(null); return; }
@@ -1433,9 +1568,12 @@ export function SectionEditor({
         if (e.source !== previewIframeRef.current?.contentWindow) return;
         const data = e.data as { type?: string; controls?: unknown } | null;
         if (!data || typeof data !== 'object' || data.type !== 'simControlsList') return;
-        finish(sanitizeControls(data.controls));
+        // A REPLY carrying nothing is an answer: this document has no controls. Only the timeout
+        // below means "did not answer". `?? []` is what keeps those apart — sanitizeControls maps
+        // an empty list to null, and passing that on would have made an answer look like silence.
+        finish({ controls: sanitizeControls(data.controls) ?? [] });
       };
-      const finish = (result: SimUiControl[] | null) => {
+      const finish = (result: LayerResult) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
@@ -1448,10 +1586,7 @@ export function SectionEditor({
     });
   }, []);
 
-  // Static scan (always available once the backend half ships): the server parses the
-  // stored entry HTML. 404 / network errors resolve null — the picker degrades to its
-  // "No controls detected" empty state instead of erroring while the endpoint isn't there.
-  const fetchStaticControls = useCallback(async (): Promise<SimUiControl[] | null> => {
+  const fetchStaticControls = useCallback(async (): Promise<LayerResult> => {
     if (!simId) return null;
     try {
       const idToken = await getAuth().currentUser?.getIdToken();
@@ -1462,47 +1597,84 @@ export function SectionEditor({
       if (!res.ok) return null;
       const body = await res.json() as unknown;
       const raw = Array.isArray(body) ? body : (body as { controls?: unknown } | null)?.controls;
-      return sanitizeControls(raw);
+      return { controls: sanitizeControls(raw) ?? [] };
     } catch {
       return null;
     }
   }, [projectId, simId]);
 
-  // Full scan: runtime (preferred, when the preview iframe is mounted) merged with
-  // static — runtime wins on selector collisions. Preserves the user's unchecked set;
-  // controls new to this scan default to checked (visible).
+  /** Guards against an older scan landing after a newer one and overwriting it. */
+  const uiScanTokenRef = useRef(0);
+
   const runUiScan = useCallback(async () => {
     if (!simId) return;
-    setUiScanBusy(true);
-    setUiScanEmpty(false);
-    try {
-      const previewLive = rightTab === 'preview' && !!simPreviewUrl;
-      const [runtime, staticControls] = await Promise.all([
-        previewLive ? requestRuntimeControls() : Promise.resolve(null),
-        fetchStaticControls(),
-      ]);
-      const merged = mergeScans(staticControls, runtime);
-      if (merged.length > 0) {
-        setUiControls(merged);
-        setUiScanSource(runtime && runtime.length > 0 ? 'runtime' : 'static');
-      } else {
-        // Keep any stored controls rendered; just surface that the scan came up empty.
-        setUiScanEmpty(true);
-      }
-    } finally {
-      setUiScanBusy(false);
-    }
-  }, [simId, rightTab, simPreviewUrl, requestRuntimeControls, fetchStaticControls]);
+    const token = ++uiScanTokenRef.current;
+    setUiScan({ phase: 'busy' });
 
-  // Auto-scan once per panel OPEN (Rescan re-runs it manually). Closing the panel
-  // re-arms the ref so each reopen triggers one fresh auto-scan — without the reset,
-  // the ref only cleared on section/sim change and a reopen never rescanned.
+    // The authoring layer first — it is the only one that works regardless of a package's age.
+    let live: LayerResult = null;
+    if (authoring.status === 'live') {
+      try {
+        const r = await authoring.scan();
+        live = { controls: sanitizeControls(r.controls) ?? [] };
+        if (token === uiScanTokenRef.current && live.controls.length > 0) {
+          setUiControls(live.controls);
+          setUiScan({ phase: 'done', source: 'live', count: live.controls.length, truncated: r.truncated });
+          return;
+        }
+      } catch {
+        live = null;   // timed out — fall through to the older layers
+      }
+    }
+
+    // The old gate is a FALLBACK, not a second opinion. If the authoring layer answered at all —
+    // even to say "this document has no controls" — it read the live DOM, and asking the
+    // in-package scanner as well can only add a 2s timeout to an answer already in hand.
+    const askGate = live === null && rightTab === 'preview' && !!simPreviewUrl;
+    const [gate, staticRes] = await Promise.all([
+      askGate ? requestRuntimeControls() : Promise.resolve(null),
+      fetchStaticControls(),
+    ]);
+    // A late result for a superseded scan is dropped, never merged: the author has asked a newer
+    // question and this one's answer would silently replace it.
+    if (token !== uiScanTokenRef.current) return;
+
+    const merged = mergeScans(staticRes?.controls ?? null, gate?.controls ?? null);
+    if (merged.length > 0) {
+      setUiControls(merged);
+      setUiScan({
+        phase: 'done',
+        source: gate && gate.controls.length > 0 ? 'gate' : 'static',
+        count: merged.length,
+        truncated: false,
+      });
+      return;
+    }
+
+    // Nothing found. WHICH layers answered is the difference between "this sim has no controls"
+    // and "we could not reach anything that knows".
+    const answered: UiScanSource[] = [];
+    if (live) answered.push('live');
+    if (gate) answered.push('gate');
+    if (staticRes) answered.push('static');
+    setUiScan(answered.length > 0 ? { phase: 'empty', scanned: answered } : { phase: 'unreachable' });
+  }, [simId, rightTab, simPreviewUrl, requestRuntimeControls, fetchStaticControls, authoring]);
+
+  // Auto-scan on panel open, and again whenever the authoring channel becomes live — the second
+  // trigger is what fixes the old race, where the scan fired before the frame had finished
+  // loading and then never retried.
+  const uiAutoScanRef = useRef(false);
   useEffect(() => {
-    if (!uiPanelOpen) { uiScannedRef.current = false; return; }
-    if (uiScannedRef.current || !simId) return;
-    uiScannedRef.current = true;
+    if (!uiPanelOpen) { uiAutoScanRef.current = false; return; }
+    if (!simId) return;
+    if (uiAutoScanRef.current && authoring.status !== 'live') return;
+    if (authoring.status === 'connecting') return;
+    uiAutoScanRef.current = true;
     void runUiScan();
-  }, [uiPanelOpen, simId, runUiScan]);
+    // runUiScan is intentionally omitted: it changes identity with `authoring`, and including it
+    // would re-scan on every status transition rather than on the two that matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiPanelOpen, simId, authoring.status]);
 
   // Clip trimmer derived values
   const clipSourceVideo  = localVideos.find(v => v.id === clipSourceVideoId) ?? null;
@@ -1521,6 +1693,12 @@ export function SectionEditor({
     border: '1.5px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
     fontSize: 13, color: 'hsl(var(--foreground))', outline: 'none',
     boxSizing: 'border-box', fontFamily: 'system-ui, -apple-system, sans-serif',
+  };
+
+  /** The picker's small text actions, so three call sites cannot drift apart. */
+  const pickerLinkStyle: React.CSSProperties = {
+    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+    color: '#b45309', fontSize: 10, fontWeight: 700, textDecoration: 'underline',
   };
 
   const labelStyle: React.CSSProperties = {
@@ -2020,7 +2198,13 @@ export function SectionEditor({
                     <div style={{ marginTop: -6 }}>
                       <button
                         type="button"
-                        onClick={() => setUiPanelOpen(v => !v)}
+                        onClick={() => setUiPanelOpen(v => {
+                          // Opening it switches to Preview: the badges are drawn in that frame,
+                          // and a picker whose visual half is behind another tab is the feature
+                          // not working.
+                          if (!v) setRightTab('preview');
+                          return !v;
+                        })}
                         aria-expanded={uiPanelOpen}
                         style={{
                           display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -2042,100 +2226,124 @@ export function SectionEditor({
                       {uiPanelOpen && (
                         <div style={{
                           marginTop: 6, border: '1px solid #e5e7eb', borderRadius: 10,
-                          backgroundColor: '#f9fafb', padding: '10px 12px',
+                          backgroundColor: 'hsl(var(--card))', padding: 10,
                           display: 'flex', flexDirection: 'column', gap: 8,
-                          maxHeight: 260, boxSizing: 'border-box',
+                          maxHeight: 300, boxSizing: 'border-box',
                         }}>
-                          {/* Header: scan-source note + Rescan + All/None */}
+                          {/*
+                            ONE status line, derived from ONE value. The previous panel kept three
+                            independent pieces of state and could render "Not scanned yet" directly
+                            above "No controls detected" — each true about a different one of them.
+                          */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
-                            <span style={{ fontSize: 10, color: '#9ca3af', minWidth: 0 }}>
-                              {uiScanBusy
-                                ? 'Scanning controls…'
-                                : uiScanSource === 'runtime'
-                                ? 'Scanned from the live preview'
-                                : uiScanSource === 'static'
-                                ? 'Scanned from the sim’s HTML'
-                                : uiScanSource === 'stored'
-                                ? 'Restored from the last generation'
-                                : 'Not scanned yet'}
-                              {uiScanEmpty && uiControls.length > 0 ? ' · rescan found none' : ''}
+                            <span style={{ fontSize: 10.5, color: '#6b7280', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                              {uiScan.phase === 'busy' && <span className="ui-scan-dot" aria-hidden />}
+                              {uiScan.phase === 'idle' ? 'Open the preview to scan this simulation'
+                                : uiScan.phase === 'stored' ? 'Showing your last saved picks'
+                                : uiScan.phase === 'busy' ? 'Scanning the live simulation…'
+                                : uiScan.phase === 'done'
+                                  ? `${uiScan.count} control${uiScan.count === 1 ? '' : 's'} · ${
+                                      uiScan.source === 'live' ? 'from the live preview'
+                                      : uiScan.source === 'gate' ? 'from the running package'
+                                      : 'from the stored HTML'}${uiScan.truncated ? ' · list is capped' : ''}`
+                                : uiScan.phase === 'empty' ? 'This simulation exposes no controls'
+                                : 'Could not reach the control scanner'}
                             </span>
                             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                              {uiUndoStack.length > 0 && (
+                                <button type="button" onClick={undoUiToggle} style={pickerLinkStyle} title="Undo the last change">
+                                  ↺ Undo
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => { void runUiScan(); }}
-                                disabled={uiScanBusy}
+                                disabled={uiScan.phase === 'busy'}
                                 style={{
                                   height: 22, padding: '0 8px', borderRadius: 6,
-                                  border: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--card))',
+                                  border: '1px solid #e5e7eb', backgroundColor: 'hsl(var(--background))',
                                   color: '#6b7280', fontSize: 10, fontWeight: 700,
-                                  cursor: uiScanBusy ? 'not-allowed' : 'pointer', opacity: uiScanBusy ? 0.6 : 1,
+                                  cursor: uiScan.phase === 'busy' ? 'not-allowed' : 'pointer',
+                                  opacity: uiScan.phase === 'busy' ? 0.6 : 1,
                                 }}
                               >
-                                {uiScanBusy ? 'Scanning…' : '⟳ Rescan'}
+                                {uiScan.phase === 'busy' ? 'Scanning…' : '⟳ Rescan'}
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => { setUiUnchecked(new Set()); setUiDirty(true); }}
-                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#b45309', fontSize: 10, fontWeight: 700, textDecoration: 'underline' }}
-                              >
-                                All
+                              <button type="button" onClick={() => { setUiUnchecked(new Set()); setUiDirty(true); }} style={pickerLinkStyle}>
+                                Keep all
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => { setUiUnchecked(new Set(uiControls.map(c => c.selector))); setUiDirty(true); }}
-                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#b45309', fontSize: 10, fontWeight: 700, textDecoration: 'underline' }}
-                              >
-                                None
+                              <button type="button" onClick={() => { setUiUnchecked(new Set(uiControls.map(c => c.selector))); setUiDirty(true); }} style={pickerLinkStyle}>
+                                Hide all
                               </button>
                             </div>
                           </div>
 
-                          {/* Control rows: [checkbox] [kind chip] [label] — checked = stays visible */}
                           {uiControls.length === 0 ? (
-                            <div style={{ padding: '10px 0 4px' }}>
-                              <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
-                                {uiScanBusy ? 'Scanning…' : 'No controls detected'}
+                            <div style={{ padding: '14px 4px 6px', textAlign: 'center' }}>
+                              <p style={{ fontSize: 11.5, color: '#6b7280', margin: '0 0 3px', fontWeight: 600 }}>
+                                {uiScan.phase === 'busy' ? 'Scanning…'
+                                  : uiScan.phase === 'empty' ? 'No controls to choose from'
+                                  : uiScan.phase === 'unreachable' ? 'The scanner did not answer'
+                                  : 'Nothing scanned yet'}
                               </p>
-                              {!uiScanBusy && (
-                                <p style={{ fontSize: 10, color: '#c4c9d2', margin: '3px 0 0' }}>
-                                  Open the Preview tab and Rescan — or the control scanner may not be available yet.
-                                </p>
+                              <p style={{ fontSize: 10, color: '#9ca3af', margin: '0 0 9px', lineHeight: 1.5 }}>
+                                {uiScan.phase === 'empty'
+                                  ? 'This simulation has no buttons or sliders for Minimal UI to hide.'
+                                  : uiScan.phase === 'unreachable'
+                                    ? 'The preview may still be loading — try again in a moment.'
+                                    : 'The preview has to be open for the picker to read the simulation.'}
+                              </p>
+                              {uiScan.phase !== 'busy' && (
+                                <button
+                                  type="button"
+                                  onClick={() => { setRightTab('preview'); void runUiScan(); }}
+                                  style={{
+                                    height: 26, padding: '0 12px', borderRadius: 7, border: 'none',
+                                    backgroundColor: '#f59e0b', color: '#fff', fontSize: 11,
+                                    fontWeight: 700, cursor: 'pointer',
+                                  }}
+                                >
+                                  Open preview &amp; scan
+                                </button>
                               )}
                             </div>
                           ) : (
                             <div className="fine-scrollbar" style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
                               {(() => {
-                                // Visible controls first; hidden-by-default ones (runtime scan
-                                // flags collapsed menus) grouped under a subdued header, dimmed.
                                 const renderRow = (c: SimUiControl) => {
-                                  const checked = !uiUnchecked.has(c.selector);
+                                  const keep = !uiUnchecked.has(c.selector);
                                   const chip = UI_KIND_CHIP[c.kind] ?? UI_KIND_CHIP.other;
+                                  const usedByScript = uiScriptTouched.has(c.selector);
                                   return (
                                     <label
                                       key={c.selector}
                                       title={c.selector}
                                       style={{
-                                        display: 'flex', alignItems: 'center', gap: 8,
+                                        display: 'flex', alignItems: 'center', gap: 7,
                                         padding: '4px 6px', borderRadius: 6, cursor: 'pointer',
-                                        backgroundColor: checked ? 'transparent' : 'rgba(0,0,0,0.03)',
+                                        backgroundColor: keep ? 'transparent' : 'rgba(220,38,38,0.05)',
                                         opacity: c.hidden ? 0.72 : 1,
                                       }}
                                     >
                                       <input
                                         type="checkbox"
-                                        checked={checked}
-                                        onChange={() => {
-                                          setUiUnchecked(prev => {
-                                            const next = new Set(prev);
-                                            if (next.has(c.selector)) next.delete(c.selector);
-                                            else next.add(c.selector);
-                                            return next;
-                                          });
-                                          setUiDirty(true);
-                                        }}
-                                        style={{ accentColor: '#f59e0b', cursor: 'pointer', flexShrink: 0 }}
+                                        checked={keep}
+                                        onChange={() => toggleUiControl(c.selector)}
+                                        style={{ accentColor: '#16a34a', cursor: 'pointer', flexShrink: 0 }}
                                       />
+                                      {/*
+                                        Icon AND word, matching the badge drawn on the control
+                                        itself — never colour alone (ADR D10), so the state survives
+                                        a colour-blind reader and a screenshot.
+                                      */}
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
+                                        flexShrink: 0, minWidth: 46, textAlign: 'center',
+                                        backgroundColor: keep ? 'rgba(22,163,74,0.12)' : 'rgba(220,38,38,0.12)',
+                                        color: keep ? '#15803d' : '#b91c1c',
+                                      }}>
+                                        {keep ? '✓ Keep' : '✕ Hide'}
+                                      </span>
                                       <span style={{
                                         fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
                                         backgroundColor: chip.bg, color: chip.fg, flexShrink: 0,
@@ -2143,17 +2351,27 @@ export function SectionEditor({
                                         {kindLabel(c.kind)}
                                       </span>
                                       <span style={{
-                                        fontSize: 11.5, color: checked ? '#374151' : '#9ca3af',
-                                        textDecoration: checked ? 'none' : 'line-through',
+                                        fontSize: 11.5, color: keep ? 'hsl(var(--foreground))' : '#9ca3af',
                                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                        minWidth: 0,
+                                        minWidth: 0, flex: 1,
                                       }}>
                                         {c.label}
                                       </span>
+                                      {usedByScript && (
+                                        <span
+                                          title="Detected from events the script dispatched — a control set directly, with no event, cannot be seen this way"
+                                          style={{
+                                            flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.03em',
+                                            padding: '1px 5px', borderRadius: 4,
+                                            backgroundColor: 'rgba(99,102,241,0.12)', color: '#4f46e5',
+                                          }}
+                                        >
+                                          script?
+                                        </span>
+                                      )}
                                       {c.hidden && (
                                         <span style={{
-                                          marginLeft: 'auto', flexShrink: 0,
-                                          fontSize: 8.5, fontWeight: 700, letterSpacing: '0.04em',
+                                          flexShrink: 0, fontSize: 8.5, fontWeight: 700,
                                           padding: '1px 5px', borderRadius: 4,
                                           border: '1px solid #e5e7eb', backgroundColor: '#f3f4f6', color: '#9ca3af',
                                         }}>
@@ -2170,7 +2388,7 @@ export function SectionEditor({
                                     {visibleRows.map(renderRow)}
                                     {hiddenRows.length > 0 && (
                                       <div style={{ margin: '6px 0 1px', padding: '0 6px', fontSize: 9.5, fontWeight: 600, color: '#9ca3af' }}>
-                                        Hidden by default — open the sim&rsquo;s menus to see them in the preview
+                                        Hidden by the simulation — no badge in the preview, pick them here
                                       </div>
                                     )}
                                     {hiddenRows.map(renderRow)}
@@ -2180,15 +2398,37 @@ export function SectionEditor({
                             </div>
                           )}
 
+                          {uiScriptTouched.size > 0 && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                              <span style={{ fontSize: 10, color: '#4f46e5', flex: 1, minWidth: 0 }}>
+                                {uiScriptTouched.size} control{uiScriptTouched.size === 1 ? '' : 's'} looked script-driven
+                              </span>
+                              <button
+                                type="button"
+                                onClick={keepScriptUsed}
+                                // Disabled on a capped or unscanned list: acting on it would hide
+                                // controls the scan never saw (ADR §14.7).
+                                disabled={uiScan.phase !== 'done' || uiScan.truncated}
+                                title={uiScan.phase === 'done' && !uiScan.truncated
+                                  ? 'Keep the script-driven controls visible and hide the rest'
+                                  : 'Needs a complete scan of this simulation first'}
+                                style={{
+                                  height: 22, padding: '0 9px', borderRadius: 6, border: 'none',
+                                  backgroundColor: '#4f46e5', color: '#fff', fontSize: 10, fontWeight: 700,
+                                  cursor: uiScan.phase === 'done' && !uiScan.truncated ? 'pointer' : 'not-allowed',
+                                  opacity: uiScan.phase === 'done' && !uiScan.truncated ? 1 : 0.45,
+                                }}
+                              >
+                                Keep only those
+                              </button>
+                            </div>
+                          )}
+
                           {!simpleUi && (
                             <p style={{ fontSize: 10, color: '#b45309', margin: 0, flexShrink: 0 }}>
                               Minimal UI is off — your picks are saved and apply when it&rsquo;s on.
                             </p>
                           )}
-
-                          <p style={{ fontSize: 9.5, color: '#9ca3af', margin: 0, lineHeight: 1.5, flexShrink: 0 }}>
-                            Your picks are applied when you Generate — unchecked controls are hidden mechanically and the AI is told exactly what to keep.
-                          </p>
                         </div>
                       )}
                     </div>
