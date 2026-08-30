@@ -208,6 +208,28 @@ describe('13. banners come from stored artifacts, with the gradient as the hones
   });
 });
 
+describe('the video overlay carries the stored thumbnail as its poster', () => {
+  it('sets <video poster> from bannerUrl, and omits the attribute without one', () => {
+    const withBanner = view({
+      materials: [
+        material({ id: 'vid-1', type: 'video', name: 'intro.mp4', url: 'https://cdn.test/master.m3u8', durationSec: 75, bannerUrl: 'https://cdn.test/thumbnails/frame.jpg' }),
+      ],
+      counts: { simulation: 0, image: 0, video: 1, audio: 0 },
+    });
+    const { container, unmount } = render(<LibraryMiniSite view={withBanner} slug="chaos-abc" activeType={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /intro\.mp4/ }));
+    // The poster is what fills the surface while HLS attaches; dropping the payload field or the
+    // attribute wiring leaves a black rectangle for exactly the seconds a viewer is judging the page.
+    expect((container.querySelector('video') as HTMLVideoElement).getAttribute('poster'))
+      .toBe('https://cdn.test/thumbnails/frame.jpg');
+    unmount();
+
+    const { container: bare } = render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /intro\.mp4/ }));
+    expect((bare.querySelector('video') as HTMLVideoElement).hasAttribute('poster')).toBe(false);
+  });
+});
+
 describe('14. search filters as you type', () => {
   const tile = (name: RegExp) => screen.queryByRole('button', { name });
 
@@ -219,12 +241,26 @@ describe('14. search filters as you type', () => {
     expect(tile(/Boids/)).toBeTruthy();
     expect(tile(/diagram\.png/)).toBeNull();
     expect(tile(/intro\.mp4/)).toBeNull();
-    expect(screen.getByText(/1 of 4 items match/)).toBeTruthy();
+    const count = screen.getByText(/1 of 4 items match/);
+    expect(count).toBeTruthy();
+    // The ATTRIBUTE, not just the text: without aria-live this is a paragraph a sighted user
+    // reads and a screen-reader never hears. It must also be the SAME node that was mounted
+    // before the query — a region born together with its first content is not reliably announced.
+    expect(count.getAttribute('aria-live')).toBe('polite');
 
     fireEvent.change(input, { target: { value: '' } });
     for (const name of [/Boids/, /diagram\.png/, /intro\.mp4/, /theme\.mp3/]) {
       expect(tile(name)).toBeTruthy();
     }
+  });
+
+  it('the live region exists BEFORE the first keystroke, so the first announcement lands', () => {
+    render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    // No query typed yet — the polite region must already be in the DOM (empty), because
+    // assistive tech announces CHANGES to existing regions, not regions that appear.
+    const region = document.querySelector('[aria-live="polite"]');
+    expect(region).toBeTruthy();
+    expect((region as HTMLElement).textContent).toBe('');
   });
 
   it('matches on the type label, not only the name', () => {

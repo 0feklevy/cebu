@@ -30,6 +30,8 @@ import { logger } from '../../lib/logger.js';
 import {
   parsePosterVariants, selectPosterVariant, type PosterFormat,
 } from 'shared/sim/posterIdentity';
+import { packageRevisionFor } from 'shared/sim/simRevision';
+import { derivePackageRevision } from 'shared/sim/simIdentity';
 import type {
   LibraryCounts, LibraryMaterial, LibraryMaterialType, LibraryView,
 } from 'shared';
@@ -117,18 +119,39 @@ const BANNER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
  * grid tile is 16:9), then the newest capture, then identity as the tie-break. Zero bytes are
  * written; a simulation that was never captured simply has no banner.
  */
-async function loadSimBannerUrls(simIds: readonly string[]): Promise<Map<string, string>> {
+async function loadSimBannerUrls(
+  sims: readonly { id: string; bridge_hash?: string | null; active_revision_id?: string | null }[],
+): Promise<Map<string, string>> {
   const banners = new Map<string, string>();
-  if (simIds.length === 0) return banners;
+  if (sims.length === 0) return banners;
+  const simIds = sims.map((s) => s.id);
+
+  // ONLY the currently-served revision's posters may banner (adversarial review, 2026-08-30).
+  // Poster objects live OUTSIDE the revisions/ prefix, so the /sim-public status gate that keeps
+  // never-activated revision BYTES private does not cover them — and the canary pipeline stores
+  // posters for candidates before (and independently of) activation. Ranking newest-first without
+  // this filter would prefer exactly the unpublished capture. Same identity rule as
+  // buildPlayerConfig.posterFor: packageRevisionFor over {active_revision_id, bridge_hash}, no
+  // fallback to other revisions — a sim whose current revision was never captured has no banner.
+  const wantedRevision = new Map<string, string>();
+  for (const sim of sims) {
+    try { wantedRevision.set(sim.id, packageRevisionFor(sim, derivePackageRevision)); }
+    catch { /* underivable identity → this sim simply gets no banner */ }
+  }
 
   // Same guard as buildPlayerConfig: `sim_posters` does not exist until migration 049 is applied,
-  // and a missing poster table must degrade to "no banner", never a failed public page.
+  // and a missing poster table must degrade to "no banner", never a failed public page. Logged —
+  // silently-absorbed reads are how the audioEdition wrong-table 409s shipped (its own comment).
   const rows = await db.query.sim_posters
-    .findMany({ where: inArray(sim_posters.simulation_id, [...simIds]) })
-    .catch(() => []);
+    .findMany({ where: inArray(sim_posters.simulation_id, simIds) })
+    .catch((err: unknown) => {
+      logger.warn({ err }, 'library banners: sim_posters read failed — serving without banners');
+      return [];
+    });
 
   const bySim = new Map<string, typeof rows>();
   for (const row of rows) {
+    if (row.package_revision !== wantedRevision.get(row.simulation_id)) continue;
     const list = bySim.get(row.simulation_id) ?? [];
     list.push(row);
     bySim.set(row.simulation_id, list);
@@ -201,7 +224,7 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
   // no-cache. The `startsWith('http')` branch is the legacy shape simulations.controller.ts and
   // buildPlayerConfig both still honour — an entry_file that is already a full URL.
   const readySims = simRows.filter((s) => s.status === 'ready');
-  const simBanners = await loadSimBannerUrls(readySims.map((s) => s.id));
+  const simBanners = await loadSimBannerUrls(readySims);
   for (const s of readySims) {
     const key = s.active_revision_entry_key ?? s.entry_file;
     if (!key) continue;
@@ -240,6 +263,7 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
   // ready. A `pending`/`processing`/`failed` video has no playable URL at all, so emitting it
   // would be emitting a tile that can only fail.
   const videoMaterials: LibraryMaterial[] = [];
+  let soleEmittedVideoIsBroll = false;
   for (const v of videoRows) {
     if (v.hls_status !== 'ready') continue;
     const key = v.hls_master_key ?? v.hls_360p_key;
@@ -254,6 +278,7 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
       createdAt: iso(v.created_at),
     };
     videoMaterials.push(material);
+    soleEmittedVideoIsBroll = videoMaterials.length === 1 && !!v.is_broll;
     materials.push(material);
   }
 
@@ -262,7 +287,14 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
   // then it is that video's own picture. With several videos (b-roll included) there is no honest
   // way to know which file the frame came from, and stamping every card with the same image would
   // caption b-roll with the main video's frame. Absent is honest; approximate is not.
-  if (videoMaterials.length === 1 && input.projectThumbnailUrl) {
+  // Tightened after an adversarial review probe (2026-08-30): "exactly one EMITTED video" is not
+  // the same claim as "the video the frame came from". Every extraction path derives the frame
+  // from a NON-B-ROLL main video — so when the main video is failed or deleted while a b-roll
+  // stays ready, the b-roll becomes the sole emitted video and the old guard stamped the MAIN
+  // video's frame onto the b-roll's card: a picture of a different video presented as this one's
+  // (probe-verified). The emitted single must therefore itself be non-b-roll before the project
+  // frame may claim to be its picture. Absent is honest; approximate is not.
+  if (videoMaterials.length === 1 && !soleEmittedVideoIsBroll && input.projectThumbnailUrl) {
     videoMaterials[0].bannerUrl = input.projectThumbnailUrl;
   }
 

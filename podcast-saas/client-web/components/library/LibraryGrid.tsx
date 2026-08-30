@@ -91,10 +91,16 @@ export function LibraryGrid({ materials, typeNav, emptyMessage }: Props) {
         )}
       </div>
 
-      {/* aria-live so a screen-reader hears the result count change as they type. */}
-      {trimmed && materials.length > 0 && visible.length > 0 && (
-        <p aria-live="polite" className="mb-4 text-sm text-muted-foreground">
-          {visible.length} of {materials.length} {materials.length === 1 ? 'item' : 'items'} match &ldquo;{trimmed}&rdquo;
+      {/* aria-live so a screen-reader hears the result count change as they type. The region is
+          MOUNTED WHENEVER THE BUCKET HAS ITEMS, not conditionally on the query: a live region
+          added to the DOM in the same pass as its first content is not reliably announced —
+          assistive tech watches EXISTING regions for changes. Empty while there is no query, it
+          costs nothing visually and makes the first keystroke's announcement dependable. */}
+      {materials.length > 0 && (
+        <p aria-live="polite" className="mb-4 min-h-5 text-sm text-muted-foreground">
+          {trimmed && visible.length > 0
+            ? `${visible.length} of ${materials.length} ${materials.length === 1 ? 'item' : 'items'} match “${trimmed}”`
+            : ''}
         </p>
       )}
 
