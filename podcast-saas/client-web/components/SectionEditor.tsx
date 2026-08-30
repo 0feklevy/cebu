@@ -266,6 +266,13 @@ export function SectionEditor({
   // The server-composed sentence for the selected preset — which path a load would take and why.
   const [presetFit, setPresetFit] = useState<BridgePresetFit | null>(null);
   const [fitLoading, setFitLoading] = useState(false);
+  // A recipe-path load that was applied MECHANICALLY (no LLM). We adopted the preset's settings
+  // and kept the current simulation rendering; regenerating the script for THIS simulation is the
+  // one thing that needs the LLM, so it is offered here as an explicit, labelled opt-in instead of
+  // being spent automatically on load (FIX B — never auto-LLM on load).
+  const [pendingRecipeRegen, setPendingRecipeRegen] = useState<{
+    label: string; prompt: string; simpleUi: boolean; autoScript: boolean; selection: SimUiSelection | null;
+  } | null>(null);
 
   // Checked selectors = stays-visible set (fed to normalizeSelection on Generate).
   const uiCheckedSelectors = useMemo(
@@ -567,6 +574,8 @@ export function SectionEditor({
     // looking at.
     setPresetNotice(null);
     setPresetError(null);
+    // A pending regenerate-with-AI offer belongs to the section it was raised on.
+    setPendingRecipeRegen(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.id]);
 
@@ -986,6 +995,9 @@ export function SectionEditor({
     // Generate needs EITHER a prompt (LLM) OR a UI selection (mechanical minimize-UI, no prompt).
     if (!prompt && !sendSel) return;
 
+    // Any real generation supersedes a standing "regenerate this recipe for me?" offer.
+    setPendingRecipeRegen(null);
+
     // Ensure section is set to simulation type first
     if (section.type !== 'simulation' || section.simulation_id !== simId) {
       try {
@@ -1187,6 +1199,7 @@ export function SectionEditor({
         try {
           const r = await api.applyBridgePreset(projectId, section.id, p.id);
           applyPersistedSection(r.section);
+          setPendingRecipeRegen(null);
           setLoadOpen(false);
           setPresetNotice(`Loaded “${p.label}”`);
           return;
@@ -1198,9 +1211,13 @@ export function SectionEditor({
           if ((e as { status?: number }).status !== 409) throw e;
         }
       }
-      // The RECIPE path: adopt the preset's settings into the editor state, close the picker,
-      // and run the existing generation with the values passed EXPLICITLY — state set in the
-      // lines above has not committed yet, and reading it back would race React.
+      // ── The RECIPE path: a load that does NOT fit as an artifact ────────────────────────────
+      // A saved script body binds BY NAME to one simulation's DOM ids / label texts / window API;
+      // pasted onto a different simulation it finds nothing and silently no-ops — which is exactly
+      // how a load blacks the screen. Regenerating the script for THIS simulation is the only
+      // technical option and it costs an LLM call, so it is NEVER spent automatically here (FIX B).
+      // Instead: adopt the preset's settings, apply only the MECHANICAL (zero-LLM) parts, keep the
+      // current simulation rendering, and offer regeneration as an explicit, labelled opt-in below.
       const sel = p.ui_controls && ((p.ui_controls.show?.length ?? 0) || (p.ui_controls.hide?.length ?? 0))
         ? { controls: [], show: p.ui_controls.show ?? [], hide: p.ui_controls.hide ?? [] }
         : null;
@@ -1212,18 +1229,46 @@ export function SectionEditor({
         setUiScan({ phase: 'stored' });
       }
       setLoadOpen(false);
-      setPresetNotice(`Loading “${p.label}” — regenerating for this simulation…`);
-      await handleGenerateScript({ prompt: p.sim_prompt ?? '', simpleUi: p.simple_ui, autoScript: p.auto_script, selection: sel });
-      // The notice announced work that is now over. Left standing it says "regenerating…" beside a
-      // finished result — or, worse, beside the generation's own error, where it reads as though
-      // something is still coming. Generation reports its own outcome; this hands the screen back.
-      setPresetNotice(null);
+
+      // MECHANICAL apply — no LLM, never touches the working simulation's body:
+      //   • with a UI selection → the existing minimize-UI path (empty prompt ⇒ applyMinimalUiOnly),
+      //     which persists simple_ui / auto_script / the selection and PRESERVES the current body;
+      //   • without one → persist just the toggles through a plain section update.
+      if (sel) {
+        await handleGenerateScript({ prompt: '', simpleUi: p.simple_ui, autoScript: p.auto_script, selection: sel });
+      } else {
+        try {
+          const patched = await api.updateSection(projectId, section.id, { simple_ui: p.simple_ui, auto_script: p.auto_script });
+          onUpdate(patched);
+        } catch { /* the toggles are a convenience; a failed persist must not block the opt-in below */ }
+      }
+
+      // Offer AI regeneration as a deliberate choice — only when there is a prompt to regenerate
+      // FROM. A settings/selection-only preset has nothing to author, so no spend is offered.
+      const regenPrompt = (p.sim_prompt ?? '').trim();
+      if (regenPrompt) {
+        setPendingRecipeRegen({ label: p.label, prompt: regenPrompt, simpleUi: p.simple_ui, autoScript: p.auto_script, selection: sel });
+        setPresetNotice(`Loaded “${p.label}” settings. Its saved script was written for a different simulation, so this one is unchanged — regenerate it for this simulation below if you want it adapted.`);
+      } else {
+        setPendingRecipeRegen(null);
+        setPresetNotice(`Loaded “${p.label}” settings.`);
+      }
     } catch (e) {
       setPresetError((e as Error).message || 'Could not load this bridge');
     } finally {
       setPresetBusy(false);
     }
-  }, [selectedPreset, presetBusy, presetFit, projectId, section.id, applyPersistedSection, handleGenerateScript]);
+  }, [selectedPreset, presetBusy, presetFit, projectId, section.id, applyPersistedSection, handleGenerateScript, onUpdate]);
+
+  // The explicit, opt-in AI regeneration for a recipe-path load (FIX B). This is the ONLY place a
+  // load turns into an LLM spend, and only ever from the user's click on the labelled button.
+  const handleRegenerateForThisSim = useCallback(async () => {
+    const r = pendingRecipeRegen;
+    if (!r || presetBusy || generating) return;
+    setPendingRecipeRegen(null);
+    setPresetNotice(null);
+    await handleGenerateScript({ prompt: r.prompt, simpleUi: r.simpleUi, autoScript: r.autoScript, selection: r.selection });
+  }, [pendingRecipeRegen, presetBusy, generating, handleGenerateScript]);
 
 
   const handleCancelGeneration = useCallback(() => {
@@ -2611,6 +2656,47 @@ export function SectionEditor({
                     {presetNotice && (
                       <div role="status" style={{ marginTop: 6, fontSize: 12, color: '#15803d' }}>{presetNotice}</div>
                     )}
+                    {pendingRecipeRegen && (
+                      <div
+                        role="group"
+                        aria-label="Regenerate this bridge's script for this simulation"
+                        style={{
+                          marginTop: 8, padding: 10, borderRadius: 8,
+                          border: '1.5px solid #fcd34d', background: '#fffbeb',
+                        }}
+                      >
+                        <div style={{ fontSize: 12, color: '#92400e', marginBottom: 8, lineHeight: 1.4 }}>
+                          This bridge’s script was written for a different simulation, so it was not
+                          applied — the current simulation is unchanged. Regenerate it for this one?
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            onClick={handleRegenerateForThisSim}
+                            disabled={presetBusy || generating}
+                            style={{
+                              flex: 1, height: 30, borderRadius: 8, border: 'none',
+                              background: presetBusy || generating ? '#fcd34d' : 'linear-gradient(135deg,#f59e0b,#d97706)',
+                              color: '#fff', fontSize: 12, fontWeight: 700,
+                              cursor: presetBusy || generating ? 'not-allowed' : 'pointer',
+                            }}
+                          >
+                            Regenerate for this simulation (uses AI)
+                          </button>
+                          <button
+                            onClick={() => setPendingRecipeRegen(null)}
+                            disabled={presetBusy || generating}
+                            style={{
+                              height: 30, padding: '0 12px', borderRadius: 8,
+                              border: '1.5px solid hsl(var(--border))', background: 'transparent',
+                              color: 'hsl(var(--foreground))', fontSize: 12, fontWeight: 600,
+                              cursor: presetBusy || generating ? 'not-allowed' : 'pointer',
+                            }}
+                          >
+                            Not now
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3706,7 +3792,7 @@ export function SectionEditor({
               >
                 {presetBusy ? 'Loading…'
                   : presetFit?.path === 'artifact' ? 'Apply instantly'
-                  : 'Load & regenerate'}
+                  : 'Load settings'}
               </button>
             </div>
           </div>
