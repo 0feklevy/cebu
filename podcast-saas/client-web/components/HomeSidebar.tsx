@@ -9,13 +9,21 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { useAuth } from '../lib/firebase';
 import { UserProfileButton } from './UserProfileButton';
 import { CreateProjectDialog } from './CreateProjectDialog';
-import type { PlaylistItem, PlaylistWithItems, Project } from 'shared/src/generated/client-v1';
+import type { PlaylistItem, PlaylistWithItems, Project, ProjectStatus } from 'shared/src/generated/client-v1';
 
-const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
-  draft:      { dot: '#94a3b8', label: 'Draft' },
-  has_videos: { dot: '#3b82f6', label: 'Has videos' },
-  ready:      { dot: '#10b981', label: 'Ready' },
-  failed:     { dot: '#ef4444', label: 'Failed' },
+// Keyed by the CLOSED ProjectStatus union, so a status the server can send but this map forgot
+// is a compile error instead of a silent unlabelled row. `has_videos` was a dead key here — not a
+// member of the enum, never sent — while five real members (ingesting…generating) rendered with
+// no dot at all (adversarial review, 2026-08-30).
+const STATUS_STYLES: Record<ProjectStatus, { dot: string; label: string }> = {
+  draft:        { dot: '#94a3b8', label: 'Draft' },
+  ingesting:    { dot: '#3b82f6', label: 'Ingesting' },
+  scripting:    { dot: '#3b82f6', label: 'Scripting' },
+  script_ready: { dot: '#8b5cf6', label: 'Script ready' },
+  approved:     { dot: '#8b5cf6', label: 'Approved' },
+  generating:   { dot: '#f59e0b', label: 'Generating' },
+  ready:        { dot: '#10b981', label: 'Ready' },
+  failed:       { dot: '#ef4444', label: 'Failed' },
 };
 
 function timeAgo(dateStr: string): string {
@@ -258,7 +266,7 @@ function ProjectCard({ project, onRename, onDelete, onDuplicated }: ProjectCardP
 }
 
 function PlaylistVideoRow({ item }: { item: PlaylistItem }) {
-  const status = STATUS_STYLES[item.status] ?? STATUS_STYLES.draft;
+  const status = STATUS_STYLES[item.status];
 
   return (
     <a

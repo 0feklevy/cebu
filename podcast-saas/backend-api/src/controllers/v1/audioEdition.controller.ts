@@ -24,7 +24,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { project_audio_editions, projects, video_files } from '../../db/schema.js';
+import { project_audio_editions, projects } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
 import { editableProject } from '../../services/collabAccess.js';
 import { requireProjectAccess } from '../../services/projectAccess.js';

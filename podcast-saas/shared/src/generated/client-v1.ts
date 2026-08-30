@@ -3,6 +3,7 @@ import type { CreateProject, PlatformSettings } from '../types/project.js';
 import type { Host, CreateHost } from '../types/host.js';
 import type { Corpus } from '../types/corpus.js';
 import type { EditionWireStatus } from '../audio/editionStatus.js';
+import type { ProjectStatus } from '../types/project.js';
 import type {
   CreatePodcastShow,
   UpdatePodcastShow,
@@ -222,12 +223,31 @@ export interface DegradedExportRefusal {
   warnings: string[];
 }
 
+/**
+ * `projectStatusEnum` in the backend schema — a real Postgres enum. The closed set already has
+ * ONE statement on this side: `ProjectStatusSchema` in `../types/project.ts` (zod, so it also
+ * validates at runtime where used). Re-exported here rather than copied — the first draft of this
+ * fix hand-copied the union and claimed it was the only statement, which an adversarial review
+ * caught: two hand copies drift one at a time, exactly the failure this file's §5 note warns of.
+ */
+export type { ProjectStatus } from '../types/project.js';
+
+/** `videoFileStatusEnum` in the backend schema. */
+export type VideoFileStatus = 'uploading' | 'ready' | 'failed';
+
 export interface Project {
   id: string;
   org_id: string;
   title: string | null;
   topic: string | null;
-  status: string;
+  /**
+   * A CLOSED set, and it always was — `projectStatusEnum` is a real Postgres enum (schema.ts),
+   * so the database itself refuses anything else. Typing it `string` here meant the contract
+   * declared LESS than the storage guarantees, which is the shape that hid the audio-edition
+   * status bug: the server sent a value the client had never heard of and nothing objected.
+   * `visibility` on the next line was always a proper union; this is now consistent with it.
+   */
+  status: ProjectStatus;
   visibility?: 'private' | 'unlisted' | 'public';
   created_by: string | null;
   share_token?: string | null;
@@ -239,7 +259,8 @@ export interface Project {
   thumbnail_url?: string | null;
   seo_description?: string | null;
   seo_keywords?: string | null;
-  metadata_status?: string;
+  /** `schema.ts` documents the closed set on the column itself. */
+  metadata_status?: 'none' | 'processing' | 'ready' | 'failed';
   view_count?: number;
   created_at: string;
   /** 'owner' for own projects, 'collaborator' for projects shared with you (042). */
@@ -375,7 +396,8 @@ export interface VideoFile {
   filename: string;
   file_size: number | null;
   storage_key: string | null;
-  status: string;
+  /** `videoFileStatusEnum`, a real Postgres enum — as closed as `hls_status` two lines below. */
+  status: VideoFileStatus;
   duration_sec: number | null;
   hls_status: 'pending' | 'processing' | 'ready' | 'failed';
   hls_master_key: string | null;
@@ -384,7 +406,7 @@ export interface VideoFile {
   is_broll: boolean;              // true for AI-generated broll source files
   hls_url: string | null;   // computed: public HLS URL (only set when hls_status === 'ready')
   raw_url?: string | null;  // present in upload response and hls-status poll; absent in list
-  crop_status: string;      // none | processing | ready | failed
+  crop_status: 'none' | 'processing' | 'ready' | 'failed';
   crop_updated_at: string | null;
   created_at: string;
 }
@@ -865,7 +887,9 @@ export interface PlaylistItem {
   title: string | null;
   description: string | null;
   thumbnail_url: string | null;
-  status: string;
+  /** The joined PROJECT's status (playlists.controller emits `p?.status ?? 'failed'`) — the same
+   *  closed enum, so the same rule as `Project.status`: no `string` widening. */
+  status: ProjectStatus;
 }
 
 export interface PlaylistWithItems extends Playlist {
