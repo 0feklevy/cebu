@@ -3,6 +3,7 @@ import type { CreateProject, PlatformSettings } from '../types/project.js';
 import type { Host, CreateHost } from '../types/host.js';
 import type { Corpus } from '../types/corpus.js';
 import type { EditionWireStatus } from '../audio/editionStatus.js';
+import type { ProjectStatus } from '../types/project.js';
 import type {
   CreatePodcastShow,
   UpdatePodcastShow,
@@ -223,14 +224,13 @@ export interface DegradedExportRefusal {
 }
 
 /**
- * `projectStatusEnum` in the backend schema — a real Postgres enum, mirrored here by hand.
- *
- * Named rather than inlined because more than one place needs it and a copied union drifts one
- * copy at a time. `shared/src/generated/` is hand-maintained (CLAUDE.md §5); nothing regenerates
- * it from the schema, so these unions are the only statement of the closed set on this side.
+ * `projectStatusEnum` in the backend schema — a real Postgres enum. The closed set already has
+ * ONE statement on this side: `ProjectStatusSchema` in `../types/project.ts` (zod, so it also
+ * validates at runtime where used). Re-exported here rather than copied — the first draft of this
+ * fix hand-copied the union and claimed it was the only statement, which an adversarial review
+ * caught: two hand copies drift one at a time, exactly the failure this file's §5 note warns of.
  */
-export type ProjectStatus =
-  | 'draft' | 'ingesting' | 'scripting' | 'script_ready' | 'approved' | 'generating' | 'ready' | 'failed';
+export type { ProjectStatus } from '../types/project.js';
 
 /** `videoFileStatusEnum` in the backend schema. */
 export type VideoFileStatus = 'uploading' | 'ready' | 'failed';
@@ -887,7 +887,9 @@ export interface PlaylistItem {
   title: string | null;
   description: string | null;
   thumbnail_url: string | null;
-  status: string;
+  /** The joined PROJECT's status (playlists.controller emits `p?.status ?? 'failed'`) — the same
+   *  closed enum, so the same rule as `Project.status`: no `string` widening. */
+  status: ProjectStatus;
 }
 
 export interface PlaylistWithItems extends Playlist {
