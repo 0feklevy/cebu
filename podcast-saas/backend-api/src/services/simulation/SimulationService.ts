@@ -3153,6 +3153,43 @@ export class SimulationService {
         mainBody,
       });
 
+      // ── (3b) NO-OP SHORT-CIRCUIT: the assembled package is byte-identical to the active one ──
+      // Owner requirement (2026-08-30, "load bridge"): a load that changes nothing must not
+      // duplicate the package in storage nor republish a revision — "if it's identical, there's
+      // nothing to do and no reason to duplicate it in storage."
+      //
+      // The signal is the BYTES, deliberately NOT a stored hash. `simulations.bridge_hash` is a
+      // LEGACY field a revisioned simulation never advances (it stays null — see the class doc
+      // above), so judgeBridgeLoad's `sameContent`, computed from it, is blind to the modern
+      // revision path and cannot be relied on here. `assembleSectionBridgeArtifacts` is pure and
+      // its injections are idempotent, so when the new body equals the section's current body the
+      // combined bridge.js and the entry HTML come back byte-for-byte identical — and every other
+      // file is copied verbatim from this same base — which means a republish would stage an exact
+      // duplicate of the active revision under a fresh id. Skip the whole draft→upload→activate:
+      // point the section at the revision that already holds these bytes and persist only its
+      // settings (simple_ui / auto_script / sim_meta / ui selection) through the same hook. Gated
+      // on `baseRevisionId` because a no-op only means anything when a base revision already exists
+      // to reference; a first publication (legacy prefix) always stages revision 1.
+      if (baseRevisionId && art.bridgeJs === existingBridgeJs && art.entryHtml === rawEntryHtml) {
+        const currentEntryKey = revisionFileKey(revisionRoot, baseRevisionId, entryManifestPath);
+        const sectionUrl = `${this.storage.getSimPublicUrl(currentEntryKey)}?section=${sectionId}&v=${art.bridgeHash}`;
+        const persistSection = opts.persistSection;
+        if (persistSection) {
+          // No activation happens, so persist runs in its own transaction rather than inside
+          // activate()'s. The section row still commits atomically; there is simply no pointer to
+          // flip because the bytes it would point at are already live.
+          await db.transaction(async (tx) => {
+            await persistSection(tx, { sectionUrl, bridgeHash: art.bridgeHash });
+          });
+        }
+        onEvent?.('status', { status: 'No changes — nothing to republish', type: 'progress' });
+        logger.info(
+          { simId, sectionId, projectId, revisionId: baseRevisionId, bridgeHash: art.bridgeHash },
+          'Bridge unchanged — no republish (byte-identical to the active revision)',
+        );
+        return { sectionUrl, bridgeHash: art.bridgeHash };
+      }
+
       onEvent?.('status', { status: 'Uploading files…', type: 'progress' });
 
       // ── (4) Stage the revision: draft → upload every file → validate ───────────────────────

@@ -66,7 +66,7 @@ const storageRef = vi.hoisted(() => ({ adapter: null as unknown }));
 vi.mock('../../storage/getStorageAdapter.js', () => ({ getStorageAdapter: () => storageRef.adapter }));
 
 import {
-  SimulationService, computeBridgeHash, type SectionPersistHook,
+  SimulationService, computeBridgeHash, parseSectionEntries, type SectionPersistHook,
 } from '../SimulationService.js';
 import { RevisionService } from '../RevisionService.js';
 import { RevisionMigration } from '../RevisionMigration.js';
@@ -439,6 +439,73 @@ describe('a generation on an already-revisioned simulation builds on the ACTIVE 
     expect(adapter.uploadLog.filter((k) => k.startsWith(`${revPrefix(rev1)}/`)),
       'immutable bytes of an already-published revision were overwritten').toEqual([]);
     expect(adapter.uploadLog.every((k) => k.startsWith(`${rp2}/`))).toBe(true);
+  });
+});
+
+// ── (2b) The no-op short-circuit: an unchanged republish stages NOTHING ─────────────────────────
+//
+// Owner requirement (2026-08-30, "load bridge"): "if [the user] doesn't change it, the bridge is
+// identical, so there's nothing to do and no reason to duplicate it in storage." The publication
+// path detects that the package it is about to stage is byte-for-byte the active revision and
+// skips the draft→upload→activate entirely, persisting only the section settings. Removing that
+// short-circuit (always republish) MUST redden these two tests.
+
+describe('a republish that would be byte-identical to the active revision is a NO-OP', () => {
+  it('stages no new revision and writes no bytes, yet still persists the section settings', async () => {
+    // Revision 1 established (migration-on-write from the legacy prefix).
+    await generate(sectionA);
+    const rev1 = (await simRow()).active_revision_id!;
+    const rev1Bytes = snapshotOf(keysUnder(revPrefix(rev1)));
+
+    // A SECOND minimal-UI apply on the SAME section changes nothing: applyMinimalUiOnly preserves
+    // the existing body, so the assembled bridge.js + entry come back byte-identical to revision 1
+    // and every other file would be copied verbatim.
+    adapter.uploadLog.length = 0;
+    const hook2 = persistHook(sectionA);
+    const res2 = await generate(sectionA, { persistSection: hook2 });
+
+    // No new revision row; the pointer still names revision 1.
+    expect((await revisionRows()).map((r) => r.revision_number),
+      'a byte-identical load duplicated the revision in storage').toEqual([1]);
+    expect((await simRow()).active_revision_id).toBe(rev1);
+
+    // Not one byte entered storage — no draft prefix, no re-upload of the package.
+    expect(adapter.uploadLog, 'an unchanged load wrote bytes to storage').toEqual([]);
+
+    // Revision 1's bytes are exactly as they were.
+    expect(snapshotOf(keysUnder(revPrefix(rev1)))).toEqual(rev1Bytes);
+
+    // The settings hook STILL ran — this is how simple_ui / auto_script / the selection persist on a
+    // no-op load — and it points the section at the revision that already holds these bytes.
+    expect(hook2.calls, 'the no-op skipped persisting the section settings').toHaveLength(1);
+    expect(res2.sectionUrl).toContain(`revisions/${rev1}/`);
+    expect((await sectionRow(sectionA)).simulation_url).toBe(res2.sectionUrl);
+  });
+
+  it('the same saved body loaded through applySavedBridgeBody also stages nothing', async () => {
+    // The saved-bridge apply path (the /apply route) reaches uploadSectionBridge through
+    // applySavedBridgeBody. Loading a body equal to what the section already runs — the literal
+    // "load a bridge back onto its own simulation" case, which the live repro showed republishing —
+    // must not duplicate the package. The body is extracted with parseSectionEntries, exactly as
+    // SavedBridgeService.saveFromSection captured main_body at save time.
+    await generate(sectionA);
+    const rev1 = (await simRow()).active_revision_id!;
+    const liveBridge = adapter.objects.get(`${revPrefix(rev1)}/package/bridge.js`)!.bytes.toString('utf8');
+    const currentBody = parseSectionEntries(liveBridge).get(sectionA);
+    expect(currentBody, 'section A has no body in the live bridge.js').toBeTruthy();
+
+    adapter.uploadLog.length = 0;
+    const hook2 = persistHook(sectionA);
+    const res2 = await svc.applySavedBridgeBody({
+      simId, sectionId: sectionA, projectId,
+      body: currentBody!, entryKey: `${prefix}/index.html`, persistSection: hook2,
+    });
+
+    expect((await revisionRows()).map((r) => r.revision_number),
+      'loading a bridge onto its own simulation duplicated the revision').toEqual([1]);
+    expect(adapter.uploadLog, 'an identical saved-bridge load wrote bytes to storage').toEqual([]);
+    expect(hook2.calls).toHaveLength(1);
+    expect(res2.sectionUrl).toContain(`revisions/${rev1}/`);
   });
 });
 

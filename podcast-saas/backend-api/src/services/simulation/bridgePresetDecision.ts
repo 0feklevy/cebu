@@ -97,16 +97,20 @@ export function describeLoadPath(v: LoadPath): string {
       ? 'This preset was saved from this exact simulation — it will apply instantly.'
       : 'Everything this preset needs exists here — it will apply instantly.';
   }
+  // The recipe sentences deliberately no longer PROMISE regeneration: a saved script is written for
+  // one simulation's DOM/API and cannot be pasted onto another, so loading applies the settings and
+  // keeps the current simulation running — regenerating the script is a separate, explicit choice
+  // (never an automatic LLM spend on load). See handleConfirmLoad (FIX B).
   switch (v.why) {
     case 'no-artifact':
-      return 'This preset carries settings only; they will apply and the script will be generated fresh.';
+      return 'This preset carries settings only; they will be applied and the current simulation is kept.';
     case 'no-contract':
     case 'verification-unavailable':
-      return 'Compatibility could not be checked, so the script will be regenerated from the saved settings.';
+      return 'Compatibility could not be checked, so the saved script will not be applied — the settings load and you can regenerate the script for this simulation.';
     case 'anchors-missing': {
       const shown = v.missing.slice(0, 3).map((m) => m.token).join(', ');
       const more = v.missing.length > 3 ? ` and ${v.missing.length - 3} more` : '';
-      return `This simulation does not have ${shown}${more} — the script will be regenerated from the saved settings.`;
+      return `This simulation does not have ${shown}${more} — the saved script will not be applied; the settings load and you can regenerate it for this simulation.`;
     }
   }
 }
