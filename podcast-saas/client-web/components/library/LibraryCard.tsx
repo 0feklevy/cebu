@@ -61,7 +61,7 @@ function TypeGlyph({ type }: { type: LibraryMaterial['type'] }) {
   }
 }
 
-const TYPE_LABEL: Record<LibraryMaterial['type'], string> = {
+export const TYPE_LABEL: Record<LibraryMaterial['type'], string> = {
   simulation: 'Simulation', image: 'Image', video: 'Video', audio: 'Sound',
 };
 
@@ -77,7 +77,11 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
   // A material whose bytes have gone (deleted image, moved object) falls back to the gradient
   // rather than showing a broken-image glyph. The server already dropped anything unresolvable.
   const [imageFailed, setImageFailed] = useState(false);
-  const showImage = material.type === 'image' && !imageFailed;
+  // The tile's still picture: an image IS its own picture; a simulation or video rides on the
+  // stored artifact the backend re-emitted as `bannerUrl` (sim poster / video-derived thumbnail).
+  // Nothing is captured for this tile — no bannerUrl, no picture, gradient.
+  const still = material.type === 'image' ? material.url : material.bannerUrl ?? null;
+  const showImage = Boolean(still) && !imageFailed;
   const duration = formatDuration(material.durationSec);
 
   return (
@@ -91,14 +95,17 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
         {showImage ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={material.url}
-            alt={material.name}
+            src={still!}
+            // A banner is decoration for a tile whose caption already names it; only an image
+            // material's picture IS the content, so only that one gets a real alt.
+            alt={material.type === 'image' ? material.name : ''}
             loading={eager ? 'eager' : 'lazy'}
             decoding="async"
             onError={() => setImageFailed(true)}
             // The stored crop fractions map the chosen region onto the whole tile — the same
             // arithmetic `ImageOverlay.tsx` uses, so a tile and the editor agree on the framing.
-            style={material.crop ? {
+            // Only images carry a crop; a poster or thumbnail arrives already framed.
+            style={material.type === 'image' && material.crop ? {
               position: 'absolute',
               width:  `${(1 / (material.crop.w || 1)) * 100}%`,
               height: `${(1 / (material.crop.h || 1)) * 100}%`,

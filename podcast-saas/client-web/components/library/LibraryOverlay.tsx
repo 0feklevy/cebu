@@ -163,6 +163,8 @@ function VideoSurface({ material }: { material: LibraryMaterial }) {
       ref={videoRef}
       controls
       playsInline
+      // The stored thumbnail (when the payload carries one) fills the surface while HLS attaches.
+      poster={material.bannerUrl ?? undefined}
       className="max-h-full max-w-full rounded-lg border border-border bg-card"
     >
       {material.captionsUrl && (

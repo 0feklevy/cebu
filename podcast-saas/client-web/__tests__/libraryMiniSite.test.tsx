@@ -167,6 +167,133 @@ describe('11. the share button resolves by its accessible name (ui-ux-003)', () 
   });
 });
 
+describe('13. banners come from stored artifacts, with the gradient as the honest fallback', () => {
+  it('renders a simulation poster as the tile image, and falls back to the gradient on error', () => {
+    const withBanner = material({
+      id: 'sim-b', type: 'simulation', name: 'Waves', url: SIM_URL,
+      bannerUrl: 'https://cdn.test/sim-poster/standard.webp',
+    });
+    const { container } = render(
+      <LibraryMiniSite view={view({ materials: [withBanner] })} slug="chaos-abc" activeType={null} />,
+    );
+
+    const img = container.querySelector('img');
+    expect(img?.getAttribute('src')).toBe('https://cdn.test/sim-poster/standard.webp');
+
+    // Bytes gone (poster invalidated between ISR renders) → the gradient, never a broken image.
+    fireEvent.error(img!);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.innerHTML).toMatch(/from-primary|from-secondary|from-muted|from-accent/);
+  });
+
+  it('a video with a stored thumbnail shows it; one without keeps the gradient', () => {
+    const withBanner = material({
+      id: 'vid-b', type: 'video', name: 'lecture.mp4', url: 'https://cdn.test/master.m3u8',
+      bannerUrl: 'https://cdn.test/thumbnails/frame.jpg', durationSec: 30,
+    });
+    const { container } = render(
+      <LibraryMiniSite view={view({ materials: [withBanner, MATERIALS[2]] })} slug="chaos-abc" activeType={null} />,
+    );
+
+    const imgs = [...container.querySelectorAll('img')];
+    expect(imgs.map((i) => i.getAttribute('src'))).toEqual(['https://cdn.test/thumbnails/frame.jpg']);
+  });
+
+  it('a simulation without a bannerUrl renders no img at all — the payload field is load-bearing', () => {
+    const { container } = render(
+      <LibraryMiniSite view={view({ materials: [MATERIALS[0]] })} slug="chaos-abc" activeType="simulation" />,
+    );
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.innerHTML).toMatch(/from-primary|from-secondary|from-muted|from-accent/);
+  });
+});
+
+describe('the video overlay carries the stored thumbnail as its poster', () => {
+  it('sets <video poster> from bannerUrl, and omits the attribute without one', () => {
+    const withBanner = view({
+      materials: [
+        material({ id: 'vid-1', type: 'video', name: 'intro.mp4', url: 'https://cdn.test/master.m3u8', durationSec: 75, bannerUrl: 'https://cdn.test/thumbnails/frame.jpg' }),
+      ],
+      counts: { simulation: 0, image: 0, video: 1, audio: 0 },
+    });
+    const { container, unmount } = render(<LibraryMiniSite view={withBanner} slug="chaos-abc" activeType={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /intro\.mp4/ }));
+    // The poster is what fills the surface while HLS attaches; dropping the payload field or the
+    // attribute wiring leaves a black rectangle for exactly the seconds a viewer is judging the page.
+    expect((container.querySelector('video') as HTMLVideoElement).getAttribute('poster'))
+      .toBe('https://cdn.test/thumbnails/frame.jpg');
+    unmount();
+
+    const { container: bare } = render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /intro\.mp4/ }));
+    expect((bare.querySelector('video') as HTMLVideoElement).hasAttribute('poster')).toBe(false);
+  });
+});
+
+describe('14. search filters as you type', () => {
+  const tile = (name: RegExp) => screen.queryByRole('button', { name });
+
+  it('narrows tiles by name, announces the count, and restores on clear', () => {
+    render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    const input = screen.getByRole('searchbox', { name: 'Search this library' });
+
+    fireEvent.change(input, { target: { value: 'boids' } });
+    expect(tile(/Boids/)).toBeTruthy();
+    expect(tile(/diagram\.png/)).toBeNull();
+    expect(tile(/intro\.mp4/)).toBeNull();
+    const count = screen.getByText(/1 of 4 items match/);
+    expect(count).toBeTruthy();
+    // The ATTRIBUTE, not just the text: without aria-live this is a paragraph a sighted user
+    // reads and a screen-reader never hears. It must also be the SAME node that was mounted
+    // before the query — a region born together with its first content is not reliably announced.
+    expect(count.getAttribute('aria-live')).toBe('polite');
+
+    fireEvent.change(input, { target: { value: '' } });
+    for (const name of [/Boids/, /diagram\.png/, /intro\.mp4/, /theme\.mp3/]) {
+      expect(tile(name)).toBeTruthy();
+    }
+  });
+
+  it('the live region exists BEFORE the first keystroke, so the first announcement lands', () => {
+    render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    // No query typed yet — the polite region must already be in the DOM (empty), because
+    // assistive tech announces CHANGES to existing regions, not regions that appear.
+    const region = document.querySelector('[aria-live="polite"]');
+    expect(region).toBeTruthy();
+    expect((region as HTMLElement).textContent).toBe('');
+  });
+
+  it('matches on the type label, not only the name', () => {
+    render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search this library' }), {
+      target: { value: 'video' },
+    });
+    expect(tile(/intro\.mp4/)).toBeTruthy();
+    expect(tile(/Boids/)).toBeNull();
+    expect(tile(/theme\.mp3/)).toBeNull();
+  });
+
+  it('shows a no-match state whose Clear search button restores the grid', () => {
+    render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);
+    const input = screen.getByRole('searchbox', { name: 'Search this library' });
+
+    fireEvent.change(input, { target: { value: 'zzz-nothing' } });
+    expect(screen.getByText(/No materials match/)).toBeTruthy();
+    expect(tile(/Boids/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect((input as HTMLInputElement).value).toBe('');
+    expect(tile(/Boids/)).toBeTruthy();
+    expect(screen.queryByText(/No materials match/)).toBeNull();
+  });
+
+  it('renders no search box over an empty bucket — there is nothing to narrow', () => {
+    render(<LibraryMiniSite view={view({ materials: [] })} slug="chaos-abc" activeType="video" />);
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(screen.getByText(/No videos in this library yet/i)).toBeTruthy();
+  });
+});
+
 describe('12. the dark-mode guard: token-only styling', () => {
   /** Hex literals in class names or inline styles — `#fff`, `#6366f1`, `rgb(...)`. */
   const HEX = /#[0-9a-fA-F]{3,8}\b/;

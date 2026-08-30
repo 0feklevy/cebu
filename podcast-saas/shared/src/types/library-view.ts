@@ -37,6 +37,13 @@ export const LibraryMaterialSchema = z.object({
   name: z.string(),
   /** Already-public, already-resolved. Nothing on the page mints or signs a URL. */
   url: z.string(),
+  /**
+   * A still picture for the tile, when a stored one already exists: a simulation's poster
+   * rendition, or the project's video-derived thumbnail. Never captured at request time —
+   * `buildLibraryView` only re-emits artifacts other pipelines already wrote. Optional AND
+   * nullable so payloads cached before this field existed keep parsing.
+   */
+  bannerUrl: z.string().nullable().optional(),
   durationSec: z.number().nullable().optional(),
   width: z.number().nullable().optional(),
   height: z.number().nullable().optional(),

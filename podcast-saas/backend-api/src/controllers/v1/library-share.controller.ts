@@ -114,6 +114,7 @@ export async function registerLibraryShareRoutes(app: FastifyInstance): Promise<
         title: project.title,
         includeTypes: share.include_types,
         canonicalUrl: libraryShareUrl(share),
+        projectThumbnailUrl: project.thumbnail_url,
       });
 
       // Unawaited on purpose: at most one write per path per 60s behind ISR, and a counter that
