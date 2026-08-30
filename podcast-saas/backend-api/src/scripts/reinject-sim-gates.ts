@@ -2,8 +2,20 @@
  * Re-run the system-owned entry-HTML injections (head rAF gate + inline bridge v2 template)
  * for every simulation with status 'ready', in place.
  *
+ * LOCALLY (a dev machine, against a local DATABASE_URL):
  *   pnpm --filter backend-api sims:reinject-gates              # DRY RUN (default) — reports only
  *   pnpm --filter backend-api sims:reinject-gates -- --apply   # actually uploads updated entry HTML
+ *
+ * ON THE PRODUCTION VM the package script above DOES NOT WORK, and the reason is worth stating
+ * because the first operator to try it lost time to a wrong error (2026-08-30):
+ *   - the VM host has no Node and no pnpm at all — everything runs inside the `backend` container;
+ *   - inside that container the app is not laid out as the repo is, so the package script's
+ *     `tsx --env-file=../.env` names a path that does not exist there. The env is already in the
+ *     container's environment, so the file is not needed — only the script is.
+ * Run it in the container, invoking the script directly (VERIFIED on production 2026-08-30 —
+ * 9 ready simulations, 7 updated, 2 already current, then a second pass reporting all 9 unchanged):
+ *   docker compose exec backend pnpm --filter backend-api exec tsx src/scripts/reinject-sim-gates.ts
+ *   docker compose exec backend pnpm --filter backend-api exec tsx src/scripts/reinject-sim-gates.ts --apply
  *
  * Idempotent by construction:
  *   - injectRafGate is marker-guarded (<!-- sim-raf-gate v1 -->) — re-running strips any existing
@@ -15,8 +27,9 @@
  * A second run therefore reports every sim as "unchanged".
  *
  * Config (DB + storage credentials) comes from the standard runtime env plumbing — the package
- * script runs this via `tsx --env-file=../.env`, same as every other script here. This file
- * never opens or reads any .env file itself.
+ * script runs this via `tsx --env-file=../.env`, same as every other script here, which is exactly
+ * the part that does not transfer into the container (see above). This file never opens or reads
+ * any .env file itself; it only reads what is already in `process.env`.
  */
 import { db } from '../db/index.js';
 import { simulations } from '../db/schema.js';
