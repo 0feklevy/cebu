@@ -118,6 +118,45 @@ async function addAudio(filename: string): Promise<string> {
   return r[0].id;
 }
 
+/**
+ * A stored poster row for one simulation, exactly as PosterService writes it — `variants` is the
+ * JSONB blob `parsePosterVariants` validates on the read path, so a malformed seed here would be
+ * (correctly) dropped rather than emitted.
+ */
+async function addPoster(
+  simId: string,
+  opts: {
+    identity: string;
+    aspect?: string;
+    capturedAt?: string;
+    formats?: readonly string[];
+    checksum?: string;
+  },
+): Promise<string[]> {
+  const aspect = opts.aspect ?? 'wide';
+  const formats = opts.formats ?? ['webp', 'png'];
+  const paths = formats.map(
+    (format) => `simulations/${projectId}/pkg/posters/${opts.identity}/standard.${format}`,
+  );
+  const variants = formats.map((format, i) => ({
+    size: 'standard',
+    format,
+    path: paths[i],
+    checksum: opts.checksum ?? 'cafe'.repeat(16),
+    contentType: `image/${format}`,
+    width: 1280,
+    height: 720,
+    bytes: 4096,
+  }));
+  await q(
+    `INSERT INTO sim_posters (simulation_id, package_revision, variant_key, config_hash,
+       aspect_profile, quality_profile, identity, variants, transparent, captured_at)
+     VALUES ($1,'rev1','sec1','confhash',$2,'high',$3,$4,false,$5)`,
+    [simId, aspect, opts.identity, JSON.stringify(variants), opts.capturedAt ?? '2026-01-02T00:00:00Z'],
+  );
+  return paths;
+}
+
 async function seedOneOfEach(): Promise<void> {
   await addSimulation('Boids');
   await addImage('diagram.png');
@@ -246,6 +285,11 @@ describe('the view model', () => {
   it('6. no private field survives serialization — asserted over the WHOLE response', async () => {
     await seedOneOfEach();
     await q(`UPDATE projects SET share_token = 'super-secret-token' WHERE id = $1`, [projectId]);
+    // A poster and a project thumbnail, so the banner emission is INSIDE this assertion's blast
+    // radius: of the poster row only `variants[].path` may reach the payload (as a public URL).
+    const simId = (await q<{ id: string }>(`SELECT id FROM simulations WHERE project_id = $1`, [projectId]))[0].id;
+    await addPoster(simId, { identity: 'rev1__sec1__confhash__wide__high', checksum: 'f00d'.repeat(16) });
+    await q(`UPDATE projects SET thumbnail_url = 'https://cdn.test/thumbnails/proj/frame.jpg', thumbnail_key = 'thumbnails/secret-key.jpg' WHERE id = $1`, [projectId]);
     const share = await mintShare({ id: projectId, title: 'Leak check' }, userId);
 
     const res = await getPublic(share.slug);
@@ -259,12 +303,18 @@ describe('the view model', () => {
       'org_id', 'orgId', 'created_by', 'createdBy', 'bridge_functions', 'bridgeFunctions',
       'guidance', 'canary_report', 'canaryReport', 'entry_file', 'entryFile', 'storage_prefix',
       'render_count', 'renderCount', 'revoked_at', 'expires_at', 'hls_master_key', 'captions_vtt',
+      // The poster row's internals: the banner emission may carry variants[].path inside a public
+      // URL and nothing else from that row.
+      'checksum', 'variants', 'captured_at', 'capturedAt', 'transparent', 'config_hash',
+      'thumbnail_key', 'thumbnailKey',
     ]) {
       expect(json, `"${field}" leaked into the public library payload`).not.toContain(field);
     }
 
     // And the VALUES, which is the half a rename would otherwise slip past.
     expect(json).not.toContain('super-secret-token');
+    expect(json).not.toContain('f00d'.repeat(16));           // the poster checksum
+    expect(json).not.toContain('thumbnails/secret-key.jpg'); // the thumbnail storage key
     expect(json).not.toContain(orgId);
     expect(json).not.toContain(userId);
     // The raw upload key — the one storage key with no public route in front of it.
@@ -305,6 +355,67 @@ describe('the view model', () => {
     const body = (await getPublic(share.slug, '?type=images')).json();
     expect(body.materials.map((m: { type: string }) => m.type)).toEqual(['image', 'image']);
     expect(body.counts).toEqual({ simulation: 1, image: 2, video: 1, audio: 1 });
+  });
+
+  it('13. a simulation with a stored poster carries it as bannerUrl; one without carries none', async () => {
+    const captured = await addSimulation('Captured sim');
+    const bare = await addSimulation('Bare sim');
+    // webp + png stored: the emitted URL must be the webp — the shared preference order.
+    const [webpPath] = await addPoster(captured, { identity: 'rev1__sec1__confhash__wide__high' });
+    const share = await mintShare({ id: projectId, title: 'Bannered' }, userId);
+
+    const body = (await getPublic(share.slug)).json();
+    const byId = (id: string) => body.materials.find((m: { id: string }) => m.id === id);
+
+    expect(byId(captured).bannerUrl).toBe(`http://localhost:8080/sim-public/${webpPath}`);
+    // Absent, not null: the field does not exist until an artifact does.
+    expect('bannerUrl' in byId(bare)).toBe(false);
+  });
+
+  it('prefers the wide-aspect poster over a newer capture in another aspect', async () => {
+    const simId = await addSimulation('Aspected');
+    const [widePath] = await addPoster(simId, {
+      identity: 'rev1__sec1__hashA__wide__high', aspect: 'wide', capturedAt: '2026-01-01T00:00:00Z',
+    });
+    await addPoster(simId, {
+      identity: 'rev1__sec1__hashB__standard__high', aspect: 'standard', capturedAt: '2026-06-01T00:00:00Z',
+    });
+    const share = await mintShare({ id: projectId, title: 'Aspect pick' }, userId);
+
+    const body = (await getPublic(share.slug)).json();
+    expect(body.materials[0].bannerUrl).toBe(`http://localhost:8080/sim-public/${widePath}`);
+  });
+
+  it('drops a poster whose variants blob does not validate, instead of emitting it', async () => {
+    const simId = await addSimulation('Corrupted');
+    await q(
+      `INSERT INTO sim_posters (simulation_id, package_revision, variant_key, config_hash,
+         aspect_profile, quality_profile, identity, variants, transparent)
+       VALUES ($1,'rev1','sec1','confhash','wide','high','rev1__sec1__confhash__wide__high',$2,false)`,
+      [simId, JSON.stringify([{ size: 'standard', format: 'webp' /* no path, no checksum */ }])],
+    );
+    const share = await mintShare({ id: projectId, title: 'Corrupt poster' }, userId);
+
+    const body = (await getPublic(share.slug)).json();
+    expect(body.materials).toHaveLength(1);
+    expect('bannerUrl' in body.materials[0]).toBe(false);
+  });
+
+  it('14. the only emitted video carries the project thumbnail; two emitted videos carry none', async () => {
+    await q(`UPDATE projects SET thumbnail_url = 'https://cdn.test/thumbnails/proj/frame.jpg' WHERE id = $1`, [projectId]);
+    await addVideo('main.mp4', 'ready');
+    await addVideo('still-transcoding.mp4', 'processing'); // omitted → does not break the exactly-one rule
+    const share = await mintShare({ id: projectId, title: 'One video' }, userId);
+
+    const one = (await getPublic(share.slug)).json();
+    expect(one.materials).toHaveLength(1);
+    expect(one.materials[0].bannerUrl).toBe('https://cdn.test/thumbnails/proj/frame.jpg');
+
+    // A second READY video makes the frame unattributable — both cards go bannerless.
+    await addVideo('broll.mp4', 'ready');
+    const two = (await getPublic(share.slug)).json();
+    expect(two.materials).toHaveLength(2);
+    for (const m of two.materials) expect('bannerUrl' in m).toBe(false);
   });
 
   it('emits the public URLs the materials already have, and the stored crop fractions', async () => {

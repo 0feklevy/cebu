@@ -20,13 +20,16 @@
  *
  * Zero bytes are written anywhere. Every URL below already exists and is simply re-emitted.
  */
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { audio_files, image_files, simulations, video_files } from '../../db/schema.js';
+import { audio_files, image_files, sim_posters, simulations, video_files } from '../../db/schema.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { captionUrlForVideo } from '../captions/CaptionService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { logger } from '../../lib/logger.js';
+import {
+  parsePosterVariants, selectPosterVariant, type PosterFormat,
+} from 'shared/sim/posterIdentity';
 import type {
   LibraryCounts, LibraryMaterial, LibraryMaterialType, LibraryView,
 } from 'shared';
@@ -36,6 +39,11 @@ export interface BuildLibraryViewInput {
   title: string | null;
   includeTypes: readonly string[];
   canonicalUrl: string;
+  /**
+   * The project's stored video-derived thumbnail (`projects.thumbnail_url`), already public.
+   * Passed in rather than re-read because every caller already holds the project row.
+   */
+  projectThumbnailUrl?: string | null;
 }
 
 /**
@@ -95,6 +103,61 @@ function simUrlIsFramable(url: string, projectId: string, simId: string): boolea
   return true;
 }
 
+/** Same emitted-format preference as the player: cheapest first, PNG kept for transparent captures. */
+const BANNER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
+
+/**
+ * One banner URL per simulation, from the posters the capture pipeline already stored.
+ *
+ * The player (`buildPlayerConfig.posterFor`) refuses any poster that is not the section's exact
+ * presentation identity, because there a poster is a promise about the live frame that will
+ * replace it. A library tile makes no such promise — the banner illustrates the simulation, it
+ * never stands in for a frame — so any stored poster of the simulation is honest here. The
+ * preference order exists for determinism, not honesty: the tile's own aspect first ('wide' — the
+ * grid tile is 16:9), then the newest capture, then identity as the tie-break. Zero bytes are
+ * written; a simulation that was never captured simply has no banner.
+ */
+async function loadSimBannerUrls(simIds: readonly string[]): Promise<Map<string, string>> {
+  const banners = new Map<string, string>();
+  if (simIds.length === 0) return banners;
+
+  // Same guard as buildPlayerConfig: `sim_posters` does not exist until migration 049 is applied,
+  // and a missing poster table must degrade to "no banner", never a failed public page.
+  const rows = await db.query.sim_posters
+    .findMany({ where: inArray(sim_posters.simulation_id, [...simIds]) })
+    .catch(() => []);
+
+  const bySim = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = bySim.get(row.simulation_id) ?? [];
+    list.push(row);
+    bySim.set(row.simulation_id, list);
+  }
+
+  const storage = getStorageAdapter();
+  for (const [simId, posterRows] of bySim) {
+    const ranked = [...posterRows].sort((a, b) => {
+      const aspect = Number(b.aspect_profile === 'wide') - Number(a.aspect_profile === 'wide');
+      if (aspect !== 0) return aspect;
+      const captured = b.captured_at.getTime() - a.captured_at.getTime();
+      if (captured !== 0) return captured;
+      return a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0;
+    });
+    for (const row of ranked) {
+      // `parsePosterVariants` is the shared validation that keeps an arbitrary JSONB write from
+      // reaching a public URL — the same reader PosterService and buildPlayerConfig use.
+      const variant = selectPosterVariant(
+        { variants: parsePosterVariants(row.variants) }, 'standard', BANNER_FORMATS,
+      );
+      if (variant) {
+        banners.set(simId, storage.getSimPublicUrl(variant.path));
+        break;
+      }
+    }
+  }
+  return banners;
+}
+
 const ALL_TYPES: readonly LibraryMaterialType[] = ['simulation', 'image', 'video', 'audio'];
 
 function iso(value: Date | string | null | undefined): string {
@@ -137,17 +200,20 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
   // bytes are immutable and carry a real cache policy, while the mutable pointer is served
   // no-cache. The `startsWith('http')` branch is the legacy shape simulations.controller.ts and
   // buildPlayerConfig both still honour — an entry_file that is already a full URL.
-  for (const s of simRows) {
-    if (s.status !== 'ready') continue;
+  const readySims = simRows.filter((s) => s.status === 'ready');
+  const simBanners = await loadSimBannerUrls(readySims.map((s) => s.id));
+  for (const s of readySims) {
     const key = s.active_revision_entry_key ?? s.entry_file;
     if (!key) continue;
     const url = key.startsWith('http') ? key : storage.getSimPublicUrl(key);
     if (!simUrlIsFramable(url, projectId, s.id)) continue;
+    const bannerUrl = simBanners.get(s.id);
     materials.push({
       id: s.id,
       type: 'simulation',
       name: s.name,
       url,
+      ...(bannerUrl ? { bannerUrl } : {}),
       createdAt: iso(s.created_at),
     });
   }
@@ -173,11 +239,12 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
   // Same precedence buildPlayerConfig uses: master first, 360p fallback, and only once HLS is
   // ready. A `pending`/`processing`/`failed` video has no playable URL at all, so emitting it
   // would be emitting a tile that can only fail.
+  const videoMaterials: LibraryMaterial[] = [];
   for (const v of videoRows) {
     if (v.hls_status !== 'ready') continue;
     const key = v.hls_master_key ?? v.hls_360p_key;
     if (!key) continue;
-    materials.push({
+    const material: LibraryMaterial = {
       id: v.id,
       type: 'video',
       name: v.filename,
@@ -185,7 +252,18 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
       durationSec: v.duration_sec,
       captionsUrl: captionUrlForVideo(v),
       createdAt: iso(v.created_at),
-    });
+    };
+    videoMaterials.push(material);
+    materials.push(material);
+  }
+
+  // The only stored video still is the PROJECT's thumbnail (`generateVideoMetadata` extracts one
+  // frame per project, not per file), so it is attached only when exactly one video is emitted —
+  // then it is that video's own picture. With several videos (b-roll included) there is no honest
+  // way to know which file the frame came from, and stamping every card with the same image would
+  // caption b-roll with the main video's frame. Absent is honest; approximate is not.
+  if (videoMaterials.length === 1 && input.projectThumbnailUrl) {
+    videoMaterials[0].bannerUrl = input.projectThumbnailUrl;
   }
 
   // ── Sounds ─────────────────────────────────────────────────────────────────────────────────
