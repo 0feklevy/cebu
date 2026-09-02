@@ -282,7 +282,23 @@ in-proof candidate once it passes `GC_MIN_AGE_MS` (1h). The draft TTL therefore 
 that window, which also makes it an input to M1: **proof must complete well inside the gc grace, or
 the candidate it is proving is swept out from under it.**
 
-That is a decision for the owner rather than a measurement, and it is deliberately not taken here.
+**RULED 2026-08-30 by the owner: 30 minutes.**
+
+The number is not arbitrary and it is not tunable upward without moving something else first. The
+ceiling is `GC_MIN_AGE_MS` (1h, `RevisionService.ts:139`): `mustRetainBytes('proof_pending')` is
+false, so a candidate under proof becomes collectable at one hour whatever this TTL says. A draft
+TTL at or above that ceiling would be a promise the collector is free to break — the recording
+would outlive the revision it was recorded against, and the failure would look like a corrupt draft
+rather than a swept one.
+
+30 minutes leaves a full half-hour of margin under the collector, which is also the answer to M1's
+open question in the same breath: **proof must complete inside 30 minutes**, or it is racing a
+sweep it cannot win. An implementation that finds itself wanting a longer TTL is telling you its
+proof step is too slow, not that this number is too small.
+
+Phase 1 owns the implementation — `sim_action_recordings` does not exist yet (highest migration on
+`main` is 081), so there is no code to carry this today. It is recorded here so the table is built
+with the TTL rather than gaining one later.
 
 ---
 
@@ -342,13 +358,13 @@ block an `executorVersion` at serve time. The bootstrap itself stays inert regar
 | 5 | The scheduler is proven against a fake clock: pause, resume, rate, restart-on-seek, adapter seek both directions | ✅ `actionPlanScheduler.test.ts`, four mutations |
 | 6 | The full lifecycle is proven: single reset generation, READY/PAINTED/PLAN barriers, deadlines, fail-closed | ✅ `actionPlanLifecycle.test.ts`, five mutations |
 | 7 | Idempotency states, lease recovery and the `sectionVersion` fence designed before the endpoint is written | ✅ `PHASE0-PROOF-STATE-AND-IDEMPOTENCY.md` |
-| 8 | M1–M5 have numbers | 🟡 M2's byte half measured (§3); M1, M3–M5 need a running stack or a browser |
+| 8 | M1–M5 have numbers | 🟡 M2's byte half measured (§3); **M3 ruled 2026-08-30 (30 min draft TTL)**; M1, M4, M5 need a running stack or a browser |
 | 9 | **`generic click` does not appear in the supported matrix** | ✅ D5 |
 
 Criteria 1–3 and 5–9 are met, with 8 partial. **The ADR was approved while 4, 6 and most of 8 were
 still open**, on the owner's explicit ruling that none of them can move a §2 decision. 6 has since
 been met, and 4 is implemented in its own PR — the two-release order in D8 means it lands before
-any `proof_pending` exists. What remains is M1 and M3–M5, all of which need a running stack or a
+any `proof_pending` exists. M3 is ruled (30 min, §M3 above). What remains is M1, M4 and M5, all of which need a running stack or a
 browser, and all of which are ergonomics.
 
 ---

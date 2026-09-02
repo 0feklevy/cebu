@@ -44,6 +44,29 @@ Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit 
 
 ---
 
+## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
+
+**Closure kind: owner-attested, with numbers.** The owner ran the reinjection on production:
+**9 ready simulations, 7 updated, 2 already current, 0 skipped, 0 failed.** A second pass reported
+**all 9 unchanged**, which is the idempotency claim in the script's own header verified rather than
+assumed. Every stored package now carries the current gate — the residue open since v5 shipped is gone.
+
+**The documented command did not work, and its error named nothing useful.**
+`pnpm --filter backend-api sims:reinject-gates` assumes a dev machine. On the VM there is **no Node
+and no pnpm at all** — everything runs inside the `backend` container — and inside that container the
+package script's env-file flag names a path that does not exist, because the app is not laid out
+there as the repo is. The configuration is already in the container's environment, so that file was
+never needed; only the script was:
+
+```
+docker compose exec backend pnpm --filter backend-api exec tsx src/scripts/reinject-sim-gates.ts [--apply]
+```
+
+Now recorded in the script's own header beside the local form, with the production numbers. The
+generalisable point: **an ops runbook written from a dev machine is a guess about the VM.** This one
+had been a guess since the day it was written, and the first operator to follow it lost time to an
+error about a missing file that mentioned nothing about containers.
+
 ## ✅ CLOSED (2026-08-30) — the Load-bridge round: three PRs, and six defects an adversarial review found in them
 
 **Closure kind: verified in code, mutation-proven, and driven in a real browser.**
@@ -106,15 +129,16 @@ turned out to be different claims.
 
 **Needs the owner, or a machine this one is not:**
 
-1. **`sims:reinject-gates --apply`, from the VM.** rAF gate v5 is live in code, but a gate is baked
-   into a package at PUBLICATION time — so every simulation stored before v5 keeps its old gate
-   until this script rewrites it. New and replaced packages are already correct. CLAUDE.md §7
-   forbids running it from a development machine, and it reads `DATABASE_URL`.
-2. **ADR measurements M1, M4, M5, and M3's TTL number.** All four are recorded in
-   `ADR-ACTION-RECORDING-SEMANTICS.md` as needing a running stack or a real browser; M3's TTL is
-   explicitly an owner's product decision rather than a measurement. M2's byte half is measured.
-3. **Owner's own queue:** rotate the Anam key, decide the max session length, supply two smoke
-   variables.
+1. ~~**`sims:reinject-gates --apply`, from the VM.**~~ **DONE 2026-08-30** — 9 ready simulations,
+   7 updated, 2 already current, and a verifying second pass reporting all 9 unchanged. Every
+   stored package now carries gate v5. See the closed entry above for the container-only
+   invocation the original runbook got wrong.
+2. **ADR measurements M1, M4 and M5** — recorded in `ADR-ACTION-RECORDING-SEMANTICS.md` as needing
+   a running stack or a real browser, and all three belong to Phase 1, which is not built.
+   **M3 is RULED (2026-08-30): a 30-minute draft TTL**, bounded by `GC_MIN_AGE_MS` (1h) — Phase 1
+   builds the table with it. M2's byte half is measured.
+3. **Owner's own queue:** rotate the Anam key, decide the max session length. The two smoke
+   variables are deliberately still unset — see the ruling below.
 
 **Deliberate rulings, not gaps:**
 
@@ -123,6 +147,19 @@ turned out to be different claims.
   keeps this honest rather than convenient is in `ops/release`: every Playwright config is either
   wired to a workflow or named with the reason it is not.
 - **Video dedup stays 🟡 OPEN BY DECISION** (see below) — deferred by the owner, not overlooked.
+- **Content-addressed revision dedup (FIX C) is DECLINED for now** (owner, 2026-08-30). The
+  unchanged-load no-op already removes the duplication the owner actually hit; what remains is
+  duplication on a GENUINE change, and removing that needs a manifest-driven serving layer plus GC
+  refcounting, piercing the revision immutability invariant. Revisit with a storage measurement,
+  not a hunch.
+- **`SMOKE_PLAYLIST_PATH` and `SMOKE_ADMIN_PREVIEW_PATH` stay UNSET, deliberately** (2026-08-30).
+  The fixture gate WARNS rather than blocks precisely so a missing fixture cannot hold a release —
+  and an unset variable EXCLUDES its flow from the post-deploy requirement, while a variable
+  pointing at a wrong or stale fixture makes that flow RUN, FAIL, and turn CRITICAL, which the
+  post-deploy gate converts into an automatic rollback of a healthy deploy. Guessing a value is
+  therefore strictly worse than leaving it empty. They want a real production playlist share token
+  and a real admin preview path; only the owner can supply those, and until then the gap is loud
+  and recorded rather than silently green.
 
 
 ---
