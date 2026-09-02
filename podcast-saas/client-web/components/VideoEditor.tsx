@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { EDITOR_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
+import { readLocalUserPrefs } from '@/lib/userPrefs';
 import { AlertTriangle, Clapperboard, Copy, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
 import { api } from '../lib/api';
@@ -33,14 +36,8 @@ import { projectOrientation } from 'shared/src/video/orientation';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
-// The main-things-only editor walkthrough (fiji-style). Targets exist via data-tour attrs;
-// a step whose target isn't on screen is skipped automatically.
-const EDITOR_TOUR_STEPS: TourStep[] = [
-  { selector: '[data-tour="library"]',     title: 'Your Library',            content: 'Add videos, images, audio, and AI simulations here. Tip: drag files straight onto this panel and they sort themselves.' },
-  { selector: '[data-tour="simulations"]', title: 'Interactive simulations', content: 'Upload one, AI-generate one, or Import a simulation you already built in another project — nothing is uploaded or stored twice. Then drop it onto the timeline to make a moment interactive.' },
-  { selector: '[data-tour="timeline"]',    title: 'The timeline',            content: 'Arrange clips and flag sections — mark where a simulation, b-roll, image, or audio plays over the video.' },
-  { selector: '[data-tour="preview"]',     title: 'Preview & share',         content: 'Preview the finished interactive video exactly as viewers see it, then share it with a link.' },
-];
+// The editor walkthrough lives in lib/tours/steps.ts, typed on the anchors below.
+const EDITOR_TOUR_STEPS: TourStep[] = toTourSteps(EDITOR_STEPS);
 
 const HLS_TIERS = ['360p', '480p', '720p', '1080p'] as const;
 type HlsTier = typeof HLS_TIERS[number];
@@ -926,6 +923,8 @@ export function VideoEditor({ projectId }: Props) {
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || window.localStorage.getItem('editor-tour-seen')) return;
+    // The "Guided Tutorial" preference in Settings used to be written and read by nothing.
+    if (!readLocalUserPrefs().guidedTutorial) return;
     const t = setTimeout(() => setTourOpen(true), 900); // let the editor paint first
     return () => clearTimeout(t);
   }, []);
@@ -1365,7 +1364,7 @@ export function VideoEditor({ projectId }: Props) {
           ) : (
             <div className="flex min-h-0 max-h-[36dvh] w-full shrink-0 flex-col gap-2 overflow-hidden min-[900px]:max-h-none min-[900px]:w-[300px] xl:w-80">
               <div
-                data-tour="library"
+                {...tourAnchor('library')}
                 className={`surface-panel relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg px-3 py-3 fine-scrollbar transition-shadow ${libraryDragOver ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}
                 onDragEnter={onLibraryDragEnter}
                 onDragOver={onLibraryDragOver}
@@ -1493,7 +1492,7 @@ export function VideoEditor({ projectId }: Props) {
               )}
 
               {/* Simulations section */}
-              <div data-tour="simulations" className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
+              <div {...tourAnchor('simulations')} className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-0.5 h-3 rounded-full bg-amber-400/80" />
@@ -1820,7 +1819,7 @@ export function VideoEditor({ projectId }: Props) {
         </div>
 
         {/* Timeline */}
-        <div data-tour="timeline" className="shrink-0 border-t border-border bg-card/70" style={{ height: timelinePanelHeight }}>
+        <div {...tourAnchor('timeline')} className="shrink-0 border-t border-border bg-card/70" style={{ height: timelinePanelHeight }}>
           <TimelinePanel
             projectId={projectId}
             videos={videos}

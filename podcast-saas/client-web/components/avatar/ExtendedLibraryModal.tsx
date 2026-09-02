@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { LIBRARY_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { createPortal } from 'react-dom';
 import { Search, ArrowDownUp, X, Maximize2, Pencil, Sparkles, Trash2, Upload, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
@@ -25,11 +27,7 @@ const NOOP_FRAME_REF = () => {};
 
 interface Props { open: boolean; onClose: () => void; projectId: string; characterId?: string; }
 
-const LIBRARY_TOUR_STEPS: TourStep[] = [
-  { selector: '[data-tour="lib-generate"]', title: 'Generate visuals', content: 'AI-generate an image or an interactive simulation for the avatar\'s library — describe what you want and it\'s added here.' },
-  { selector: '[data-tour="lib-panel"]',    title: 'Add your own',     content: 'Drag files anywhere onto this panel to upload — images, HTML/ZIP simulations, charts, equations, or JSON specs.' },
-  { selector: '[data-tour="lib-gallery"]',  title: 'Manage items',     content: 'Hover any item to edit its caption, move it between Basic and Extended, re-edit a simulation, or delete it.' },
-];
+const LIBRARY_TOUR_STEPS: TourStep[] = toTourSteps(LIBRARY_STEPS);
 
 const TYPE_PILLS = [
   { key: '',           label: 'All',         color: '#888',    bg: 'rgba(120,120,120,0.12)', border: '#bbb' },
@@ -171,7 +169,7 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId }: 
     <div className="avatar-gallery" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <GuidedTour steps={LIBRARY_TOUR_STEPS} open={tourOpen} onClose={() => setTourOpen(false)} />
       <div
-        data-tour="lib-panel"
+        {...tourAnchor('lib-panel')}
         className="avatar-gallery__panel"
         role="dialog"
         aria-modal="true"
@@ -188,7 +186,7 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId }: 
             <p className="avatar-gallery__hint">Basic = this video&apos;s materials (auto-synced) · Extended = the global pool every viewer&apos;s avatar contributes to</p>
           </div>
           <span className="avatar-gallery__count">{total} item{total !== 1 ? 's' : ''}</span>
-          <div data-tour="lib-generate" className="avatar-gallery__create-group">
+          <div {...tourAnchor('lib-generate')} className="avatar-gallery__create-group">
             <button className="avatar-g-create" onClick={doGenImage} disabled={busy === 'gen-image'}><Sparkles size={13} />{busy === 'gen-image' ? '…' : 'Generate image'}</button>
             <button className="avatar-g-create" onClick={doGenSim} disabled={busy === 'gen-sim'}><Sparkles size={13} />{busy === 'gen-sim' ? '…' : 'Generate simulation'}</button>
           </div>
@@ -284,7 +282,7 @@ export function ExtendedLibraryModal({ open, onClose, projectId, characterId }: 
         </div>
 
         {/* Body */}
-        <div data-tour="lib-gallery" className="avatar-gallery__body">
+        <div {...tourAnchor('lib-gallery')} className="avatar-gallery__body">
           {loading ? (
             <div className="avatar-g-empty"><span className="avatar-spinner" /></div>
           ) : sorted.length === 0 ? (

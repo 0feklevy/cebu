@@ -1,6 +1,11 @@
 'use client';
 
 import { ConfirmDialog } from './ConfirmDialog';
+import {
+  SECTION_STEPS_BROLL, SECTION_STEPS_CLIP, SECTION_STEPS_GENERATED, SECTION_STEPS_IMAGE,
+  SECTION_STEPS_SIM_ATTACHED, SECTION_STEPS_SIM_PICK, toTourSteps,
+} from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { getAuth } from 'firebase/auth';
@@ -1752,36 +1757,15 @@ export function SectionEditor({
     display: 'block', marginBottom: 6,
   };
 
-  // Per-type walkthrough: each section kind gets steps that exist in the current UI state.
-  const sectionTourSteps: TourStep[] =
-    isBroll
-      ? [
-          { selector: '[data-tour="sec-broll-info"]', title: 'B-roll clip', content: 'Review the generated clip details and adjust its audio level before saving.' },
-        ]
-      : type === 'simulation'
-      ? [
-          { selector: '[data-tour="sec-sim-select"]', title: 'Choose a simulation', content: 'Pick the ready simulation this timeline section should control.' },
-          ...(simId
-            ? [
-                { selector: '[data-tour="sec-sim-prompt"]', title: 'Describe the moment', content: 'Tell the AI exactly what the simulation should show here. Below, toggle Simple UI and Auto Script to control the demo behavior.' },
-                { selector: '[data-tour="sec-sim-generate"]', title: 'Generate and preview', content: 'Generate the interactive bridge script with AI, then play it in the preview before saving.' },
-                { selector: '[data-tour="sec-sim-presets"]', title: 'Save and reuse a bridge', content: 'Once a setup works, save it under a name — then load it onto the same simulation in another video instead of setting it up again. It applies instantly when it fits, and regenerates from your saved settings when it does not.' },
-              ]
-            : []),
-        ]
-      : type === 'clip' && clipVisualMode === 'image'
-      ? [
-          { selector: '[data-tour="sec-camera"]', title: 'Image section', content: 'This section shows a still image — pick a camera movement (zoom or pan) to animate it over the video.' },
-        ]
-      : type === 'clip'
-      ? [
-          { selector: '[data-tour="sec-video"]', title: 'Video clip section', content: 'Pick a source clip from your library and trim its in/out points to set exactly what plays over this section.' },
-        ]
-      : [
-          { selector: '[data-tour="sec-video-prompt"]', title: 'Describe the shot', content: 'Write the shot you want the AI video model to generate for this section.' },
-          { selector: '[data-tour="sec-video-generate"]', title: 'Generate video', content: 'Queue the generated B-roll clip and track its status here.' },
-          { selector: '[data-tour="sec-video-options"]', title: 'Generation options', content: 'Choose the video model and decide whether to enhance the prompt before generation.' },
-        ];
+  // Per-type walkthrough (lib/tours/steps.ts): each section kind gets the steps that exist in
+  // the current UI state.
+  const sectionTourSteps: TourStep[] = toTourSteps(
+    isBroll ? SECTION_STEPS_BROLL
+    : type === 'simulation' ? [...SECTION_STEPS_SIM_PICK, ...(simId ? SECTION_STEPS_SIM_ATTACHED : [])]
+    : type === 'clip' && clipVisualMode === 'image' ? SECTION_STEPS_IMAGE
+    : type === 'clip' ? SECTION_STEPS_CLIP
+    : SECTION_STEPS_GENERATED,
+  );
 
   return (
     <>
@@ -2049,7 +2033,7 @@ export function SectionEditor({
                       </div>
 
                       {/* Camera Movement */}
-                      <div data-tour="sec-camera">
+                      <div {...tourAnchor('sec-camera')}>
                         <label style={{ ...labelStyle, color: '#059669' }}>Camera Movement</label>
                         <select
                           value={cameraMovement}
@@ -2070,7 +2054,7 @@ export function SectionEditor({
                   {/* ── VIDEO MODE ── */}
                   {clipVisualMode === 'video' && (<>
                   {/* Library picker */}
-                  <div data-tour="sec-video">
+                  <div {...tourAnchor('sec-video')}>
                     <label style={{ ...labelStyle, color: '#059669' }}>From Library</label>
                     <select
                       value={clipSourceVideoId}
@@ -2190,7 +2174,7 @@ export function SectionEditor({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                 <div style={{ height: 1, backgroundColor: '#f3f4f6' }} />
 
-                <div data-tour="sec-sim-select">
+                <div {...tourAnchor('sec-sim-select')}>
                   <label style={labelStyle}>Simulation</label>
                   <select
                     value={simId}
@@ -2218,7 +2202,7 @@ export function SectionEditor({
                       <span style={{ fontSize: 10, color: '#b45309', backgroundColor: '#fef3c7', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>Extended Thinking</span>
                     </div>
 
-                    <div data-tour="sec-sim-prompt">
+                    <div {...tourAnchor('sec-sim-prompt')}>
                       <label style={{ ...labelStyle, color: '#b45309' }}>Prompt</label>
                       <textarea
                         value={simPrompt}
@@ -2240,7 +2224,7 @@ export function SectionEditor({
                     </div>
 
                     {/* ── Advanced · UI controls (Minimal-UI control picker) ── */}
-                    <div style={{ marginTop: -6 }}>
+                    <div style={{ marginTop: -6 }} {...tourAnchor('sec-sim-controls')}>
                       <button
                         type="button"
                         onClick={() => setUiPanelOpen(v => {
@@ -2584,7 +2568,7 @@ export function SectionEditor({
                     )}
 
                     <button
-                      data-tour="sec-sim-generate"
+                      {...tourAnchor('sec-sim-generate')}
                       onClick={() => handleGenerateScript()}
                       disabled={generating || !canGenerate}
                       title={!canGenerate ? 'Enter a prompt, or pick controls in Advanced to just minimize the UI' : undefined}
@@ -2621,7 +2605,7 @@ export function SectionEditor({
                     )}
 
                     {/* ── SAVED BRIDGES: name this setup; load one saved elsewhere ── */}
-                    <div data-tour="sec-sim-presets" style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                       <button
                         onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
                         // A bridge worth saving exists once the section HAS a generated setup —
@@ -2841,7 +2825,7 @@ export function SectionEditor({
                   <span style={{ fontSize: 10, color: '#2563eb', backgroundColor: '#dbeafe', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>AI Video</span>
                 </div>
 
-                <div data-tour="sec-video-prompt">
+                <div {...tourAnchor('sec-video-prompt')}>
                   <label style={{ ...labelStyle, color: '#2563eb' }}>Prompt</label>
                   <textarea
                     value={genPrompt}
@@ -2897,7 +2881,7 @@ export function SectionEditor({
                   return (
                     <>
                       <button
-                        data-tour="sec-video-generate"
+                        {...tourAnchor('sec-video-generate')}
                         onClick={handleGenerateVideo}
                         disabled={isVidGenerating || !genPrompt.trim()}
                         style={{
@@ -2920,7 +2904,7 @@ export function SectionEditor({
                       </button>
 
                       {/* Model dropdown + Enhanced toggle — below generate button */}
-                      <div data-tour="sec-video-options" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div {...tourAnchor('sec-video-options')} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <select
                           value={genModel}
                           onChange={e => setGenModel(e.target.value as GenModel)}
@@ -2965,7 +2949,7 @@ export function SectionEditor({
 
             {/* ── BROLL INFO ── */}
             {isBroll && (
-              <div data-tour="sec-broll-info" style={{
+              <div {...tourAnchor('sec-broll-info')} style={{
                 backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #06b6d4',
                 borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
               }}>

@@ -84,6 +84,11 @@ export function GuidedTour({ steps, open, onClose }: Props) {
   useEffect(() => {
     if (!open || !step) return;
     if (document.querySelector(step.selector)) return;
+    // Skipped silently in production (a collapsed panel is a legitimate reason), but a developer
+    // sees it: this is how help copy rotted for weeks with nothing going red.
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(`[GuidedTour] step "${step.title}" has no target for ${step.selector} — skipped`);
+    }
     const t = setTimeout(() => {
       if (idx < steps.length - 1) setIdx((i) => i + 1);
       else onClose();

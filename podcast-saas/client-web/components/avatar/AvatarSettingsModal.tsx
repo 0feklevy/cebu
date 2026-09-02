@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { PERSONA_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { X, Sparkles, Play, Pause, Check, ChevronLeft, Upload, FileText, Trash2, Wrench } from 'lucide-react';
 import { TourButton } from '../TourButton';
 import {
@@ -12,13 +14,7 @@ import { CHARACTER_META, DEFAULT_CHARACTER_ID } from './characters';
 import { GuidedTour, type TourStep } from '../GuidedTour';
 import './avatar.css';
 
-const PERSONA_TOUR_STEPS: TourStep[] = [
-  { selector: '[data-tour="persona-basics"]', title: 'Give your avatar a personality', content: "Set the first greeting, a system prompt that shapes how it talks, and any key facts it should always know. Leave a field blank to use the character's built-in default." },
-  { selector: '[data-tour="persona-knowledge"]', title: 'Add knowledge documents', content: 'Drag in PDFs, docs, or notes. The avatar searches them live during a conversation and answers from their contents — great for grounding it in this specific video.' },
-  { selector: '[data-tour="persona-advanced"]', title: 'Fine-tune under Advanced', content: 'Expand Advanced for the base personality, conversation language, LLM brain, avatar model, session limits, and tools. Most creators can leave these on their defaults.' },
-  { selector: '[data-tour="persona-avatar"]', title: 'Choose the face', content: 'Pick which avatar appears on screen, or keep the persona default. This selection is saved per video.' },
-  { selector: '[data-tour="persona-voice"]', title: 'Pick and preview a voice', content: 'Filter voices by gender, provider, or language, then press play to hear a sample before choosing. Save when you are happy.' },
-];
+const PERSONA_TOUR_STEPS: TourStep[] = toTourSteps(PERSONA_STEPS);
 
 interface Props { open: boolean; onClose: () => void; projectId: string; videoTitle?: string | null; embedded?: boolean }
 
@@ -278,7 +274,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
           {loading ? <div className="avset__loading"><span className="avatar-spinner" /></div> : (
             <>
               <div className="avset__side">
-                <div className="avset__panel" data-tour="persona-basics">
+                <div className="avset__panel" {...tourAnchor('persona-basics')}>
                   <div className="avset__panel-head">
                     <span className="avset__panel-kicker">Section 1</span>
                     <h3>Conversation</h3>
@@ -299,7 +295,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                     <textarea rows={4} value={cfg.knowledge ?? ''} onChange={(e) => set('knowledge', e.target.value)} placeholder="Paste key facts, definitions, or context…" />
                   </label>
 
-                  <div className="avset__section" data-tour="persona-knowledge">
+                  <div className="avset__section" {...tourAnchor('persona-knowledge')}>
                     <div className="avset__seclabel">Knowledge documents <em>— searchable during conversation</em></div>
                     <div
                       className={`avset__drop${dragOver ? ' is-over' : ''}`}
@@ -331,7 +327,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                   </div>
                 </div>
 
-                <div className="avset__panel" data-tour="persona-advanced">
+                <div className="avset__panel" {...tourAnchor('persona-advanced')}>
                   <button className="avset__adv avset__adv--panel" onClick={() => setShowAdvanced((s) => !s)}>{showAdvanced ? '▾' : '▸'} Advanced</button>
                   {showAdvanced && (
                     <div className="avset__advanced">
@@ -407,7 +403,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                     <h3>Avatar &amp; voice</h3>
                   </div>
 
-                  <div className="avset__section" data-tour="persona-avatar">
+                  <div className="avset__section" {...tourAnchor('persona-avatar')}>
                     <div className="avset__seclabel">Avatar <em>{avatars.length === 0 ? '— none available; uses persona default' : `(${avatars.length})`}</em></div>
                     <div className="avset__avatars">
                       <button className={`avset__avatar avset__avatar--default${!cfg.avatarId ? ' is-sel' : ''}`} onClick={() => selectAvatar()}>
@@ -424,7 +420,7 @@ export function AvatarSettingsModal({ open, onClose, projectId, videoTitle, embe
                     </div>
                   </div>
 
-                  <div className="avset__section" data-tour="persona-voice">
+                  <div className="avset__section" {...tourAnchor('persona-voice')}>
                     <div className="avset__seclabel">
                       Voice <em>{voices.length === 0 ? '— none available; uses persona default' : `(${filteredVoices.length}/${voices.length})`}</em>
                       <span className="avset__voice-actions">
