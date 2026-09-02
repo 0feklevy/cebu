@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { usePaintedSignal } from './usePaintedSignal';
 import { X } from 'lucide-react';
 import { SimSurface } from '@/lib/sim/SimSurface';
 import type { LibraryMaterial } from 'shared/src/types/library-view';
@@ -90,20 +91,35 @@ function MaterialSurface({ material }: { material: LibraryMaterial }) {
  */
 function SimulationSurface({ material }: { material: LibraryMaterial }) {
   const [loaded, setLoaded] = useState(false);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // "Loaded" used to mean the document's load event, which fires long before a WebGL package has
+  // drawn anything — the cover cleared onto a blank frame. The rAF gate every stored package
+  // carries posts SIM_PAINTED on the first real frame; that is the honest signal. A package that
+  // never posts it (none in production, but a cheap fallback beats a stuck cover) reveals a
+  // moment after load (night run 2026-09-03 §6).
+  const painted = usePaintedSignal(frameRef, loaded, 2500);
+  const revealed = painted;
+  const poster = material.posterUrl ?? material.bannerUrl ?? null;
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">
+      {poster && !revealed && (
+        // The still of the same package, at once — the listener sees the picture the sim will
+        // resolve into, instead of a grey box with a caption.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={poster} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-contain" decoding="async" />
+      )}
       <SimSurface
         src={material.url}
         bootHide={[]}
-        visible={loaded}
-        frameRef={NOOP_FRAME_REF}
+        visible={revealed}
+        frameRef={(el) => { frameRef.current = el; }}
         onLoad={() => setLoaded(true)}
         title={material.name}
         allow="fullscreen"
         interactive
         className="absolute inset-0 h-full w-full border-0"
       >
-        {!loaded && (
+        {!revealed && !poster && (
           <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
             Loading simulation…
           </span>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import { projectOrientation } from 'shared/src/video/orientation';
 import { FILMSTRIP_FRAME_H, FILMSTRIP_FRAME_W, filmstripCellWidth } from '@/lib/filmstrip';
 import { createPortal } from 'react-dom';
 import { CircleDot, Flag, Loader2, Music, Plus, Trash2, Volume2, X } from 'lucide-react';
@@ -2422,6 +2423,7 @@ export function TimelinePanel({
         <SectionEditor
           section={selectedSection}
           projectId={projectId}
+          posterAspect={projectOrientation(videos) === 'portrait' ? 'portrait' : 'wide'}
           simulations={simulations}
           videos={videos}
           videoUrls={videoUrls}

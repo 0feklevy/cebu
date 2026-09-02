@@ -77,6 +77,15 @@ export const SIM_AUTHORING_PORT_TYPES = {
   OBSERVE_STOP: 'OBSERVE_STOP',
   /** Child → parent: controls a script appears to have driven. HEURISTIC — see the payload. */
   SCRIPT_TOUCHED: 'SCRIPT_TOUCHED',
+  /**
+   * Parent → child: capture the simulation's current picture (night run 2026-09-03 §6). The
+   * child answers SNAPSHOT_RESULT with ONE raw PNG data URL of its largest visible canvas (or a
+   * rasterised DOM when it has no canvas); the parent letterboxes it into the poster sizes. Only
+   * an editor ever asks — the message rides the port, so a viewer's document can never be asked.
+   */
+  SNAPSHOT: 'SNAPSHOT',
+  /** Child → parent: `{ requestId, dataUrl, width, height }`, or `{ requestId, error }`. */
+  SNAPSHOT_RESULT: 'SNAPSHOT_RESULT',
   /** Child → parent: Escape was pressed inside the frame; the parent closes the panel. */
   ESCAPE_REQUESTED: 'ESCAPE_REQUESTED',
   /** Parent → child: remove the overlay and stop observing. The script stays resident. */

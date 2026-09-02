@@ -11,6 +11,7 @@ import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { cacheControlForKey } from 'shared/sim/simRevision';
 import { revisionServingFacts, isRevisionStatusPublic } from '../services/simulation/revisionIdentity.js';
+import { simTextCache, strongEtag } from '../services/simulation/simTextCache.js';
 import { resolveSimFileKey } from '../services/simulation/simFileResolver.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
@@ -359,16 +360,30 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       }
 
       try {
-        let buf = await storage.readObject(await resolveSimFileKey(key));
-        // Entry HTML gets the minimal-UI boot bootstrap injected at serve time (see
-        // SIM_BOOT_SNIPPET) — BEFORE the ETag, so the tag matches the served bytes.
-        if (ext === '.html' || ext === '.htm') {
-          buf = Buffer.from(injectSimBootSnippet(buf.toString('utf8')), 'utf8');
+        // A served REVISION's text is immutable by construction, so it is read from storage,
+        // injected and hashed ONCE per process and then served from memory — the S3 GET + sha1 +
+        // brotli that used to run per file per viewer is the single largest CPU cost this route
+        // had (night run 2026-09-03 §6/§7). Legacy, in-place-replaceable keys are never cached.
+        const resolvedKey = await resolveSimFileKey(key);
+        const cached = isRevision ? simTextCache.get(resolvedKey) : null;
+        let buf: Buffer;
+        let etag: string;
+        if (cached) {
+          buf = cached.bytes;
+          etag = cached.etag;
+        } else {
+          buf = await storage.readObject(resolvedKey);
+          // Entry HTML gets the minimal-UI boot bootstrap injected at serve time (see
+          // SIM_BOOT_SNIPPET) — BEFORE the ETag, so the tag matches the served bytes.
+          if (ext === '.html' || ext === '.htm') {
+            buf = Buffer.from(injectSimBootSnippet(buf.toString('utf8')), 'utf8');
+          }
+          // Strong ETag = sha1 of the exact bytes. Combined with `no-cache` on the
+          // rewritable entry HTML / bridge JS this is the point: the browser still
+          // revalidates every load, but an unchanged file costs a 304, not a re-download.
+          etag = strongEtag(buf);
+          if (isRevision) simTextCache.set(resolvedKey, { bytes: buf, etag, contentType });
         }
-        // Strong ETag = sha1 of the exact bytes. Combined with `no-cache` on the
-        // rewritable entry HTML / bridge JS this is the point: the browser still
-        // revalidates every load, but an unchanged file costs a 304, not a re-download.
-        const etag = `"${createHash('sha1').update(buf).digest('hex')}"`;
 
         reply
           .header('X-Content-Type-Options', 'nosniff')

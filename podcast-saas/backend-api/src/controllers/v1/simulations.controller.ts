@@ -3,12 +3,20 @@ import { randomUUID } from 'crypto';
 import AdmZip from 'adm-zip';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { simulations, timeline_sections } from '../../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { simulations, timeline_sections, projects, video_files } from '../../db/schema.js';
+import { eq, and, inArray, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { SimulationImportService } from '../../services/simulation/SimulationImportService.js';
 import { z as zImport } from 'zod';
-import { editableProject, type CollabUser } from '../../services/collabAccess.js';
+import { editableProject, projectsEditableByWhere, type CollabUser } from '../../services/collabAccess.js';
+import { loadSimBannerUrls } from '../../services/library/buildLibraryView.js';
+import { posterService } from '../../services/simulation/PosterService.js';
+import { posterAspectFor, posterKeyForSection } from '../../services/simulation/sectionPosterKey.js';
+import { decodePngDataUrl, parsePngHeader } from '../../services/simulation/pngHeader.js';
+import { packageRevisionFor } from 'shared/sim/simRevision';
+import { derivePackageRevision } from 'shared/sim/simIdentity';
+import { POSTER_SIZES, posterIdentityString } from 'shared/sim/posterIdentity';
+import { projectOrientation } from 'shared/video/orientation';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { tooLargeMessage, UPLOAD_MAX_BYTES } from '../../services/security/uploadLimits.js';
 import {
@@ -129,6 +137,103 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
       ? (r.entry_file.startsWith('http') ? r.entry_file : storage.getSimPublicUrl(r.entry_file))
       : r.entry_file,
   });
+
+  /**
+   * GET /api/v1/simulations/importable?exclude=<projectId> — every READY simulation across the
+   * projects this user can edit, with its project's title and its poster, in ONE query (night run
+   * 2026-09-03 §6). The import gallery used to list the user's projects and then fan out one
+   * request per project, and the whole grid waited for the slowest.
+   */
+  app.get<{ Querystring: { exclude?: string } }>(
+    '/api/v1/simulations/importable',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const exclude = request.query.exclude?.trim() || null;
+      const owned = await db.query.projects.findMany({
+        where: projectsEditableByWhere(user),
+        columns: { id: true, title: true },
+      });
+      const titles = new Map(owned.filter((p) => p.id !== exclude).map((p) => [p.id, p.title ?? '']));
+      if (titles.size === 0) return reply.send([]);
+      const rows = await db.query.simulations.findMany({
+        where: and(inArray(simulations.project_id, [...titles.keys()]), eq(simulations.status, 'ready')),
+        orderBy: (t, { desc }) => [desc(t.created_at)],
+      });
+      const stills = await loadSimBannerUrls(rows);
+      return reply.send(rows.map((r) => ({
+        ...serializeSim(r),
+        project_title: titles.get(r.project_id) ?? '',
+        poster_url: stills.get(r.id)?.banner ?? null,
+      })));
+    },
+  );
+
+  /**
+   * POST /api/v1/projects/:id/sections/:sid/poster — a poster captured in the creator's browser.
+   *
+   * The client sends the PNG renditions; the SERVER decides the identity, from the section row,
+   * exactly as the player looks it up (sectionPosterKey.ts) — so the picture can never be filed
+   * under a key nobody will ask for. Renditions must be PNGs of the exact sizes the aspect names.
+   * Storing and invalidating land together, the pairing the ledger's simulation-008 entry names.
+   */
+  app.post<{ Params: { id: string; sid: string }; Body: { renditions?: unknown; force?: unknown } }>(
+    '/api/v1/projects/:id/sections/:sid/poster',
+    { preHandler: [firebaseAuthMiddleware], bodyLimit: 12 * 1024 * 1024 },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+
+      const section = await db.query.timeline_sections.findFirst({
+        where: and(eq(timeline_sections.id, request.params.sid), eq(timeline_sections.project_id, project.id)),
+      });
+      if (!section?.simulation_id) return reply.code(404).send({ message: 'Section has no simulation' });
+      const sim = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+      });
+      if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
+
+      const videos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+        orderBy: [asc(video_files.created_at)],
+        columns: { width: true, height: true, is_broll: true },
+      });
+      const aspect = posterAspectFor(projectOrientation(videos));
+      const packageRevision = packageRevisionFor(
+        { id: sim.id, bridge_hash: sim.bridge_hash, active_revision_id: sim.active_revision_id },
+        derivePackageRevision,
+      );
+      const key = posterKeyForSection(section, packageRevision, aspect);
+      const identity = posterIdentityString(key);
+
+      const force = request.body?.force === true;
+      if (!force) {
+        const existing = await posterService.getPoster(sim.id, key).catch(() => null);
+        if (existing) return reply.send({ outcome: 'existed', identity, aspectProfile: aspect });
+      }
+
+      const wanted = POSTER_SIZES[aspect];
+      const raw = Array.isArray(request.body?.renditions) ? request.body.renditions as Array<{ size?: unknown; format?: unknown; dataUrl?: unknown }> : [];
+      const renditions = [];
+      for (const size of wanted) {
+        const r = raw.find((x) => x?.size === size.name);
+        if (!r || r.format !== 'png' || typeof r.dataUrl !== 'string') {
+          return reply.code(400).send({ message: `Missing PNG rendition: ${size.name}` });
+        }
+        const bytes = decodePngDataUrl(r.dataUrl, 4 * 1024 * 1024);
+        const header = bytes ? parsePngHeader(bytes) : null;
+        if (!bytes || !header || header.width !== size.width || header.height !== size.height) {
+          return reply.code(400).send({ message: `Rendition ${size.name} must be a ${size.width}×${size.height} PNG` });
+        }
+        renditions.push({ size: size.name, format: 'png' as const, bytes, width: header.width, height: header.height, transparent: false });
+      }
+
+      await posterService.storePoster(sim.id, sim.storage_prefix, key, renditions, { capturedAt: new Date() });
+      await posterService.invalidate(sim.id, packageRevision);
+      return reply.code(201).send({ outcome: 'stored', identity, aspectProfile: aspect });
+    },
+  );
 
   // GET /api/v1/projects/:id/simulations
   app.get<{ Params: { id: string } }>(

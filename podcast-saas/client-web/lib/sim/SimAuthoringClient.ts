@@ -46,6 +46,11 @@ export interface SimAuthoringSession {
   observe(on: boolean): void;
   on<K extends keyof SimAuthoringEvents>(event: K, cb: SimAuthoringEvents[K]): void;
   dispose(): void;
+  /**
+   * The simulation's current picture as ONE raw PNG data URL (night run 2026-09-03 §6). Rejects
+   * on timeout or when the document could not draw itself; the caller keeps the banner it had.
+   */
+  snapshot(timeoutMs?: number): Promise<{ dataUrl: string; width: number; height: number }>;
 }
 
 interface Envelope {
@@ -101,6 +106,7 @@ export function connectSimAuthoring(
     const port = channel.port1;
     const handlers: Partial<SimAuthoringEvents> = {};
     const pendingScans = new Map<string, (r: AuthoringScanResult) => void>();
+    const pendingSnapshots = new Map<string, { res: (r: { dataUrl: string; width: number; height: number }) => void; rej: (e: Error) => void }>();
     let live = true;
     let settled = false;
 
@@ -140,6 +146,15 @@ export function connectSimAuthoring(
         });
         return;
       }
+      if (d.type === T.SNAPSHOT_RESULT && d.requestId) {
+        const waiting = pendingSnapshots.get(d.requestId);
+        if (!waiting) return;
+        pendingSnapshots.delete(d.requestId);
+        const snap = d as unknown as { dataUrl?: string; width?: number; height?: number; error?: string };
+        if (snap.dataUrl && snap.width && snap.height) waiting.res({ dataUrl: snap.dataUrl, width: snap.width, height: snap.height });
+        else waiting.rej(new Error(`sim-authoring: snapshot failed (${snap.error ?? 'no picture'})`));
+        return;
+      }
       if (d.type === T.MARK_TOGGLED && d.selector) { handlers.markToggled?.(d.selector); return; }
       if (d.type === T.SCRIPT_TOUCHED && d.selectors) { handlers.scriptTouched?.(d.selectors); return; }
       if (d.type === T.ESCAPE_REQUESTED) { handlers.escapeRequested?.(); return; }
@@ -163,6 +178,17 @@ export function connectSimAuthoring(
           }, scanTimeoutMs);
           pendingScans.set(requestId, (r) => { window.clearTimeout(to); res(r); });
           post(T.SCAN_CONTROLS, { requestId });
+        });
+      },
+      snapshot(snapshotTimeoutMs = 4000) {
+        return new Promise<{ dataUrl: string; width: number; height: number }>((res, rej) => {
+          const requestId = nextId('snap');
+          const to = window.setTimeout(() => {
+            pendingSnapshots.delete(requestId);
+            rej(new Error('sim-authoring: snapshot timed out'));
+          }, snapshotTimeoutMs);
+          pendingSnapshots.set(requestId, { res: (r) => { window.clearTimeout(to); res(r); }, rej: (e) => { window.clearTimeout(to); rej(e); } });
+          post(T.SNAPSHOT, { requestId });
         });
       },
       setMarks(marks) { post(T.SET_MARKS, { marks }); },

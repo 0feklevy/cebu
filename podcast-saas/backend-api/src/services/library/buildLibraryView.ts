@@ -119,10 +119,12 @@ const BANNER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
  * grid tile is 16:9), then the newest capture, then identity as the tie-break. Zero bytes are
  * written; a simulation that was never captured simply has no banner.
  */
-async function loadSimBannerUrls(
+export interface SimStills { /** compact rendition — the tile */ banner: string; /** standard rendition — the overlay */ poster: string }
+
+export async function loadSimBannerUrls(
   sims: readonly { id: string; bridge_hash?: string | null; active_revision_id?: string | null }[],
-): Promise<Map<string, string>> {
-  const banners = new Map<string, string>();
+): Promise<Map<string, SimStills>> {
+  const banners = new Map<string, SimStills>();
   if (sims.length === 0) return banners;
   const simIds = sims.map((s) => s.id);
 
@@ -169,11 +171,14 @@ async function loadSimBannerUrls(
     for (const row of ranked) {
       // `parsePosterVariants` is the shared validation that keeps an arbitrary JSONB write from
       // reaching a public URL — the same reader PosterService and buildPlayerConfig use.
-      const variant = selectPosterVariant(
-        { variants: parsePosterVariants(row.variants) }, 'standard', BANNER_FORMATS,
-      );
-      if (variant) {
-        banners.set(simId, storage.getSimPublicUrl(variant.path));
+      // The TILE gets the compact rendition (640×360 for a ~300px tile) and the overlay the
+      // standard one; both come from the same capture, so they can never disagree. A capture
+      // that somehow lacks the compact size falls back to the standard one for the tile.
+      const record = { variants: parsePosterVariants(row.variants) };
+      const standard = selectPosterVariant(record, 'standard', BANNER_FORMATS);
+      const compact = selectPosterVariant(record, 'compact', BANNER_FORMATS) ?? standard;
+      if (standard && compact) {
+        banners.set(simId, { banner: storage.getSimPublicUrl(compact.path), poster: storage.getSimPublicUrl(standard.path) });
         break;
       }
     }
@@ -230,13 +235,13 @@ export async function buildLibraryView(input: BuildLibraryViewInput): Promise<Li
     if (!key) continue;
     const url = key.startsWith('http') ? key : storage.getSimPublicUrl(key);
     if (!simUrlIsFramable(url, projectId, s.id)) continue;
-    const bannerUrl = simBanners.get(s.id);
+    const stills = simBanners.get(s.id);
     materials.push({
       id: s.id,
       type: 'simulation',
       name: s.name,
       url,
-      ...(bannerUrl ? { bannerUrl } : {}),
+      ...(stills ? { bannerUrl: stills.banner, posterUrl: stills.poster } : {}),
       createdAt: iso(s.created_at),
     });
   }

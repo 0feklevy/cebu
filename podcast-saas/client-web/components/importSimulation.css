@@ -1,138 +1,150 @@
 /*
- * Import-simulation gallery — the parts the Extended Library stylesheet does not already provide.
+ * The import gallery — a full-screen surface, not a box (night run 2026-09-03 §6).
  *
- * Everything structural (the modal shell, the filter bar, the grid, the card frame and its
- * preview box) is reused verbatim from `avatar/avatar.css`, deliberately: two surfaces that look
- * the same should not be two stylesheets that drift. What is here is only what this dialog adds —
- * selection state, the footer, and the full-screen preview.
+ * The previous version borrowed the Extended Library's 1120×760 panel and 210px cards: on a large
+ * monitor a small dimmed window in the middle of the editor, each tile a live simulation running
+ * at postage-stamp size. Now the gallery IS the screen, tiles are 16:9 stills at ≥300px, and a
+ * simulation only runs when the author asks to see it move.
  *
- * The palette is taken from the gallery it sits beside rather than from the app tokens, because
- * `.avatar-gallery__panel` paints its own light surface (#f6f7f9) regardless of theme; a token
- * colour here would be the one element that inverts.
+ * Theme tokens throughout, so it follows dark mode like the rest of the editor.
  */
 
-/* ── Card selection ─────────────────────────────────────────────────────────── */
-
-.import-sim-card {
-  cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.import-sim-card:hover { border-color: #c4c9d4; }
-
-.import-sim-card--on {
-  border-color: #6366f1;
-  /* Ring rather than a thicker border: a border change would resize the card and reflow the grid
-     every time a selection is toggled. */
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);
-}
-
-/* The whole body is the label, so the pointer target is the card, not the 14px box. */
-.import-sim-card__pick {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  cursor: pointer;
-  margin: 0;
-}
-
-.import-sim-card__box {
-  margin-top: 2px;
-  width: 15px;
-  height: 15px;
-  accent-color: #6366f1;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.import-sim-card__text { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
-
-.import-sim-card__name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1a2330;
-  /* Simulation names are author-written and can be long; the grid column must not stretch. */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ── Footer ─────────────────────────────────────────────────────────────────── */
-
-.import-sim__footer {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 18px;
-  border-top: 1px solid #e2e6ec;
-  background: #fff;
-}
-
-/* Messages take the free space so the two buttons stay pinned right. */
-.import-sim__error,
-.import-sim__progress {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  flex: 1;
-  min-width: 0;
-}
-.import-sim__error { color: #dc2626; }
-.import-sim__progress { color: #059669; }
-
-/* When neither message is present, this pushes the buttons right on its own. */
-.import-sim__footer > .avatar-g-create { margin-left: auto; }
-.import-sim__error ~ .avatar-g-create,
-.import-sim__progress ~ .avatar-g-create { margin-left: 0; }
-
-.import-sim__go {
-  height: 32px;
-  padding: 0 16px;
-  border-radius: 8px;
-  border: none;
-  background: #6366f1;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.import-sim__go:hover:not(:disabled) { background: #4f46e5; }
-.import-sim__go:disabled { opacity: 0.5; cursor: default; }
-
-/* ── Full-screen preview ────────────────────────────────────────────────────── */
-
-.import-sim-fs {
+.import-sim {
   position: fixed;
   inset: 0;
-  /* Above .avatar-gallery (1000) — it opens from inside that surface. */
-  z-index: 1100;
-  background: rgba(6, 8, 14, 0.9);
+  z-index: 1000;
   display: flex;
   flex-direction: column;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
 }
 
-.import-sim-fs__bar {
+.import-sim__header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e6ec;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid hsl(var(--border));
+  flex-wrap: wrap;
+}
+.import-sim__title { font-size: 18px; font-weight: 700; margin: 0; }
+.import-sim__hint { margin: 2px 0 0; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.import-sim__count { margin-left: auto; font-size: 13px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
+.import-sim__close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 10px;
+  border: 1px solid hsl(var(--border)); background: hsl(var(--card)); color: hsl(var(--foreground));
+  cursor: pointer;
+}
+.import-sim__close:disabled { opacity: 0.5; cursor: default; }
+
+.import-sim__filters {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 20px; border-bottom: 1px solid hsl(var(--border));
+}
+.import-sim__search {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 200px;
+  height: 38px; padding: 0 12px; border-radius: 10px;
+  border: 1px solid hsl(var(--border)); background: hsl(var(--card));
+}
+.import-sim__search input { flex: 1; border: 0; background: transparent; color: inherit; font-size: 14px; outline: none; }
+.import-sim__pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.import-sim__pill {
+  height: 32px; padding: 0 12px; border-radius: 999px; font-size: 13px; cursor: pointer;
+  border: 1px solid hsl(var(--border)); background: hsl(var(--card)); color: hsl(var(--foreground));
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+}
+.import-sim__pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-sim__pill--on { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: transparent; }
+.import-sim__pill b { font-weight: 600; opacity: 0.8; }
+.import-sim__sort { display: flex; align-items: center; gap: 6px; font-size: 13px; color: hsl(var(--muted-foreground)); }
+.import-sim__sort select { height: 32px; border-radius: 8px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); color: hsl(var(--foreground)); padding: 0 8px; }
+
+.import-sim__body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
+.import-sim__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+@media (max-width: 480px) { .import-sim__grid { grid-template-columns: 1fr; } }
+
+.import-sim__empty {
+  display: flex; align-items: center; justify-content: center; min-height: 40vh;
+  color: hsl(var(--muted-foreground)); font-size: 14px; text-align: center;
 }
 
-.import-sim-fs__name { font-size: 14px; font-weight: 700; color: #1a2330; }
-.import-sim-fs__project { font-size: 12px; color: #8a94a6; margin-right: auto; }
+/* ── Card ── */
+.import-sim-card {
+  position: relative; display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 14px; border: 1.5px solid hsl(var(--border)); background: hsl(var(--card));
+  transition: border-color 120ms, box-shadow 120ms, transform 120ms;
+}
+.import-sim-card:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+.import-sim-card--on { border-color: hsl(var(--primary)); box-shadow: 0 0 0 3px hsl(var(--primary) / 0.25); }
 
-.import-sim-fs__stage {
-  flex: 1;
-  min-height: 0;
-  background: #fff;
-  overflow: hidden;
+.import-sim-card__preview {
+  position: relative; aspect-ratio: 16 / 9; background: hsl(var(--muted)); overflow: hidden;
+}
+.import-sim-card__preview--portrait { aspect-ratio: 9 / 16; max-height: 60vh; }
+.import-sim-card__still { width: 100%; height: 100%; object-fit: contain; display: block; }
+.import-sim-card__placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: hsl(var(--muted-foreground)); font-size: 13px; gap: 6px;
+}
+.import-sim-card__play {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; cursor: pointer; color: white;
+  opacity: 0; transition: opacity 120ms;
+}
+.import-sim-card:hover .import-sim-card__play, .import-sim-card__play:focus-visible { opacity: 1; }
+.import-sim-card__play span {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px;
+  background: rgba(0,0,0,0.6); font-size: 13px; font-weight: 600;
+}
+.import-sim-card__fs {
+  position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 8px;
+  border: 0; background: rgba(0,0,0,0.55); color: white; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 
-@media (max-width: 640px) {
-  .import-sim-fs__bar { padding: 8px 10px; gap: 8px; }
-  .import-sim-fs__project { display: none; }
-  .import-sim__footer { padding: 10px 12px; gap: 8px; }
+.import-sim-card__pick {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; cursor: pointer;
 }
+.import-sim-card__box { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; accent-color: hsl(var(--primary)); }
+.import-sim-card__text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.import-sim-card__name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-sim-card__meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: hsl(var(--muted-foreground)); flex-wrap: wrap; }
+.import-sim-card__project {
+  padding: 2px 8px; border-radius: 999px; background: hsl(var(--primary) / 0.12); color: hsl(var(--primary));
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Footer ── */
+.import-sim__footer {
+  display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+  border-top: 1px solid hsl(var(--border)); background: hsl(var(--card));
+}
+.import-sim__error { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #dc2626; margin-right: auto; }
+.import-sim__progress { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: hsl(var(--muted-foreground)); margin-right: auto; }
+.import-sim__cancel {
+  height: 38px; padding: 0 16px; border-radius: 10px; font-size: 14px; cursor: pointer;
+  border: 1px solid hsl(var(--border)); background: transparent; color: hsl(var(--foreground));
+  margin-left: auto;
+}
+.import-sim__go {
+  height: 38px; padding: 0 20px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer;
+  border: 0; background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+}
+.import-sim__go:disabled, .import-sim__cancel:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Full-screen preview (above the gallery) ── */
+.import-sim-fs {
+  position: fixed; inset: 0; z-index: 1100; display: flex; flex-direction: column;
+  background: rgba(6, 8, 14, 0.94);
+}
+.import-sim-fs__bar {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px; color: white;
+}
+.import-sim-fs__name { font-weight: 600; font-size: 15px; }
+.import-sim-fs__project { font-size: 13px; opacity: 0.7; margin-right: auto; }
+.import-sim-fs__stage { flex: 1; min-height: 0; margin: 0 16px 16px; border-radius: 12px; overflow: hidden; background: #fff; }

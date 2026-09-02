@@ -52,6 +52,81 @@ ${SIM_SCANNER_SOURCE}
   var touchTimer = 0;
   var rafHandle = 0;
 
+  // ── SNAPSHOT: the simulation's current picture, for its poster ─────────────────────────
+  // Runs INSIDE the next animation frame, after the simulation's own callback (registered earlier
+  // in the same frame) has drawn: a WebGL drawing buffer without preserveDrawingBuffer is intact
+  // until the frame ends, so toDataURL inside that window sees the picture. A DOM-only document
+  // is rasterised through an SVG foreignObject; when that is tainted or empty the answer is an
+  // error and the parent keeps whatever banner it had.
+  function largestVisibleCanvas() {
+    var list = document.querySelectorAll('canvas');
+    var best = null, bestArea = 0;
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      var r = c.getBoundingClientRect();
+      if (r.width < 32 || r.height < 32 || c.width < 32 || c.height < 32) continue;
+      var st = window.getComputedStyle(c);
+      if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+      var area = r.width * r.height;
+      if (area > bestArea) { bestArea = area; best = c; }
+    }
+    return best;
+  }
+  function isBlank(canvas) {
+    try {
+      var probe = document.createElement('canvas');
+      probe.width = 16; probe.height = 16;
+      var ctx = probe.getContext('2d');
+      ctx.drawImage(canvas, 0, 0, 16, 16);
+      var d = ctx.getImageData(0, 0, 16, 16).data;
+      var first = [d[0], d[1], d[2], d[3]];
+      for (var i = 4; i < d.length; i += 4) {
+        if (Math.abs(d[i] - first[0]) > 6 || Math.abs(d[i + 1] - first[1]) > 6 || Math.abs(d[i + 2] - first[2]) > 6 || Math.abs(d[i + 3] - first[3]) > 6) return false;
+      }
+      return true;   // one flat colour: nothing drawn, or the clear colour only
+    } catch (e) { return true; }
+  }
+  function domToDataUrl(done) {
+    try {
+      var w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+      var xml = new XMLSerializer().serializeToString(document.documentElement);
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><foreignObject width="100%" height="100%">' + xml + '</foreignObject></svg>';
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var c = document.createElement('canvas'); c.width = w; c.height = h;
+          var ctx = c.getContext('2d');
+          var bg = window.getComputedStyle(document.body || document.documentElement).backgroundColor;
+          ctx.fillStyle = (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0);
+          done(null, c.toDataURL('image/png'), w, h);
+        } catch (e) { done('tainted'); }
+      };
+      img.onerror = function () { done('unrenderable'); };
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) { done('unserialisable'); }
+  }
+  function snapshot(requestId) {
+    var attempts = 0;
+    var tryCanvas = function () {
+      attempts++;
+      var c = largestVisibleCanvas();
+      if (c) {
+        try {
+          if (isBlank(c) && attempts < 3) { setTimeout(function () { requestAnimationFrame(tryCanvas); }, 250); return; }
+          send('SNAPSHOT_RESULT', { requestId: requestId, dataUrl: c.toDataURL('image/png'), width: c.width, height: c.height });
+          return;
+        } catch (e) { /* tainted canvas — fall through to the DOM path */ }
+      }
+      domToDataUrl(function (err, dataUrl, w, h) {
+        if (err) send('SNAPSHOT_RESULT', { requestId: requestId, error: err });
+        else send('SNAPSHOT_RESULT', { requestId: requestId, dataUrl: dataUrl, width: w, height: h });
+      });
+    };
+    requestAnimationFrame(tryCanvas);
+  }
+
   function send(type, payload) {
     if (!port) return;
     var msg = { ns: NS, v: V, sid: sid, type: type };
@@ -228,6 +303,7 @@ ${SIM_SCANNER_SOURCE}
       schedulePaint();
       return;
     }
+    if (d.type === 'SNAPSHOT') { snapshot(d.requestId); return; }
     if (d.type === 'SET_MARKS') {
       marks = {};
       var list = d.marks || [];
