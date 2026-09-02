@@ -1,40 +1,60 @@
 ---
 name: flowvid-2026-09-03-help-coverage-audit
-description: Audit gaps in §5 "the ? help" (PR #168, feat/help-coverage) — false "deleted"/"compile error" claims in the commit and ledger, and four still-uncovered features
+description: CLOSED — all 3 gaps in §5 "the ? help" (PR #168) were fixed by PR #171 (commit 4c93336, fix/audit-followups), re-verified by mutation on 2026-09-03
 metadata:
   type: project
 ---
 
-Night-run §5 ("the '?' help", `.claude/review/NIGHT-RUN-2026-09-03.md` §5) shipped as PR #168,
-merged to `origin/main` via `1ff0eee`. Audited 2026-09-03 against the merged tip. Two of the
-commit's own claims are false, and the Acceptance criterion's "coverage table" item is only
-partly met — none of this was caught before merge.
+**CLOSED 2026-09-03, re-audited on `fix/audit-followups` (PR #171, HEAD `4c93336`).** All three
+gaps below (originally found against PR #168 / `1ff0eee`) are fixed. Re-verification used a
+detached worktree at `4c93336` (not the working tree — see [[verify-committed-tree]]) with
+`node_modules` symlinked from the primary checkout (safe only because the two commits share an
+identical `pnpm-lock.yaml`, checked with `diff` first).
 
-**1. "HowItWorksDialog deleted" is false.** Commit `1e3fdb5` and `.claude/review/DECISIONS.md:85`
-both say it was deleted. `podcast-saas/client-web/components/HowItWorksDialog.tsx` is still in the
-tree on `origin/main` right now — unreferenced (dead, as it already was pre-PR) but never removed.
-No commit in `main..feat/help-coverage` touches that path at all.
+**1. HowItWorksDialog is now actually deleted.** `git ls-tree -r 4c93336 --name-only | grep
+HowItWorks` is empty; `git grep HowItWorksDialog 4c93336` finds only two prose mentions (a
+reference-patterns memory doc and a comment), no imports.
 
-**2. "a step at nothing is a compile error" / "cannot rot silently again" overstates what shipped.**
-The Design section promised "a render test mounts the editor and asserts every anchor is in the
-DOM — the silent-skip rot becomes a red test." That test does not exist.
-`podcast-saas/client-web/__tests__/tours.test.ts` only checks the pure data tables (every step's
-anchor is a key of `TOUR_ANCHORS`, and every `TOUR_ANCHORS` key is used by some step) — it never
-renders a component or queries the DOM. Proven by mutation: deleting
-`{...tourAnchor('library')}` from `VideoEditor.tsx` (so the anchor renders nowhere) leaves
-`tsc --noEmit` clean and all 115 client-web test files / 1911 tests green. The only signal left is
-`GuidedTour.tsx`'s `console.warn` in non-production — invisible in CI, exactly the failure mode
-the feature was built to close. TypeScript only catches a *typo'd* anchor name at a `tourAnchor()`
-call site, not a call site being deleted entirely.
+**2. The DOM-mount gap is closed, confirmed by mutation, twice.** `tourAnchors.{editor,header,
+settings,section,persona,library,home}.test.tsx` (9 files, 51 tests) each render the real
+surface component and assert every claimed anchor is in the DOM; `tourSurfaces.test.ts` +
+`__tests__/helpers/tourSurfaces.ts` force every `TOUR_ANCHORS` key to be claimed by exactly one
+mounted surface. Verified by re-running the ORIGINAL mutation from this memory's first version:
+- Deleting `{...tourAnchor('library')}` from `VideoEditor.tsx` (client-web/components/
+  VideoEditor.tsx:1367) now turns `tourAnchors.editor.test.tsx` red (`tourSurfaces.test.ts` and
+  `tours.test.ts` stay green, as expected — they're pure-data checks, not DOM checks).
+- Deleting the `branching: 'branching'` entry from `TOUR_ANCHORS` in `lib/tours/anchors.ts` turns
+  BOTH `tourSurfaces.test.ts` and `tours.test.ts` red at runtime, AND `tsc --noEmit` reports 4
+  type errors (`steps.ts:42`, `VideoEditor.tsx:1808`, `tourAnchors.editor.test.tsx:56`,
+  `__tests__/helpers/tourSurfaces.ts:15`) — the "a step at nothing is a compile error" claim is
+  now true for a registry-level deletion, not just a typo.
 
-**3. Four features named in §5's own gap list still have no tour step anywhere:** "Raise your
-hand", courses, playlists, branching (checked against `lib/tours/steps.ts` — none of the four
-strings appear). Import gallery, markers/flags, music/SFX, dubbing, the Minimal-UI control picker,
-the three share addresses + Create podcast, export, and keyboard shortcuts ARE covered.
+**3. The four uncovered features now have tour coverage.** `branching` anchor + EDITOR_STEPS step
+(`lib/tours/steps.ts:39-45`), raise-your-hand and playlists named in the `share` step body
+(`steps.ts:53`), `HOME_STEPS` with `home-projects` (`HomeHero.tsx`, `tourAnchor('home-projects')`)
+and `home-playlists` (`PlaylistsPanel.tsx:89`) anchors, `TourButton` + `GuidedTour` wired into
+`HomeHero.tsx`. Courses genuinely has no creator UI (`client-web` only calls the public GET
+course/lesson routes, never the `courses.controller.ts` POST create routes) — the `.claude/review/
+DECISIONS.md` 🟡 "Courses have no creator UI" line is accurate, recorded as an owner decision
+rather than built.
 
-**How to apply:** when auditing a "this cannot rot / regress silently" claim, don't trust the
-commit message — mutate the guarded thing (delete the anchor/element/call site) and run the actual
-suite. A pure-data test that only checks two tables agree with each other is not the same as a
-test that checks the tables agree with the rendered DOM. See also
-[[destructive-git-needs-a-census]] pattern of "the blocking list is not the damage list" — here,
-"the anchor registry is not the DOM."
+**Also closed in the same commit (from a separate §6/PR #169 audit not previously memorialized):**
+a Fastify-inject route test (`simulations.posterRoutes.test.ts`, 7 tests) now covers `GET /api/v1/
+simulations/importable` and `POST /api/v1/projects/:id/sections/:sid/poster` through the real
+`registerSimulationsRoutes`, asserting the stored key matches `posterKeyForSection(...)` and a
+store-before-invalidate call order (`simulations.controller.ts:232-233` calls `storePoster` then
+`invalidate`, matching the test). The ten dead-import lint warnings across `buildPlayerConfig.ts`,
+`exportPlan.ts`, `simulations.controller.ts`, `sim-public.controller.ts` are gone (`eslint` exit 0
+on all four). The 4 MB cap / 10-minute cache / session-scoped throttle deviations from the
+original design are recorded (not changed) in `NIGHT-RUN-2026-09-03.md` §11's "What the audits
+corrected" paragraph, along with the "C captions, F fullscreen" viewer-overlay design text being
+explicitly marked aspirational-and-not-built.
+
+**How to apply (still holds, now demonstrated twice):** when auditing a "this cannot rot / regress
+silently" claim, don't trust the commit message — mutate the guarded thing (delete the anchor/
+element/call site, or delete the registry entry) and run the actual suite, not just the named test
+file. A pure-data test that only checks two tables agree with each other is not the same as a test
+that checks the tables agree with the rendered DOM — but a registry-level deletion (as opposed to a
+component-level one) IS caught by both the type system and the pure-data test, so the right
+mutation to run depends on which layer you're trying to prove is guarded. See also
+[[destructive-git-needs-a-census]] pattern of "the blocking list is not the damage list."
