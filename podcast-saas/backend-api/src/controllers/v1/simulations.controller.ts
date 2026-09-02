@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import AdmZip from 'adm-zip';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
-import { simulations, timeline_sections, projects, video_files } from '../../db/schema.js';
+import { simulations, timeline_sections, video_files } from '../../db/schema.js';
 import { eq, and, inArray, asc } from 'drizzle-orm';
 import { firebaseAuthMiddleware } from '../../middleware/firebase-auth.js';
 import { SimulationImportService } from '../../services/simulation/SimulationImportService.js';

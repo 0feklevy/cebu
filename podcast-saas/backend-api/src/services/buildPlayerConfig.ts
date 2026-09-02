@@ -36,9 +36,7 @@ export async function resolveSimPoolMode(): Promise<SimPoolMode> {
     return 'adaptive';   // column not migrated yet, or DB hiccup → safe default
   }
 }
-import {
-  DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
-} from 'shared/sim/simIdentity';
+import { derivePackageRevision } from 'shared/sim/simIdentity';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
   type PosterFormat, type PosterKey,

@@ -39,6 +39,11 @@ export const EDITOR_STEPS: readonly Step[] = [
     body: 'Lay out sections where a simulation, b-roll, image or audio plays over the video. Double-click the ruler to drop a flag with a note; the Music / SFX track holds generated or uploaded audio.',
   },
   {
+    anchor: 'branching',
+    title: 'Follow user decisions',
+    body: 'Branch the video on viewer choices: a question at a point you pick sends each viewer down their own path, and the paths rejoin where you say. Draw the graph here and see which way viewers actually went.',
+  },
+  {
     anchor: 'preview',
     title: 'Preview',
     body: 'Watch it exactly as viewers will, in the frame your video has — a vertical video stays vertical everywhere, including the export. Space plays and pauses, ← → skip five seconds, ? lists every key.',
@@ -46,12 +51,27 @@ export const EDITOR_STEPS: readonly Step[] = [
   {
     anchor: 'share',
     title: 'Share: three addresses',
-    body: 'One project, three public pages: the video, its Library of materials, and the podcast — a hands-free audio version listeners can talk to in the car. Press “Create podcast” once the video is public.',
+    body: 'One project, three public pages: the video, its Library of materials, and the podcast — a hands-free audio version listeners talk to in the car, or press ✋ Raise your hand to ask in text. Press “Create podcast” once the video is public. Group public videos into a playlist from the home page.',
   },
   {
     anchor: 'export',
     title: 'Export the video',
     body: 'Render the whole thing — simulations included — to one MP4 at 1920×1080, or 1080×1920 for a vertical project. Progress is shown here; the file downloads when it is done.',
+  },
+];
+
+// ── The home page ─────────────────────────────────────────────────────────────────────────────
+
+export const HOME_STEPS: readonly Step[] = [
+  {
+    anchor: 'home-projects',
+    title: 'Your projects',
+    body: 'Every project you own or were invited to. Open one to edit it, duplicate one to start from what you already built, or search by title.',
+  },
+  {
+    anchor: 'home-playlists',
+    title: 'Playlists',
+    body: 'Group public videos into a playlist: one address that plays them in order — a series, or a course of lessons. Viewers who finish one video are offered the next.',
   },
 ];
 

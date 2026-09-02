@@ -16,6 +16,10 @@ import {
   X,
 } from 'lucide-react';
 import { CreateProjectDialog } from './CreateProjectDialog';
+import { GuidedTour, type TourStep } from './GuidedTour';
+import { TourButton } from './TourButton';
+import { HOME_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { PlaylistsPanel } from './PlaylistsPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { api } from '../lib/api';
@@ -275,6 +279,8 @@ const PROJECTS_CACHE_KEY = 'hero_projects_v1';
  * The envelope carries the uid it was written under and a read for any other uid returns nothing.
  * A pre-envelope array cannot be attributed to anybody, so it is dropped rather than trusted.
  */
+const HOME_TOUR_STEPS: TourStep[] = toTourSteps(HOME_STEPS);
+
 interface ProjectsCacheEnvelope { uid: string; items: Project[] }
 
 function readCachedProjects(uid: string | null | undefined): Project[] {
@@ -299,6 +305,7 @@ export function HomeHero() {
   // Start empty so the server and the first client render match (the page now
   // SSRs). The localStorage cache is seeded in a mount effect below.
   const [projects, setProjects] = useState<Project[]>([]);
+  const [tourOpen, setTourOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
 
@@ -401,12 +408,17 @@ export function HomeHero() {
                   <Plus size={16} strokeWidth={2} aria-hidden />
                   New project
                 </button>
+                <TourButton
+                  onClick={() => setTourOpen(true)}
+                  title="Walk me through the home page"
+                  aria-label="Walk me through the home page"
+                />
               </div>
             </div>
           </header>
 
           <div className="flex min-w-0 flex-col gap-4 overflow-visible lg:grid lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(340px,1.08fr)_minmax(0,.92fr)] lg:overflow-hidden">
-            <section className="flex min-h-[340px] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:min-h-[370px] sm:p-5 lg:min-h-0">
+            <section {...tourAnchor('home-projects')} className="flex min-h-[340px] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm-soft sm:min-h-[370px] sm:p-5 lg:min-h-0">
               <div className="mb-4 flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-foreground">Recent projects</h2>
@@ -491,6 +503,7 @@ export function HomeHero() {
       </section>
 
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <GuidedTour steps={HOME_TOUR_STEPS} open={tourOpen} onClose={() => setTourOpen(false)} />
     </>
   );
 }

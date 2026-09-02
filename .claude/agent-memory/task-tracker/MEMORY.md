@@ -6,4 +6,5 @@
 - [Concrete 2026-08-22 audit gaps](project_flowvid-2026-08-22-audit-gaps.md) — job-queue-014 CI wiring gap, job-queue-015 still open, a11y/crop staleness in DECISIONS.md
 - [FlowVid secret-file guard mechanism](project_flowvid-secret-file-guard.md) — secret-*.txt is ignored by BOTH tracked .gitignore:47 and local .git/info/exclude; check-ignore matches .gitignore
 - [Concrete 2026-08-26 audit gaps](project_flowvid-2026-08-26-audit-gaps.md) — supersedes earlier same-day note (those gaps now fixed); PR #151 missing from ledger, stale header, SMOKE_PUBLIC_PATH unset, stuck v0.2.11 release run
-- [PR #167 podcast car-mode audit gaps](project_flowvid-2026-09-03-podcast-car-mode-audit.md) — unbounded ElevenLabs spend + no-op log call, both caught only by full test suite; CarModePlayer.tsx/vad.ts never created
+- [PR #167 podcast car-mode audit](project_flowvid-2026-09-03-podcast-car-mode-audit.md) — 2 real CI gaps found + fixed + merged live mid-audit; CarModePlayer.tsx/vad.ts still never created, still no route-level test
+- [PR #168 help-coverage audit — CLOSED](project_flowvid-2026-09-03-help-coverage-audit.md) — all 3 gaps fixed by PR #171 (4c93336), re-verified by mutation 2026-09-03; also closes the §6/PR #169 poster-route-test and lint gaps
