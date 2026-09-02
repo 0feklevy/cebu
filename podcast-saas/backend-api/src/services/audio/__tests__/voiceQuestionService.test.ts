@@ -67,6 +67,16 @@ describe('answerVoiceQuestion', () => {
     expect(d.ask).not.toHaveBeenCalled();
   });
 
+  it('an utterance over the 30 s ceiling is refused on the SERVER, before any answer spend', async () => {
+    const d = deps({ transcribe: vi.fn(async () => ({ text: 'a very long question that goes on and on', durationSec: 45, model: 'm' })) });
+    const res = await answerVoiceQuestion(input, d);
+    expect(res.status).toBe('refused');
+    expect(res.message).toMatch(/longer than a question/);
+    expect(d.ask).not.toHaveBeenCalled();
+    expect(d.synthesize).not.toHaveBeenCalled();
+    expect(d.recordStt).toHaveBeenCalledTimes(1);
+  });
+
   it('a capped or saved question comes back as saved with the reason, and is never synthesised', async () => {
     const d = deps({ ask: vi.fn(async () => ({ status: 'saved' as const, reason: 'Today’s answers are used up.', questionId: 'q2' })) });
     const res = await answerVoiceQuestion(input, d);

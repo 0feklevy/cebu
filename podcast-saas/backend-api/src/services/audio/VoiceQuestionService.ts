@@ -20,6 +20,7 @@ import { resolveGroqKey } from '../captions/groqKey.js';
 import { recordSttSpend } from '../usage/recordSttSpend.js';
 import { recordTtsSpend } from '../usage/recordTtsSpend.js';
 import { evaluateSpendCeiling } from '../usage/spendCeiling.js';
+import { VOICE_QUESTION_MAX_SECONDS } from 'shared';
 import { reportedDurationSec } from '../usage/sttCost.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from './GuidanceTTSService.js';
 import { askListenerQuestion, type AskResult } from './ListenerQuestionService.js';
@@ -118,6 +119,16 @@ export async function answerVoiceQuestion(
   });
   if (isNoiseTranscript(heard.text)) {
     return { status: 'nothing_heard', question: null, answer: null, message: null, audio: null, audioMime: null };
+  }
+  // The client truncates at 30 s; the SERVER holds the line, because 2 MB of 16 kHz mono is a
+  // minute of audio and a non-browser caller could otherwise double the STT and model spend per
+  // question. Judged on the vendor's own duration, after it was (unavoidably) billed.
+  if (heard.durationSec !== null && heard.durationSec > VOICE_QUESTION_MAX_SECONDS) {
+    return {
+      status: 'refused', question: heard.text, answer: null,
+      message: `That was longer than a question — keep it under ${VOICE_QUESTION_MAX_SECONDS} seconds.`,
+      audio: null, audioMime: null,
+    };
   }
 
   // 2. Answer it — the typed path, unchanged: record before answer, cap, grounding, utility tier.

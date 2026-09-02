@@ -20,5 +20,8 @@ LOG_FILE="${DEV_LOG:-/tmp/nextjs-dev.log}"
 
 echo "ulimit: $(ulimit -n)"
 echo "Log: $LOG_FILE"
+# The car-mode player's on-device VAD assets are served from public/vad/ (git-ignored) — copied
+# here exactly as the build does, so a fresh checkout does not 404 on /vad/*.
+node scripts/copy-vad-assets.mjs
 echo "Starting Next.js with polling watcher"
 pnpm exec next dev -p 3000 2>&1 | tee "$LOG_FILE"
