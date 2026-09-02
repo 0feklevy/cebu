@@ -37,3 +37,6 @@ e2e-results/
 # Generated rebuilt-package dump (gen-rebuilt-fixture.ts) — never committed.
 .rebuilt-fixture/
 test-results/
+
+# On-device VAD assets, copied from node_modules at build time (scripts/copy-vad-assets.mjs)
+client-web/public/vad/

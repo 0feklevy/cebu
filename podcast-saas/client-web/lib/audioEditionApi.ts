@@ -2,11 +2,24 @@
  * The `/{slug}/audio` mini-site's data source.
  *
  * Mirrors `libraryApi.ts` deliberately, including the part that looks like paranoia: the response
- * is parsed against a schema and a mismatch is logged LOUDLY rather than 404ing quietly. The two
- * halves of this contract are hand-maintained on both sides — nothing generates them — so drift
- * produces a page that renders "not found" for audio that exists, with nothing anywhere saying why.
+ * is parsed against a schema and a mismatch is logged LOUDLY rather than 404ing quietly. The
+ * schemas themselves now live in `shared/src/audio/listener.ts` — one definition for the server's
+ * replies and this parser, where before each side kept its own hand-written copy.
  */
-import { z } from 'zod';
+import {
+  AskQuestionResponseSchema,
+  AudioEditionViewSchema,
+  VoiceQuestionResponseSchema,
+  type AskQuestionResponse,
+  type AudioChapter,
+  type AudioEditionView,
+  type VoiceQuestionResponse,
+} from 'shared/src/audio/listener';
+
+export {
+  AskQuestionResponseSchema, AudioEditionViewSchema, VoiceQuestionResponseSchema,
+  type AskQuestionResponse, type AudioChapter, type AudioEditionView, type VoiceQuestionResponse,
+};
 
 const BACKEND =
   process.env.BACKEND_API_URL ??
@@ -18,26 +31,6 @@ export const AUDIO_REVALIDATE_SECONDS = 60;
 // Sixty seconds, matching the library. It also bounds how stale a SIGNED URL in the cached HTML
 // can be, which is the real constraint here: the URL itself lives six hours, so a page cached for
 // a minute can never hand out one that is close to expiring.
-
-export const AudioChapterSchema = z.object({
-  startMs: z.number(),
-  endMs: z.number(),
-  title: z.string(),
-});
-
-export const AudioEditionViewSchema = z.object({
-  title: z.string().nullable(),
-  description: z.string().nullable(),
-  audio_url: z.string(),
-  duration_ms: z.number().nullable(),
-  chapters: z.array(AudioChapterSchema),
-  captions_url: z.string().nullable(),
-  language: z.string().nullable(),
-  updated_at: z.union([z.string(), z.date()]).nullable(),
-});
-
-export type AudioEditionView = z.infer<typeof AudioEditionViewSchema>;
-export type AudioChapter = z.infer<typeof AudioChapterSchema>;
 
 export type PageResult<T> = { status: 'ok'; data: T } | { status: 'not_found' };
 
@@ -119,14 +112,6 @@ export function chapterIndexAt(chapters: readonly AudioChapter[], positionMs: nu
 
 // ── Raise your hand (A2.4, client half) ───────────────────────────────────────────────────────
 
-export const AskQuestionResponseSchema = z.object({
-  status: z.enum(['answered', 'saved', 'refused']),
-  answer: z.string().nullable(),
-  /** Present when the answer was withheld — WHY, so the listener never watches a silent non-response. */
-  message: z.string().nullable(),
-});
-export type AskQuestionResponse = z.infer<typeof AskQuestionResponseSchema>;
-
 /**
  * Ask a question at a moment in the audio.
  *
@@ -165,5 +150,41 @@ export async function askQuestion(
     return parsed.data;
   } catch {
     return { status: 'refused', answer: null, message: 'You appear to be offline — your question was not sent.' };
+  }
+}
+
+// ── The spoken question (car mode) ────────────────────────────────────────────────────────────
+
+const refusedVoice = (message: string): VoiceQuestionResponse => ({
+  status: 'refused', question: null, answer: null, message, audio_base64: null, audio_mime: null,
+});
+
+/**
+ * Ship one utterance — a 16 kHz mono WAV — and get the answer back, spoken (mp3, base64) and as
+ * text. Same contract as `askQuestion`: this never throws, so the loop is never left waiting on
+ * a listener who cannot look at the screen.
+ */
+export async function askVoiceQuestion(
+  slug: string,
+  input: { wav: Blob; positionMs: number; language?: string | null },
+): Promise<VoiceQuestionResponse> {
+  try {
+    const form = new FormData();
+    form.append('position_ms', String(Math.max(0, Math.round(input.positionMs))));
+    form.append('language', input.language ?? '');
+    form.append('audio', input.wav, 'question.wav');
+    const res = await fetch(`${BACKEND}/api/v1/public/audio/${encodeURIComponent(slug)}/voice-question`, {
+      method: 'POST',
+      body: form,
+    });
+    const body: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      return refusedVoice((body as { message?: string } | null)?.message
+        ?? (res.status === 429 ? 'Too many questions — please slow down.' : 'Could not send your question.'));
+    }
+    const parsed = VoiceQuestionResponseSchema.safeParse(body);
+    return parsed.success ? parsed.data : refusedVoice('Could not read the answer.');
+  } catch {
+    return refusedVoice('You appear to be offline — your question was not sent.');
   }
 }

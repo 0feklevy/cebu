@@ -1,10 +1,11 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { notFound } from 'next/navigation';
 import { AudioEditionPlayer } from '@/components/audio/AudioEditionPlayer';
 import { formatDuration, getAudioEditionPage } from '@/lib/audioEditionApi';
 
 /**
- * The audio edition mini-site: `/{slug}/audio` — P3-B / A2.2.
+ * The audio edition mini-site: `/{slug}/audio` — P3-B / A2.2, rebuilt as the car-mode player
+ * (night run 2026-09-03 §4).
  *
  * A static child of the existing `[slug]` dynamic segment, exactly as `/{slug}/library` is, so it
  * claims no new top-level path and cannot shadow a creator's permalink. `audio` is nonetheless in
@@ -12,15 +13,23 @@ import { formatDuration, getAudioEditionPage } from '@/lib/audioEditionApi';
  * `/audio/audio` a real page and permanently blocking the future top-level `/audio` category
  * landing this feature's own design already calls for.
  *
- * `audio` was checked against `isDubbingLanguageSuffix` before being added, because `/{slug}/audio`
- * and `/{slug}/{lang}` share a path shape — the permalink service exports that function for
- * precisely this check, so the overlap is discovered here rather than in production.
- *
  * Like the library page it does NOT read `searchParams`: that would opt the route out of static
  * rendering and destroy the ISR cache. The one query this surface would want — `?language=` — is
  * therefore a separate concern, and dubbed editions get their own path when A2.x needs them.
+ *
+ * The page itself is now nothing but the player: full viewport, dark, safe-area aware. Every word
+ * that used to sit above and below the controls (duration line, description, footer) belongs to
+ * the metadata and to the sheet, not to a screen someone glances at while driving.
  */
 export const revalidate = 60;
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  // Draw under the notch and the home indicator; the player pads with the safe-area insets.
+  viewportFit: 'cover',
+  themeColor: '#0a0a0a',
+};
 
 // Mirrors the shared SLUG_PATTERN. Anything else short-circuits to 404 without a backend call.
 const SLUG_SHAPE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -42,9 +51,6 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
     title: `${title} — audio`,
     description,
     openGraph: { title, description, type: 'music.song' },
-    // Indexable, unlike the library's phase 1. The project this derives from is PUBLIC — that is
-    // the only condition under which this route resolves at all — so its audio being findable is
-    // the same decision the project's own page already made.
     robots: { index: true, follow: true },
   };
 }
@@ -59,28 +65,12 @@ export default async function AudioEditionPage({ params }: Params) {
   if (result.status !== 'ok') notFound();
 
   const { data } = result;
-  const length = formatDuration(data.duration_ms);
 
   return (
-    <main className="min-h-dvh px-4 py-10">
-      <header className="mx-auto max-w-2xl mb-6">
-        <h1 className="text-2xl font-bold">{data.title ?? 'Audio'}</h1>
-        {length && (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {length}
-            {data.chapters.length > 0 && ` · ${data.chapters.length} chapters`}
-          </p>
-        )}
-        {data.description && <p className="mt-3 text-sm leading-relaxed">{data.description}</p>}
-      </header>
-
-      <AudioEditionPlayer view={data} slug={slug} />
-
-      <footer className="mx-auto max-w-2xl mt-10 text-xs text-muted-foreground">
-        {/* The listener arrived here from a link, possibly without ever seeing the lesson. The way
-            back has to be on the page rather than assumed. */}
-        <a href={`/${slug}`} className="underline">Watch the full lesson</a>
-      </footer>
+    <main className="min-h-dvh bg-neutral-950">
+      <AudioEditionPlayer view={data} slug={slug} artworkUrl={data.artwork_url ?? null} />
+      {/* The way back has to be on the page rather than assumed — under the player, for when it is stopped. */}
+      <a href={`/${slug}`} className="sr-only">Watch the full lesson</a>
     </main>
   );
 }

@@ -38,6 +38,9 @@ import { askListenerQuestion } from '../../services/audio/ListenerQuestionServic
 import { listener_questions } from '../../db/schema.js';
 import { desc } from 'drizzle-orm';
 import { rateLimit } from '../../lib/rateLimit.js';
+import { answerVoiceQuestion } from '../../services/audio/VoiceQuestionService.js';
+import { withBoundedTempFile } from '../../services/security/uploadLimits.js';
+import { VOICE_QUESTION_MAX_BYTES } from 'shared';
 
 const projectIdIsUuid = requireUuidParams('id');
 
@@ -232,7 +235,64 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
         language: edition.language,
         // The page caches on ISR, so it needs to know how old what it is holding is.
         updated_at: edition.updated_at,
+        // Cover art for the car-mode player and the lock screen (night run 2026-09-03 §4).
+        artwork_url: project.thumbnail_url ?? null,
       });
+    },
+  );
+
+  /**
+   * POST /api/v1/public/audio/:slug/voice-question — the spoken Raise Your Hand (car mode).
+   *
+   * Multipart: one WAV file (`audio`, 16 kHz mono PCM, ≤ 2 MB, ≤ 30 s), `position_ms`, `language`.
+   * The same three things stand between an anonymous stranger and the owner's bill as on the
+   * typed route — a per-IP limit (tighter still: a spoken question costs STT and TTS on top of
+   * the model), the project's daily answer cap inside `askListenerQuestion`, and a size ceiling
+   * on the upload. A transcript that says nothing is `nothing_heard` and never reaches the cap.
+   */
+  app.post<{ Params: { slug: string } }>(
+    '/api/v1/public/audio/:slug/voice-question',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
+    async (request, reply: FastifyReply) => {
+      if (!rateLimit(`askv:${request.ip}`, 6, 60_000)) {
+        return reply.code(429).send({ message: 'Too many questions — please slow down.' });
+      }
+
+      const project = await db.query.projects.findFirst({ where: eq(projects.slug, request.params.slug) });
+      if (!project || project.visibility !== 'public') return reply.code(404).send({ message: 'Not found' });
+
+      const data = await request.file().catch(() => null);
+      if (!data) return reply.code(400).send({ message: 'No audio uploaded' });
+      const field = (name: string): string => {
+        const f = (data.fields as Record<string, { value?: unknown } | undefined>)[name];
+        return typeof f?.value === 'string' ? f.value : '';
+      };
+      const positionMs = Math.max(0, Math.round(Number(field('position_ms')) || 0));
+      const language = field('language').trim() || null;
+
+      try {
+        const result = await withBoundedTempFile(
+          data.file,
+          { limitBytes: VOICE_QUESTION_MAX_BYTES, what: 'Spoken question', suffix: '.wav' },
+          ({ path }) => answerVoiceQuestion({
+            projectId: project.id, language, positionMs, audioPath: path, userId: request.dbUser?.id ?? null,
+          }),
+        );
+        return reply.send({
+          status: result.status,
+          question: result.question,
+          answer: result.answer,
+          message: result.message,
+          audio_base64: result.audio ? result.audio.toString('base64') : null,
+          audio_mime: result.audioMime,
+        });
+      } catch (err) {
+        const status = (err as { statusCode?: number }).statusCode === 413 ? 413 : 502;
+        request.log.warn({ err }, '[voice-question] failed');
+        return reply.code(status).send({
+          message: status === 413 ? 'That recording is too long.' : 'Could not answer right now — playback is unaffected.',
+        });
+      }
     },
   );
 

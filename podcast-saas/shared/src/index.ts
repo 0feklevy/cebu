@@ -33,3 +33,8 @@ export * from './audio/editionStatus.js';
 // export grid, the crop skip and the poster identity, so none of them can disagree (night run
 // 2026-09-03 §3).
 export * from './video/orientation.js';
+
+// The listener page's wire contract (car mode, night run 2026-09-03 §4): the public audio view,
+// the typed answer and the spoken answer — one definition for the server's replies and the
+// client's parsers, where before each side kept its own copy.
+export * from './audio/listener.js';

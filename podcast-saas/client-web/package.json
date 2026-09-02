@@ -7,7 +7,7 @@
     "dev:doctor": "node scripts/dev-doctor.mjs",
     "dev:check": "node scripts/dev-check.mjs",
     "dev:watch": "node scripts/dev-watch.mjs",
-    "build": "next build",
+    "build": "node scripts/copy-vad-assets.mjs && next build",
     "start": "next start",
     "test:smoke": "playwright test",
     "test:e2e:viewer": "playwright test --config=playwright.viewer.config.ts",
@@ -16,7 +16,8 @@
     "test:e2e:transitions": "playwright test --config=playwright.sim.config.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "vad:assets": "node scripts/copy-vad-assets.mjs"
   },
   "dependencies": {
     "@anam-ai/js-sdk": "^4.13.1",
@@ -27,6 +28,7 @@
     "@radix-ui/react-select": "^2.1.2",
     "@radix-ui/react-tabs": "^1.1.1",
     "@radix-ui/react-toast": "^1.2.2",
+    "@ricky0123/vad-web": "0.0.30",
     "@xyflow/react": "^12.11.1",
     "chart.js": "^4.5.1",
     "class-variance-authority": "^0.7.0",
@@ -36,6 +38,7 @@
     "katex": "^0.16.47",
     "lucide-react": "^0.468.0",
     "next": "15.5.23",
+    "onnxruntime-web": "1.29.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "shared": "file:../shared",

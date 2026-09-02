@@ -12,6 +12,8 @@ export default tseslint.config(
   {
     ignores: [
       '.next/**',
+      // Third-party voice-activity assets copied from node_modules at build time (scripts/copy-vad-assets.mjs).
+      'public/vad/**',
       'node_modules/**',
       'next-env.d.ts',
       'next.config.ts',
