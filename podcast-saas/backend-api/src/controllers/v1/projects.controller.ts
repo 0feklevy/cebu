@@ -129,6 +129,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       const all = await db.query.projects.findMany({
         where: projectsEditableByWhere(user),
         orderBy: (p, { desc }) => [desc(p.created_at)],
+        // A ceiling, not pagination: the shape the editor reads is unchanged, and no account is
+        // near it — but an unbounded list on the home page is how a large account takes the API
+        // down with its own projects (night run 2026-09-03 §7).
+        limit: 500,
       });
       // Best-effort: backfill a frame-placeholder thumbnail for videos that don't
       // have one yet (older videos predate auto-generation, or it never ran).

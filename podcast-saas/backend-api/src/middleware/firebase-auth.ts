@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
+import { shouldTouchLastSeen } from '../lib/lastSeen.js';
 import { getFirebaseAdmin } from '../services/firebase.js';
 import { db } from '../db/index.js';
 import { users, orgs, collaborators } from '../db/schema.js';
@@ -141,12 +142,23 @@ export async function firebaseAuthMiddleware(
     const isBootstrapAdmin = isAdminEmail(proven);
 
     if (existing) {
-      const updates: Record<string, unknown> = {
-        last_seen_at: new Date(),
-        email: decoded.email ?? existing.email,
-      };
+      // Every authenticated request used to UPDATE users unconditionally — a write on the hot
+      // auth path for a timestamp nobody reads at second granularity (night run 2026-09-03 §7).
+      // The row is touched only when something actually changed or the timestamp is stale.
+      const now = new Date();
+      const updates: Record<string, unknown> = {};
+      if (shouldTouchLastSeen(existing.last_seen_at, now)) {
+        // A refresh writes the timestamp AND the address, exactly as every refresh did before —
+        // the debounce changes how often the row is touched, not what a touch writes.
+        updates.last_seen_at = now;
+        updates.email = decoded.email ?? existing.email;
+      } else if (decoded.email && decoded.email !== existing.email) {
+        updates.email = decoded.email;
+      }
       if (isBootstrapAdmin && !existing.is_admin) updates.is_admin = true;
-      await db.update(users).set(updates).where(eq(users.id, existing.id));
+      if (Object.keys(updates).length > 0) {
+        await db.update(users).set(updates).where(eq(users.id, existing.id));
+      }
       request.dbUser = { ...existing, ...updates } as typeof existing;
     } else {
       // Create org + user
