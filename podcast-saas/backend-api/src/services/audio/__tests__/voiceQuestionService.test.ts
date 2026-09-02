@@ -7,6 +7,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
+const ceiling = vi.hoisted(() => ({ verdict: { refuse: false, reason: null as string | null } }));
+vi.mock('../../usage/spendCeiling.js', () => ({ evaluateSpendCeiling: vi.fn(async () => ceiling.verdict) }));
 
 import { answerVoiceQuestion, isNoiseTranscript, type VoiceQuestionDeps } from '../VoiceQuestionService.js';
 
@@ -25,7 +27,7 @@ function deps(over: Partial<VoiceQuestionDeps> = {}): VoiceQuestionDeps & { call
 
 const input = { projectId: 'proj-1', language: 'en', positionMs: 83_000, audioPath: '/tmp/q.wav', userId: null };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); ceiling.verdict = { refuse: false, reason: null }; });
 
 describe('answerVoiceQuestion', () => {
   it('hears → records the STT spend → asks through the TYPED path → speaks → records the TTS spend, in that order', async () => {
@@ -77,6 +79,15 @@ describe('answerVoiceQuestion', () => {
     const d = deps({ synthesize: vi.fn(async () => { throw new Error('elevenlabs 503'); }) });
     const res = await answerVoiceQuestion(input, d);
     expect(res).toMatchObject({ status: 'answered', answer: 'Each bird follows its neighbours.', audio: null, audioMime: null });
+    expect(d.recordTts).not.toHaveBeenCalled();
+  });
+
+  it('an ENFORCED spend ceiling refuses the synthesis, keeps the text, records no TTS spend — never silence', async () => {
+    ceiling.verdict = { refuse: true, reason: 'Monthly ElevenLabs spend ceiling reached.' };
+    const d = deps();
+    const res = await answerVoiceQuestion(input, d);
+    expect(res).toMatchObject({ status: 'answered', answer: 'Each bird follows its neighbours.', audio: null });
+    expect(d.synthesize).not.toHaveBeenCalled();
     expect(d.recordTts).not.toHaveBeenCalled();
   });
 
