@@ -45,6 +45,9 @@ const ELEVENLABS_SPENDERS = [
   // helper name had missed them.
   'controllers/v1/audio.controller.ts',   // ElevenLabs sound-generation (SFX + music), per click
   'services/dubbing/DubbingService.ts',   // per MINUTE of video — the most expensive call here
+  // The spoken answer to a listener's question (car mode, night run 2026-09-03 §4): an anonymous
+  // caller, so the ceiling is consulted before every synthesis.
+  'services/audio/VoiceQuestionService.ts',
 ];
 
 /** Modules that reach ElevenLabs but are METERED AND BOUNDED BY THEIR CALLER, with the reason. */

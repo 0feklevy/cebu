@@ -36,7 +36,11 @@ export function mediaKeyScope(key: string): string | null {
   // nothing else (security-005). The sim package loads its assets by RELATIVE url from the entry
   // document, which is exactly why the token is a path segment: every asset request inherits the
   // prefix without the package knowing the token exists.
-  if (parts[0] !== 'hls' && parts[0] !== 'videos' && parts[0] !== 'exports' && parts[0] !== 'simulations') return null;
+  // `editions/{projectId}/…` — the audio edition (migration 071): the project id is the second
+  // segment, the same shape as `videos/`, so the listener page's audio can be served by the
+  // same per-object gate on every adapter — until now only Supabase's real presign worked, and
+  // local dev answered 401 to every anonymous listener (night run 2026-09-03 §4).
+  if (parts[0] !== 'hls' && parts[0] !== 'videos' && parts[0] !== 'exports' && parts[0] !== 'simulations' && parts[0] !== 'editions') return null;
   if (!parts[1]) return null;
   return `${parts[0]}/${parts[1]}`;
 }

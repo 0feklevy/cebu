@@ -260,7 +260,7 @@ async function build() {
     request: FastifyRequest,
     reply: FastifyReply,
     raw: string,
-    prefix: 'hls/' | 'videos/' | 'exports/',
+    prefix: 'hls/' | 'videos/' | 'exports/' | 'editions/',
   ): Promise<{ key: string; token: string | null } | null> {
     const { key, token } = splitMediaTokenPrefix(raw);
     if (!key.startsWith(prefix)) {
@@ -301,10 +301,10 @@ async function build() {
       if (!isPublic) {
         // Media keys get per-object authorization (any-logged-in-user was too
         // broad — it let every account read every private key, security-002).
-        if (key.startsWith('videos/') || key.startsWith('hls/') || key.startsWith('exports/')) {
+        if (key.startsWith('videos/') || key.startsWith('hls/') || key.startsWith('exports/') || key.startsWith('editions/')) {
           const authorized = await authorizeMediaRequest(
             request, reply, raw,
-            key.startsWith('hls/') ? 'hls/' : key.startsWith('videos/') ? 'videos/' : 'exports/',
+            key.startsWith('hls/') ? 'hls/' : key.startsWith('videos/') ? 'videos/' : key.startsWith('exports/') ? 'exports/' : 'editions/',
           );
           if (!authorized) return;
         } else {

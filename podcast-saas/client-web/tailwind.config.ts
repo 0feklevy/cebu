@@ -9,6 +9,11 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      // A phone held sideways (the car mount), not a wide desktop window: the car-mode player
+      // lays artwork and controls side by side only when the viewport is short.
+      screens: {
+        landscape: { raw: '(orientation: landscape) and (max-height: 560px)' },
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',

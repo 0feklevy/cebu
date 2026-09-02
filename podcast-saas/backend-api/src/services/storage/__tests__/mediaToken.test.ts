@@ -10,6 +10,8 @@ describe('mediaToken', () => {
     expect(mediaKeyScope('hls/vf-1/run/master.m3u8')).toBe('hls/vf-1');
     expect(mediaKeyScope('videos/proj-1/file.mp4')).toBe('videos/proj-1');
     expect(mediaKeyScope('exports/proj-1/exp-1/master.mp4')).toBe('exports/proj-1');
+    // Audio editions (071): project id second, like videos/ — the listener page on every adapter.
+    expect(mediaKeyScope('editions/proj-1/en-abc123.m4a')).toBe('editions/proj-1');
     expect(mediaKeyScope('thumbnails/proj-1/x.jpg')).toBeNull();
     expect(mediaKeyScope('hls/')).toBeNull();
     expect(mediaKeyScope('videos')).toBeNull();
