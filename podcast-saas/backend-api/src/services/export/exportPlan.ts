@@ -33,6 +33,7 @@ import { logger } from '../../lib/logger.js';
 import { resolveSimulationUrl } from '../simulation/simulationUrlResolver.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import { projectOrientation } from 'shared/video/orientation';
+import { posterKeyForSection, uiHideFromMeta } from '../simulation/sectionPosterKey.js';
 import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
   variantParamOf, type SimAspectProfile,
@@ -417,25 +418,13 @@ export async function buildExportPlan(
   const presentationIdentity = (
     s: (typeof sections)[number], uiHide: string[] | undefined,
   ): { configHash: string | null; posterKey: string | null } => {
-    const configHash = computeConfigHash({
-      ...DEFAULT_PRESENTATION_CONFIG,
-      simpleUi:      s.simple_ui  ?? false,
-      hideSelectors: uiHide ?? [],
-      autoScript:    s.auto_script ?? true,
-      quality: 'high',
-      // Moves in lockstep with buildPlayerConfig's poster lookup: a portrait project captures and
-      // looks up 'portrait' posters, so the export and the viewer name the same identity.
-      aspect:  posterAspect,
-    });
+    // ONE identity function with the player and the editor's capture (sectionPosterKey.ts). The
+    // hide list is the same value the caller passes as `uiHide` — read from the row here so the
+    // identity can never diverge from what the player computes from that same row.
     const packageRevision = packageRevisionOf(s.simulation_id, s.simulation_url);
+    const configHash = posterKeyForSection(s, packageRevision ?? 'none', posterAspect).configHash;
     if (!s.simulation_id || !packageRevision) return { configHash, posterKey: null };
-    const key: PosterKey = {
-      packageRevision,
-      variantKey: variantKeyFor(s),
-      configHash,
-      aspectProfile:  posterAspect,
-      qualityProfile: 'high',
-    };
+    const key: PosterKey = posterKeyForSection(s, packageRevision, posterAspect);
     const row = postersByIdentity.get(`${s.simulation_id}|${posterIdentityString(key)}`);
     if (!row) return { configHash, posterKey: null };
     const variant = selectPosterVariant({ variants: parsePosterVariants(row.variants) }, 'standard', POSTER_FORMATS);
@@ -720,12 +709,6 @@ export async function buildExportPlan(
 }
 
 /** sim_meta.uiControls.hide as a clean string[] — same semantics as buildPlayerConfig. */
-function uiHideFromMeta(simMeta: unknown): string[] | undefined {
-  const hide = (simMeta as { uiControls?: { hide?: unknown } } | null | undefined)?.uiControls?.hide;
-  if (!Array.isArray(hide)) return undefined;
-  const clean = hide.filter((x): x is string => typeof x === 'string' && x.length > 0);
-  return clean.length > 0 ? clean : undefined;
-}
 
 /**
  * Append the viewer's Minimal-UI boot cloak to a served sim URL (`bootHideFor` semantics: selectors

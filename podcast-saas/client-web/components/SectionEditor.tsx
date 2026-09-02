@@ -1,6 +1,8 @@
 'use client';
 
 import { ConfirmDialog } from './ConfirmDialog';
+import { usePosterCapture } from './usePosterCapture';
+import type { SimAspectProfile } from 'shared/src/sim/simIdentity';
 import {
   SECTION_STEPS_BROLL, SECTION_STEPS_CLIP, SECTION_STEPS_GENERATED, SECTION_STEPS_IMAGE,
   SECTION_STEPS_SIM_ATTACHED, SECTION_STEPS_SIM_PICK, toTourSteps,
@@ -173,6 +175,8 @@ const CAMERA_MOVEMENTS = [
 interface Props {
   section: TimelineSection;
   projectId: string;
+  /** The project's frame — a portrait project captures and looks up portrait posters (night run §6). */
+  posterAspect?: SimAspectProfile;
   simulations: Simulation[];
   videos: VideoFile[];
   videoUrls: Record<string, string>;
@@ -205,7 +209,7 @@ type UiScanOutcome =
 
 export function SectionEditor({
   section, projectId, simulations, videos, videoUrls, images = [],
-  onUpdate, onDelete, onSimulationUpdate, onClose,
+  onUpdate, onDelete, onSimulationUpdate, onClose, posterAspect = 'wide',
 }: Props) {
   const isBroll = section.track === 'broll';
   const knownTypes = TYPES.map(t => t.value) as string[];
@@ -788,8 +792,12 @@ export function SectionEditor({
 
   // The runtime resets every per-document flag on a native load; the local chrome flag follows,
   // exactly as the old `onLoad={() => setPreviewRunning(false)}` did.
+  // True once the current preview document has loaded — the poster capture waits on it.
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  useEffect(() => { setPreviewLoaded(false); }, [simPreviewUrl]);
   const handlePreviewFrameLoad = useCallback(() => {
     simOnFrameLoad();
+    setPreviewLoaded(true);
     // The transferred port died with the previous document, and the control list describes a DOM
     // that no longer exists. Reconnecting here is what closes the race the old picker lost: it
     // scanned once on panel open and never retried, so a scan that beat the frame's load simply
@@ -797,6 +805,19 @@ export function SectionEditor({
     authoringRef.current?.notifyFrameLoad();
     setPreviewRunning(false);
   }, [simOnFrameLoad]);
+
+  // The poster for this section's simulation is captured HERE, in the creator's browser, from the
+  // preview that is already drawing (usePosterCapture.ts). Once per document per session; the
+  // "Refresh banner" button forces a new one.
+  const posterCapture = usePosterCapture({
+    projectId,
+    sectionId: section.id,
+    simulationUrl: simPreviewUrl,
+    frame: () => previewIframeRef.current,
+    loaded: previewLoaded,
+    aspect: posterAspect,
+    enabled: Boolean(simId),
+  });
 
   // Auto-run on handshake. The runtime owns the 'message' listener (and its e.source check — the
   // timeline player mounts its own sim frame at the same time, and its SIM_READY used to be
@@ -2621,6 +2642,21 @@ export function SectionEditor({
                         }}
                       >
                         Save bridge…
+                      </button>
+                      <button
+                        type="button"
+                        onClick={posterCapture.refresh}
+                        disabled={!simId || !previewLoaded || posterCapture.state === 'capturing'}
+                        title="Capture the preview as this simulation's banner — the picture the library, the import gallery and the viewer's cold poster show"
+                        aria-label="Refresh banner"
+                        style={{
+                          flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
+                          backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
+                          fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                          opacity: !simId || !previewLoaded ? 0.55 : 1,
+                        }}
+                      >
+                        {posterCapture.state === 'capturing' ? 'Capturing…' : posterCapture.state === 'stored' ? 'Banner saved' : 'Refresh banner'}
                       </button>
                       <button
                         onClick={openLoadPicker}

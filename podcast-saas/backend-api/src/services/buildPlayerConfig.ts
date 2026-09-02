@@ -32,6 +32,7 @@ import {
 } from 'shared/sim/posterIdentity';
 import type { SimPackageClass } from 'shared/sim/simFailurePolicy';
 import { projectOrientation } from 'shared/video/orientation';
+import { posterKeyForSection, uiHideFromMeta } from './simulation/sectionPosterKey.js';
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 
@@ -386,27 +387,8 @@ export async function buildPlayerConfig(
     const none = { url: null, transparent: false };
     if (!s.simulation_id || !packageRevision) return none;
 
-    const key: PosterKey = {
-      packageRevision,
-      // The SECTION's dispatch key — the same value the runtime puts on the wire as `variantKey`.
-      variantKey: variantKeyFor(s),
-      configHash: computeConfigHash({
-        ...DEFAULT_PRESENTATION_CONFIG,
-        simpleUi:      s.simple_ui  ?? false,
-        hideSelectors: uiHideFromMeta(s.sim_meta) ?? [],
-        autoScript:    s.auto_script ?? true,
-        // Quality and aspect are hashed here AND named again as key axes below — the same
-        // configuration is legitimately captured more than once at different sizes and quality
-        // profiles, so the key has to distinguish those captures (posterIdentity.ts). Both are
-        // pinned to what the player asks for today: it builds its own config from
-        // DEFAULT_PRESENTATION_CONFIG at quality 'high', and 'wide' is the aspect a full-width
-        // player lays out for.
-        quality: 'high',
-        aspect:  posterAspect,
-      }),
-      aspectProfile:  posterAspect,
-      qualityProfile: 'high',
-    };
+    // ONE identity function for the player, the export and the editor's capture (sectionPosterKey.ts).
+    const key: PosterKey = posterKeyForSection(s, packageRevision, posterAspect);
 
     const row = postersByIdentity.get(`${s.simulation_id}|${posterIdentityString(key)}`);
     if (!row) return none;
@@ -1129,9 +1111,3 @@ function videoCaptionStatus(status: string | null | undefined): 'none' | 'proces
 
 /** sim_meta.uiControls.hide as a clean string[] — undefined (key omitted in JSON) when the
  *  section has no Minimal-UI selection, an empty hide list, or malformed jsonb. */
-function uiHideFromMeta(simMeta: unknown): string[] | undefined {
-  const hide = (simMeta as { uiControls?: { hide?: unknown } } | null | undefined)?.uiControls?.hide;
-  if (!Array.isArray(hide)) return undefined;
-  const clean = hide.filter((s): s is string => typeof s === 'string' && s.length > 0);
-  return clean.length > 0 ? clean : undefined;
-}

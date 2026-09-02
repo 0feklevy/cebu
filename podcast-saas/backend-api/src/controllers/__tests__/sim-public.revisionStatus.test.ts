@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { registerSimPublicRoutes } from '../sim-public.controller.js';
+import { simTextCache } from '../../services/simulation/simTextCache.js';
 
 const mocks = vi.hoisted(() => ({
   mockStorage: {
@@ -72,6 +73,7 @@ async function makeApp() {
 }
 
 beforeEach(() => {
+  simTextCache.clear();
   mockStorage.readObject.mockReset();
   mockStorage.readObject.mockResolvedValue(Buffer.from('<!doctype html><html><body>secret draft</body></html>'));
   mockStorage.getPublicUrl.mockClear();
@@ -157,5 +159,31 @@ describe('GET /sim-public/* — unpublished revisions are not public', () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('GET /sim-public/* — a served revision’s text is read from storage once (night run 2026-09-03 §6)', () => {
+  it('the second request for an active revision’s entry costs no storage read and carries the same ETag', async () => {
+    statusByRevision.set(REV, 'active');
+    const app = await makeApp();
+    const first = await app.inject({ method: 'GET', url: `/sim-public/${revKey('index.html')}` });
+    const second = await app.inject({ method: 'GET', url: `/sim-public/${revKey('index.html')}` });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.headers.etag).toBe(first.headers.etag);
+    expect(second.body).toBe(first.body);
+    expect(mockStorage.readObject).toHaveBeenCalledTimes(1);
+    // And a conditional request answers 304 from the cache, still without a read.
+    const third = await app.inject({ method: 'GET', url: `/sim-public/${revKey('index.html')}`, headers: { 'if-none-match': String(first.headers.etag) } });
+    expect(third.statusCode).toBe(304);
+    expect(mockStorage.readObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('a LEGACY (non-revision) key is never cached — Replace overwrites those bytes in place', async () => {
+    const app = await makeApp();
+    const legacy = `simulations/proj-1/${SIM}/index.html`;
+    await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
+    await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
+    expect(mockStorage.readObject).toHaveBeenCalledTimes(2);
   });
 });

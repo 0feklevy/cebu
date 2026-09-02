@@ -57,6 +57,18 @@ export function LibraryGrid({ materials, typeNav, emptyMessage }: Props) {
     setOpen(material);
   }, []);
 
+  // A pointer going down on a simulation tile is ~100 ms ahead of the click that opens it: enough
+  // to have the entry document in flight before the frame mounts (night run 2026-09-03 §6).
+  const handleWarm = useCallback((material: LibraryMaterial) => {
+    if (material.type !== 'simulation' || typeof document === 'undefined') return;
+    if (document.querySelector(`link[rel="prefetch"][href="${material.url}"]`)) return;
+    const link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.as = 'document';
+    link.href = material.url;
+    document.head.appendChild(link);
+  }, []);
+
   const handleClose = useCallback(() => {
     setOpen(null);
     const id = openedFrom.current;
@@ -131,6 +143,7 @@ export function LibraryGrid({ materials, typeNav, emptyMessage }: Props) {
                 material={m}
                 eager={i < FIRST_ROW}
                 onOpen={handleOpen}
+                onWarm={handleWarm}
                 buttonRef={(el) => { tiles.current.set(m.id, el); }}
               />
             </li>

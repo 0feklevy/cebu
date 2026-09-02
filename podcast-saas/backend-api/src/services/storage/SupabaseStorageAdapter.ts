@@ -430,6 +430,13 @@ export class SupabaseStorageAdapter implements StorageService {
   }
 
   getSimPublicUrl(path: string): string {
+    // Poster renditions are PNG/WebP/AVIF under `…/posters/<identity>/<size>.<ext>` — binary, so
+    // the MIME downgrade below does not apply — and content-addressed, so the bucket serves them
+    // with the year-long `immutable` header PosterService uploaded them with. Routing them through
+    // the proxy cost every tile a 302 and capped the cache at an hour (night run 2026-09-03 §6).
+    if (/\/posters\/[^/]+\/(standard|compact)\.(png|webp|avif)$/.test(path)) {
+      return this.getPublicUrl(path);
+    }
     // Supabase's public-bucket endpoint force-downgrades text/html → text/plain
     // (an anti-phishing measure; rendering HTML from a public bucket needs Pro + a
     // custom domain). An iframe pointed straight at the bucket URL therefore shows

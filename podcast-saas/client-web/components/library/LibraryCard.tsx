@@ -70,10 +70,12 @@ interface Props {
   /** True for the first row — those load eagerly, the rest lazily. The reference page's trick. */
   eager?: boolean;
   onOpen: (material: LibraryMaterial) => void;
+  /** Pointer went down on the tile — a moment before the click that opens it. */
+  onWarm?: (material: LibraryMaterial) => void;
   buttonRef?: (el: HTMLButtonElement | null) => void;
 }
 
-export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Props) {
+export function LibraryCard({ material, eager = false, onOpen, onWarm, buttonRef }: Props) {
   // A material whose bytes have gone (deleted image, moved object) falls back to the gradient
   // rather than showing a broken-image glyph. The server already dropped anything unresolvable.
   const [imageFailed, setImageFailed] = useState(false);
@@ -91,6 +93,7 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
       ref={buttonRef}
       onClick={() => onOpen(material)}
       className="group flex min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border bg-card text-left text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+      onPointerDown={() => onWarm?.(material)}
     >
       <span className={`relative block aspect-video w-full overflow-hidden ${showImage ? 'bg-muted' : gradientFor(material.id)}`}>
         {showImage ? (
@@ -102,6 +105,9 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
             alt={material.type === 'image' ? material.name : ''}
             loading={eager ? 'eager' : 'lazy'}
             decoding="async"
+            // A simulation banner is the compact rendition (640×360, or 360×640 for a portrait
+            // capture); declaring a size lets the browser reserve the box before the bytes land.
+            {...(material.type === 'simulation' ? { width: 640, height: 360, sizes: '(min-width: 1536px) 20vw, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw' } : {})}
             onError={() => setImageFailed(true)}
             // A portrait poster (a 9:16 project's simulation, night run 2026-09-03 §3) is shown
             // whole inside the 16:9 tile rather than having its top and bottom cut off.

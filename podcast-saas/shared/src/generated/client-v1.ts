@@ -799,6 +799,25 @@ export interface Simulation {
   created_at:       string;
 }
 
+/** A simulation another project owns, offered for import — with where it lives and its still. */
+export interface ImportableSimulation extends Simulation {
+  project_title: string;
+  /** The compact poster of the served revision, or null when it was never captured. */
+  poster_url: string | null;
+}
+
+export interface SectionPosterUpload {
+  renditions: Array<{ size: 'standard' | 'compact'; format: 'png'; dataUrl: string }>;
+  force?: boolean;
+}
+
+export interface SectionPosterResult {
+  /** 'stored' — written now; 'existed' — already captured for this identity and `force` was not set. */
+  outcome: 'stored' | 'existed';
+  identity: string;
+  aspectProfile: 'wide' | 'portrait';
+}
+
 export interface SimFile {
   key:      string;
   filename: string;
@@ -1701,6 +1720,25 @@ export class ClientV1Api {
 
   listSimulations(projectId: string): Promise<Simulation[]> {
     return this.request(`/api/v1/projects/${projectId}/simulations`);
+  }
+
+  /**
+   * Every READY simulation across the projects this user can edit, in one request, each with the
+   * project it lives in and its poster when one exists — what the import gallery renders
+   * (night run 2026-09-03 §6). `exclude` drops the destination project.
+   */
+  listImportableSimulations(excludeProjectId?: string): Promise<ImportableSimulation[]> {
+    const q = excludeProjectId ? `?exclude=${encodeURIComponent(excludeProjectId)}` : '';
+    return this.request(`/api/v1/simulations/importable${q}`);
+  }
+
+  /**
+   * Store a poster captured in the creator's browser for a section's simulation. The server derives
+   * the poster IDENTITY from the section row exactly as the player looks it up, so the picture can
+   * never be filed under a key the player will not ask for. `force` re-captures an existing one.
+   */
+  uploadSectionPoster(projectId: string, sectionId: string, body: SectionPosterUpload): Promise<SectionPosterResult> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/poster`, { method: 'POST', body });
   }
 
   uploadSimulation(projectId: string, formData: FormData): Promise<Simulation> {

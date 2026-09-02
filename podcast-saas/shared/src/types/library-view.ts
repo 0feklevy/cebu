@@ -44,6 +44,12 @@ export const LibraryMaterialSchema = z.object({
    * nullable so payloads cached before this field existed keep parsing.
    */
   bannerUrl: z.string().nullable().optional(),
+  /**
+   * The full-size still of the same capture, for the overlay to show while the live simulation
+   * loads (night run 2026-09-03 §6). `bannerUrl` is the compact rendition the tile needs; this
+   * is the standard one. Optional and nullable for the same cache-compatibility reason.
+   */
+  posterUrl: z.string().nullable().optional(),
   durationSec: z.number().nullable().optional(),
   width: z.number().nullable().optional(),
   height: z.number().nullable().optional(),
