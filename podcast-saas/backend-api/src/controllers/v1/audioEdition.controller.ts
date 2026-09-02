@@ -38,6 +38,7 @@ import { askListenerQuestion } from '../../services/audio/ListenerQuestionServic
 import { listener_questions } from '../../db/schema.js';
 import { desc } from 'drizzle-orm';
 import { rateLimit } from '../../lib/rateLimit.js';
+import { logger } from '../../lib/logger.js';
 import { answerVoiceQuestion } from '../../services/audio/VoiceQuestionService.js';
 import { withBoundedTempFile } from '../../services/security/uploadLimits.js';
 import { VOICE_QUESTION_MAX_BYTES } from 'shared';
@@ -288,7 +289,7 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
         });
       } catch (err) {
         const status = (err as { statusCode?: number }).statusCode === 413 ? 413 : 502;
-        request.log.warn({ err }, '[voice-question] failed');
+        logger.warn({ err, projectId: project.id }, '[voice-question] failed');
         return reply.code(status).send({
           message: status === 413 ? 'That recording is too long.' : 'Could not answer right now — playback is unaffected.',
         });

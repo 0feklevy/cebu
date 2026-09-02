@@ -19,6 +19,7 @@ import { logger } from '../../lib/logger.js';
 import { resolveGroqKey } from '../captions/groqKey.js';
 import { recordSttSpend } from '../usage/recordSttSpend.js';
 import { recordTtsSpend } from '../usage/recordTtsSpend.js';
+import { evaluateSpendCeiling } from '../usage/spendCeiling.js';
 import { reportedDurationSec } from '../usage/sttCost.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from './GuidanceTTSService.js';
 import { askListenerQuestion, type AskResult } from './ListenerQuestionService.js';
@@ -140,9 +141,14 @@ export async function answerVoiceQuestion(
   }
 
   // 3. Say it. A synthesis failure keeps the answer — the client has a voice of its own.
+  // THE CEILING FIRST (ceilingCoverage.test.ts): an anonymous listener's question must never be
+  // the call that takes the account past its monthly ElevenLabs limit. Shadow by default, like
+  // every other spender; under enforce a refusal degrades to the device voice, not to silence.
   let audio: Buffer | null = null;
   let audioMime: string | null = null;
   try {
+    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+    if (ceiling.refuse) throw new Error(ceiling.reason ?? 'Monthly ElevenLabs spend ceiling reached.');
     const spoken = await deps.synthesize(asked.answer, language ?? 'en');
     audio = spoken.audio;
     audioMime = 'audio/mpeg';
