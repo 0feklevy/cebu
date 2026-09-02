@@ -29,6 +29,7 @@ const { canServeMediaKey, _resetPublicKeyMemory } = await import('../mediaAccess
 const PROJECT = '11111111-2222-4333-8444-555555555555';
 const KEY = `videos/${PROJECT}/master.mp4`;
 const SIM_KEY = `simulations/${PROJECT}/66666666-7777-4888-8999-aaaaaaaaaaaa/index.html`;
+const EDITION_KEY = `editions/${PROJECT}/en-0123456789abcdef.m4a`;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -94,5 +95,20 @@ describe('the gate now understands simulation keys (security-005)', () => {
   it('serves a private project`s simulation to its owner', async () => {
     mocks.findFirst.mockResolvedValue({ id: PROJECT, visibility: 'private', created_by: 'u1' });
     expect(await canServeMediaKey(SIM_KEY, null, { id: 'u1', email: null } as never)).toBe(true);
+  });
+});
+
+describe('an audio edition key (night run 2026-09-03 §4)', () => {
+  it('is exactly as public as its project: served for a public project, refused for a private one', async () => {
+    mocks.findFirst.mockResolvedValue({ id: PROJECT, visibility: 'public', created_by: 'u1' });
+    expect(await canServeMediaKey(EDITION_KEY, null, null)).toBe(true);
+    _resetPublicKeyMemory();
+    mocks.findFirst.mockResolvedValue({ id: PROJECT, visibility: 'private', created_by: 'u1' });
+    expect(await canServeMediaKey(EDITION_KEY, null, null)).toBe(false);
+  });
+
+  it('a malformed edition key (no project uuid) is never served', async () => {
+    mocks.findFirst.mockResolvedValue({ id: PROJECT, visibility: 'public', created_by: 'u1' });
+    expect(await canServeMediaKey('editions/not-a-uuid/x.m4a', null, null)).toBe(false);
   });
 });
