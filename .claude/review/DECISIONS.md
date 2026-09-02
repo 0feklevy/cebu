@@ -1,8 +1,14 @@
 # Open decisions
 
-**State as of 2026-08-26.** Production runs **v0.2.10**, deployed 12:07 today, healthy. `main` has
-since gained **#155–#159** — the import gallery, the browser-suite CI wiring, the webkit sampling
-fix, and the podcast status-vocabulary fix — and **v0.2.11 is dispatched** to ship them.
+**State as of 2026-08-30.** Production runs **v0.2.10** (deployed 2026-08-26). `main` carries
+**eight unreleased commits — #155 through #162**: the import gallery, the browser-suite CI wiring,
+the webkit sampling fix, the podcast status vocabulary, the contract unions, the public library
+page, and the Load-bridge fix.
+
+**v0.2.11 was dispatched on 2026-08-26 and never deployed** — it was created 32 seconds into a
+GitHub Actions major outage (incident opened 15:11:58 UTC; the run's `updated_at` never moved off
+its `created_at`) and ended cancelled. That is why production is still on v0.2.10 with eight
+commits waiting: not a gate, not a failure, an outage.
 
 An earlier version of this paragraph said "nothing sits merged-and-unshipped", written minutes
 before #158 and #159 merged. It was true when typed and false within the hour, which is the same
@@ -60,6 +66,59 @@ Now recorded in the script's own header beside the local form, with the producti
 generalisable point: **an ops runbook written from a dev machine is a guess about the VM.** This one
 had been a guess since the day it was written, and the first operator to follow it lost time to an
 error about a missing file that mentioned nothing about containers.
+
+## ✅ CLOSED (2026-08-30) — the Load-bridge round: three PRs, and six defects an adversarial review found in them
+
+**Closure kind: verified in code, mutation-proven, and driven in a real browser.**
+
+**#162 — Load bridge (owner: "the screen goes black and the simulation stops working").** Two
+defects, both reproduced live before fixing. (a) A cross-sim load silently POSTed to
+`generate-sim-script/stream` — an unrequested LLM spend that regenerates a bridge for the WRONG
+simulation from the preset's minimal prompt; that fragile path is the black screen. It now applies
+only the MECHANICAL parts, keeps the sim rendering, and offers regeneration as an explicit
+"uses AI" button. (b) A byte-identical load republished the whole package (revisions 1→2). Now a
+no-op, keyed on BYTES — not on `judgeBridgeLoad.sameContent`, which rides the legacy
+`simulations.bridge_hash` column a revisioned sim never advances, so it is structurally blind on
+the modern path. Measured after: same-sim 2→2 revisions, 0 LLM calls; cross-sim 0 LLM calls, sim
+still rendering.
+
+**#161 — the public library page** gained sim-poster banners (reusing stored `sim_posters`, zero
+bytes written), keyword search (a pure client-side function), and a full-width responsive grid on
+the existing design tokens.
+
+**#160 — four contract fields** widened to bare `string` over closed database enums, tightened to
+real unions. Typecheck passed unchanged across six workspaces, which is the evidence nothing was
+relying on the looseness.
+
+**THE REVIEW IS THE POINT OF THIS ENTRY.** A six-dimension adversarial pass (36 agents, every
+finding facing three independent refuters) found six real defects in work that was already green:
+
+1. **HIGH — a sole-emitted b-roll video wore the MAIN video's frame.** Thumbnails are extracted
+   from a non-b-roll video, so a failed main + ready b-roll left the b-roll as the only emitted
+   video wearing a different video's picture. Probe-verified with a live PGlite seed.
+2. **MEDIUM — a poster of a never-published revision could banner.** Poster objects live OUTSIDE
+   the `revisions/` prefix, so the status gate that keeps unactivated revision BYTES private never
+   covered them — and the canary stores posters for candidates before activation, which
+   newest-first ranking then prefers. Now filtered to the served revision's identity.
+3. **MEDIUM — the missing-poster-table guard was invisible to every test.** Deleting the `.catch`
+   left all 16 green, because the suite always runs every migration. Same silently-absorbed-read
+   shape that shipped the audioEdition wrong-table 409s.
+4. **MEDIUM — the aspect-preference test asserted seed order, not the rule.** PGlite returns
+   insertion order and the wide poster was seeded first, so it passed with the ENTIRE ranking
+   deleted.
+5. **LOW — the aria-live count region was mounted with its first content**, which assistive tech
+   does not reliably announce.
+6. **LOW — my own #160 hand-copied a `ProjectStatus` union that already existed**, with a comment
+   claiming it was the only statement — the exact sin #160 was written to fix. Consolidated to the
+   zod-derived type; the fallout exposed `HomeSidebar` carrying a dead `has_videos` key while five
+   real statuses rendered with no label, and one more string-widened field (`PlaylistItem.status`).
+
+Every fix mutation-proven: each was shown red when reverted, then restored.
+
+**The lesson, and it is not a new one here:** two of these six were defects the tests NAMED and
+could not SEE. Green suites plus green CI plus a careful agent report are still not evidence — the
+only thing that separated them from shipping was an independent pass that read the code and ran
+probes against it.
 
 ## What is actually open, in full
 
