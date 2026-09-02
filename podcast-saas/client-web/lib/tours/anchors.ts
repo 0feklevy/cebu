@@ -15,6 +15,7 @@ export const TOUR_ANCHORS = {
   preview: 'preview',
   export: 'export',
   share: 'share',
+  branching: 'branching',
   // ── project settings ──
   'settings-thumbnail': 'settings-thumbnail',
   'settings-details': 'settings-details',
@@ -45,6 +46,9 @@ export const TOUR_ANCHORS = {
   'lib-generate': 'lib-generate',
   'lib-panel': 'lib-panel',
   'lib-gallery': 'lib-gallery',
+  // ── the home page ──
+  'home-projects': 'home-projects',
+  'home-playlists': 'home-playlists',
 } as const;
 
 export type TourAnchor = keyof typeof TOUR_ANCHORS;

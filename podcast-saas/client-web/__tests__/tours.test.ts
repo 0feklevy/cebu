@@ -7,14 +7,14 @@
 import { describe, it, expect } from 'vitest';
 import { TOUR_ANCHORS, isTourAnchor, tourAnchor, tourSelector } from '../lib/tours/anchors';
 import {
-  EDITOR_STEPS, LIBRARY_STEPS, PERSONA_STEPS, SECTION_STEPS_BROLL, SECTION_STEPS_CLIP,
+  EDITOR_STEPS, HOME_STEPS, LIBRARY_STEPS, PERSONA_STEPS, SECTION_STEPS_BROLL, SECTION_STEPS_CLIP,
   SECTION_STEPS_GENERATED, SECTION_STEPS_IMAGE, SECTION_STEPS_SIM_ATTACHED, SECTION_STEPS_SIM_PICK,
   SETTINGS_STEPS, VIEWER_SHORTCUTS, toTourSteps, type Step,
 } from '../lib/tours/steps';
 
 const ALL_TOURS: Record<string, readonly Step[]> = {
   EDITOR_STEPS, SETTINGS_STEPS, SECTION_STEPS_BROLL, SECTION_STEPS_SIM_PICK, SECTION_STEPS_SIM_ATTACHED,
-  SECTION_STEPS_IMAGE, SECTION_STEPS_CLIP, SECTION_STEPS_GENERATED, PERSONA_STEPS, LIBRARY_STEPS,
+  SECTION_STEPS_IMAGE, SECTION_STEPS_CLIP, SECTION_STEPS_GENERATED, PERSONA_STEPS, LIBRARY_STEPS, HOME_STEPS,
 };
 
 describe('anchors', () => {
@@ -55,8 +55,8 @@ describe('anchors', () => {
 describe('the editor tour — most important first', () => {
   const order = EDITOR_STEPS.map((s) => s.anchor);
 
-  it('leads with media in, then interactivity, then layout, then preview, share, export', () => {
-    expect(order).toEqual(['library', 'simulations', 'timeline', 'preview', 'share', 'export']);
+  it('leads with media in, then interactivity, then layout and branching, then preview, share, export', () => {
+    expect(order).toEqual(['library', 'simulations', 'timeline', 'branching', 'preview', 'share', 'export']);
   });
 
   const mentions = (re: RegExp) => EDITOR_STEPS.some((s) => re.test(s.body) || re.test(s.title));
@@ -70,6 +70,12 @@ describe('the editor tour — most important first', () => {
     expect(mentions(/vertical/i), 'vertical video').toBe(true);
     expect(mentions(/export/i), 'export').toBe(true);
     expect(mentions(/replace/i), 'video replace').toBe(true);
+  });
+
+  it('mentions the features the first audit found uncovered — branching, raise your hand, playlists', () => {
+    expect(mentions(/branch/i), 'branching on viewer choices').toBe(true);
+    expect(mentions(/raise your hand/i), 'the podcast’s typed question').toBe(true);
+    expect(mentions(/playlist/i), 'playlists').toBe(true);
   });
 
   it('tells the creator where the keys are', () => {
@@ -91,6 +97,15 @@ describe('the settings and section tours', () => {
   it('a simulation section with a simulation attached covers the Minimal-UI control picker and presets', () => {
     const anchors = [...SECTION_STEPS_SIM_PICK, ...SECTION_STEPS_SIM_ATTACHED].map((s) => s.anchor);
     expect(anchors).toEqual(['sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-controls', 'sec-sim-presets']);
+  });
+});
+
+describe('the home tour', () => {
+  it('walks the projects grid, then playlists — and says what a playlist is for', () => {
+    expect(HOME_STEPS.map((s) => s.anchor)).toEqual(['home-projects', 'home-playlists']);
+    const playlists = HOME_STEPS.find((s) => s.anchor === 'home-playlists')!;
+    expect(playlists.body).toMatch(/in order/i);
+    expect(playlists.body).toMatch(/course/i);
   });
 });
 

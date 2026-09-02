@@ -34,10 +34,7 @@ import { resolveSimulationUrl } from '../simulation/simulationUrlResolver.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import { projectOrientation } from 'shared/video/orientation';
 import { posterKeyForSection, uiHideFromMeta } from '../simulation/sectionPosterKey.js';
-import {
-  DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
-  variantParamOf, type SimAspectProfile,
-} from 'shared/sim/simIdentity';
+import { derivePackageRevision, variantParamOf, type SimAspectProfile } from 'shared/sim/simIdentity';
 import { buildMainSegmentTimeline, resolveSectionPlacement, sortTimelineSections } from 'shared';
 import {
   parsePosterVariants, posterIdentityString, selectPosterVariant,
@@ -45,7 +42,7 @@ import {
 } from 'shared/sim/posterIdentity';
 
 import {
-  EXPORT_GRID, exportGridFor,
+  exportGridFor,
   type ClipWindow, type ExportAudioWindow, type ExportPlan, type ExportSourceIdentity,
   type ExportWindow, type ImageWindow, type PosterFallbackWindow, type SimCaptureWindow,
   type VideoWindow,
@@ -416,7 +413,7 @@ export async function buildExportPlan(
    * identity-matched poster STORAGE KEY (or null). No cross-identity poster fallback, ever.
    */
   const presentationIdentity = (
-    s: (typeof sections)[number], uiHide: string[] | undefined,
+    s: (typeof sections)[number], _uiHide: string[] | undefined,
   ): { configHash: string | null; posterKey: string | null } => {
     // ONE identity function with the player and the editor's capture (sectionPosterKey.ts). The
     // hide list is the same value the caller passes as `uiHide` — read from the row here so the

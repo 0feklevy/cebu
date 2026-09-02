@@ -1805,6 +1805,7 @@ export function VideoEditor({ projectId }: Props) {
               />
               <button
                 type="button"
+                {...tourAnchor('branching')}
                 onClick={() => setShowBranching(true)}
                 className="surface-panel flex min-h-11 w-full shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-cyan-300 hover:bg-cyan-50/60 focus-ring"
               >

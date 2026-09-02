@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import fastifyCompress from '@fastify/compress';
-import { createHash } from 'crypto';
 import { readFile } from 'node:fs/promises';
 import { extname } from 'path';
 import { constants as zlibConstants } from 'zlib';

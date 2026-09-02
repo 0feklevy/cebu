@@ -7,6 +7,7 @@ import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { useAuth } from '../lib/firebase';
 import type { PlaylistSummary } from 'shared/src/generated/client-v1';
 import { PlaylistEditorDialog } from './PlaylistEditorDialog';
+import { tourAnchor } from '@/lib/tours/anchors';
 
 const CARD_GRADIENTS = [
   'linear-gradient(135deg,#6366f1 0%,#a855f7 100%)',
@@ -85,7 +86,7 @@ export function PlaylistsPanel() {
   }, [creating, load]);
 
   return (
-    <section className="flex min-h-0 w-full flex-col rounded-lg border border-border bg-card shadow-sm-soft">
+    <section {...tourAnchor('home-playlists')} className="flex min-h-0 w-full flex-col rounded-lg border border-border bg-card shadow-sm-soft">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
         <div className="flex items-center gap-2.5">
