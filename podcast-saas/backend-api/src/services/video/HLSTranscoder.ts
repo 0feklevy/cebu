@@ -6,6 +6,7 @@ import { uploadWithFallback } from '../storage/uploadWithFallback.js';
 import { HLS_IMMUTABLE_CACHE_CONTROL } from './hlsVersioning.js';
 import { runFfmpegLimited } from '../ffmpegLimit.js';
 import { aspectPreservingFitChain } from '../ffmpegAspect.js';
+import { displayedGeometry, orientationOf, type Orientation } from 'shared/video/orientation';
 import { logger } from '../../lib/logger.js';
 
 export interface QualityTier {
@@ -34,6 +35,20 @@ export const TIERS: QualityTier[] = [
   { name: '1080p', width: 1920, height: 1080, videoBitrate: '5500k', audioBitrate: '192k', bandwidth: 6000000, profile: 'high',     level: 40 },
 ];
 
+/**
+ * The PORTRAIT ladder — the same four tiers turned on their side. A 1080×1920 upload used to be
+ * pillarboxed into 1920×1080, so the picture reached the viewer at 608×1080 inside a "1080p"
+ * stream that was two-thirds black. Names stay the short side, so `hls_current_tier` /
+ * `hls_360p_key` and every consumer that matches on '360p' … '1080p' work unchanged; bitrates,
+ * profiles and levels are identical because the pixel count is (level 4.0 covers 1080×1920).
+ */
+export const PORTRAIT_TIERS: QualityTier[] = TIERS.map((t) => ({ ...t, width: t.height, height: t.width }));
+
+/** The ladder for a source's displayed orientation. Landscape is byte-for-byte the old matrix. */
+export function tiersFor(orientation: Orientation): QualityTier[] {
+  return orientation === 'portrait' ? PORTRAIT_TIERS : TIERS;
+}
+
 /** HLS target segment duration (seconds) — pinned by '-hls_time' and the keyframe cadence. */
 const SEGMENT_SEC = 4;
 
@@ -50,6 +65,11 @@ export const DEFAULT_INPUT_FPS = 30;
 export interface TranscodeResult {
   masterKey: string;
   durationSec: number;
+  /** Displayed source geometry (rotation + SAR applied); null when ffprobe reported none. */
+  width: number | null;
+  height: number | null;
+  /** Which ladder was encoded — derived from the geometry, landscape when unknown. */
+  orientation: Orientation;
 }
 
 export interface TranscodeOpts {
@@ -122,15 +142,49 @@ export interface MediaInfo {
   durationSec: number;
   /** Probed video frame rate; DEFAULT_INPUT_FPS when the input has none we can parse. */
   fps: number;
+  /** DISPLAYED width/height — rotation tag and sample aspect applied; null when unreported. */
+  width: number | null;
+  height: number | null;
+  /** Portrait iff displayed height > width; landscape for square or unknown. */
+  orientation: Orientation;
 }
 
-/** Probe the input's container duration AND its video frame rate in one ffprobe call. */
+/** ffprobe's rotation, from the modern side-data list or the legacy stream tag; 0 when absent. */
+function parseRotation(stream: {
+  side_data_list?: Array<{ rotation?: number | string }>;
+  tags?: { rotate?: string | number };
+} | undefined): number {
+  const fromSideData = stream?.side_data_list?.find((d) => d && d.rotation !== undefined)?.rotation;
+  const raw = fromSideData ?? stream?.tags?.rotate;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** "4:3" → { num: 4, den: 3 }; anything unparseable → square pixels. */
+function parseSar(sar: string | undefined): { num: number; den: number } {
+  const m = /^(\d+):(\d+)$/.exec(sar ?? '');
+  if (!m) return { num: 1, den: 1 };
+  const num = Number(m[1]); const den = Number(m[2]);
+  return num > 0 && den > 0 ? { num, den } : { num: 1, den: 1 };
+}
+
+/**
+ * Probe the input's container duration, its video frame rate AND its displayed geometry in one
+ * ffprobe call. Geometry is what a viewer would see: a phone's landscape-coded stream with a 90°
+ * rotation tag reports as portrait, and an anamorphic 1440×1080 SAR 4:3 reports as 1920×1080 —
+ * the same corrections the encode's geometry chain applies, so the ladder and the picture agree.
+ */
 export async function probeMediaInfo(inputPath: string): Promise<MediaInfo> {
   const json = (await runFfprobeJson([
     '-show_format', '-show_streams', '-select_streams', 'v:0', inputPath,
   ])) as {
     format?: { duration?: string };
-    streams?: Array<{ avg_frame_rate?: string; r_frame_rate?: string }>;
+    streams?: Array<{
+      avg_frame_rate?: string; r_frame_rate?: string;
+      width?: number; height?: number; sample_aspect_ratio?: string;
+      side_data_list?: Array<{ rotation?: number | string }>;
+      tags?: { rotate?: string | number };
+    }>;
   } | null;
   const durationSec = parseFloat(json?.format?.duration ?? '0') || 0;
   const stream = json?.streams?.[0];
@@ -138,7 +192,18 @@ export async function probeMediaInfo(inputPath: string): Promise<MediaInfo> {
     parseFrameRate(stream?.avg_frame_rate) ??
     parseFrameRate(stream?.r_frame_rate) ??
     DEFAULT_INPUT_FPS;
-  return { durationSec, fps };
+  const codedW = Number(stream?.width) || 0;
+  const codedH = Number(stream?.height) || 0;
+  let width: number | null = null;
+  let height: number | null = null;
+  if (codedW > 0 && codedH > 0) {
+    const sar = parseSar(stream?.sample_aspect_ratio);
+    const shown = displayedGeometry(codedW, codedH, {
+      rotationDeg: parseRotation(stream), sarNum: sar.num, sarDen: sar.den,
+    });
+    width = shown.width; height = shown.height;
+  }
+  return { durationSec, fps, width, height, orientation: orientationOf({ width, height }) };
 }
 
 export async function probeMediaDuration(inputPath: string): Promise<number> {
@@ -431,13 +496,16 @@ export function extractWaveformPeaks(inputPath: string, numPeaks = 200): Promise
 export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResult> {
   const { inputPath, workDir, storageKeyPrefix, storage, onTierStart, onTierComplete } = opts;
 
-  const { durationSec, fps } = await probeMediaInfo(inputPath);
-  logger.info({ durationSec, fps, inputPath }, 'HLS transcode starting');
+  const { durationSec, fps, width, height, orientation } = await probeMediaInfo(inputPath);
+  // The ladder follows the SOURCE's displayed orientation: a portrait upload gets portrait tiers
+  // instead of being pillarboxed into landscape ones (night run 2026-09-03 §3).
+  const tiers = tiersFor(orientation);
+  logger.info({ durationSec, fps, width, height, orientation, inputPath }, 'HLS transcode starting');
 
   // Per-tier CODECS strings for the master playlist, from PROBED bytes (see the gate).
   const tierCodecs = new Map<string, string>();
 
-  for (const tier of TIERS) {
+  for (const tier of tiers) {
     await onTierStart?.(tier.name);
 
     const tierDir = join(workDir, tier.name);
@@ -475,7 +543,7 @@ export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResu
     '#EXTM3U',
     '#EXT-X-VERSION:3',
     '',
-    ...TIERS.flatMap((t) => {
+    ...tiers.flatMap((t) => {
       const codec = tierCodecs.get(t.name);
       if (!codec) throw new Error(`HLS master: missing probed codec for tier ${t.name}`);
       return [
@@ -493,5 +561,5 @@ export async function transcodeToHLS(opts: TranscodeOpts): Promise<TranscodeResu
   );
   logger.info({ masterKey }, 'master playlist uploaded');
 
-  return { masterKey, durationSec };
+  return { masterKey, durationSec, width, height, orientation };
 }

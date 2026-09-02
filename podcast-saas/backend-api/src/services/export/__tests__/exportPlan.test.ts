@@ -547,3 +547,21 @@ describe('admitCaptureWorkload', () => {
     }
   });
 });
+
+// ── Orientation (migration 082, night run 2026-09-03 §3) ──────────────────────────────────────
+
+describe('buildExportPlan — orientation', () => {
+  it('a portrait primary video freezes the PORTRAIT grid into the plan; landscape and unknown keep 1920×1080', async () => {
+    // Unknown geometry (every pre-082 row) — the ruled landscape grid, exactly as before.
+    expect((await plan())!.grid).toEqual({ w: 1920, h: 1080, fps: 30 });
+
+    // The PRIMARY video (created first) is portrait → the whole export is 1080×1920@30.
+    await one(`UPDATE video_files SET width = 1080, height = 1920 WHERE id = $1 RETURNING id`, [fx.videoAId]);
+    expect((await plan())!.grid).toEqual({ w: 1080, h: 1920, fps: 30 });
+
+    // A portrait SECOND video under a landscape primary changes nothing.
+    await one(`UPDATE video_files SET width = 1920, height = 1080 WHERE id = $1 RETURNING id`, [fx.videoAId]);
+    await one(`UPDATE video_files SET width = 1080, height = 1920 WHERE id = $1 RETURNING id`, [fx.videoBId]);
+    expect((await plan())!.grid).toEqual({ w: 1920, h: 1080, fps: 30 });
+  });
+});

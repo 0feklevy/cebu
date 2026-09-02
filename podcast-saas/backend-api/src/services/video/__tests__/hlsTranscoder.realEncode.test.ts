@@ -204,3 +204,58 @@ describe.runIf(ENABLED)('the conformance gate holds against real libx264 output'
     ).toEqual([]);
   }, 300_000);
 });
+
+// ── Portrait sources against real ffmpeg (night run 2026-09-03 §3) ───────────────────────────
+import { PORTRAIT_TIERS, probeMediaInfo } from '../HLSTranscoder.js';
+
+describe.runIf(ENABLED)('portrait sources against real ffmpeg/ffprobe', () => {
+  let portraitInput: string;
+  let rotatedInput: string;
+
+  beforeAll(async () => {
+    portraitInput = join(workDir, 'portrait.mp4');
+    rotatedInput = join(workDir, 'rotated.mp4');
+    // A genuinely portrait-coded 1080×1920 clip.
+    let r = await run('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', `testsrc=size=1080x1920:rate=${SOURCE_FPS}:duration=5`,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', portraitInput,
+    ]);
+    expect(r.code, r.stderr.slice(-400)).toBe(0);
+    // Phone footage: landscape-CODED 1920×1080 carrying a 90° display matrix. ffmpeg ≥ 5 ignores a
+    // bare 'rotate' metadata tag at mux time; `-display_rotation` on the input is what writes the
+    // matrix a phone writes, and what ffprobe reports as side_data_list[].rotation.
+    const plainInput = join(workDir, 'plain-landscape.mp4');
+    r = await run('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', `testsrc=size=1920x1080:rate=${SOURCE_FPS}:duration=5`,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', plainInput,
+    ]);
+    expect(r.code, r.stderr.slice(-400)).toBe(0);
+    r = await run('ffmpeg', ['-y', '-display_rotation', '90', '-i', plainInput, '-c', 'copy', rotatedInput]);
+    expect(r.code, r.stderr.slice(-400)).toBe(0);
+  }, 300_000);
+
+  it('probeMediaInfo reports the DISPLAYED geometry: 1080×1920 portrait for both the coded-portrait and the rotated clip', async () => {
+    expect(await probeMediaInfo(portraitInput)).toMatchObject({ width: 1080, height: 1920, orientation: 'portrait' });
+    // ffmpeg ≥ 5 exposes the tag as a displaymatrix side-data rotation; either way it must land as portrait.
+    expect(await probeMediaInfo(rotatedInput)).toMatchObject({ width: 1080, height: 1920, orientation: 'portrait' });
+    // And the landscape fixture is unchanged by all this.
+    expect(await probeMediaInfo(inputPath)).toMatchObject({ width: 1920, height: 1080, orientation: 'landscape' });
+  }, 300_000);
+
+  it('the portrait 1080p tier encodes a real 1080×1920 stream at High@4.0 with aligned segments', async () => {
+    const tier = PORTRAIT_TIERS[3]!;
+    const tierDir = join(workDir, 'portrait-1080p');
+    await mkdir(tierDir, { recursive: true });
+    const playlistPath = join(tierDir, 'index.m3u8');
+    const { code, stderr } = await run('ffmpeg', ['-y', ...buildTierArgs(tier, {
+      fps: SOURCE_FPS, segmentSec: SEGMENT_SEC, inputPath: portraitInput,
+      segmentPattern: join(tierDir, 'seg_%03d.ts'), playlistPath,
+    })]);
+    expect(code, `encode failed: ${stderr.slice(-600)}`).toBe(0);
+    const streams = (await probeJson(['-show_streams', '-select_streams', 'v:0', join(tierDir, 'seg_000.ts')]))
+      .streams as Array<{ width?: number; height?: number; level?: number }>;
+    expect(streams[0]).toMatchObject({ width: 1080, height: 1920, level: 40 });
+    const playlist = await readFile(playlistPath, 'utf-8');
+    expect(findPlaylistDurationViolations(playlist, SEGMENT_SEC + SEGMENT_DURATION_TOLERANCE_SEC)).toEqual([]);
+  }, 300_000);
+});

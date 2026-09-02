@@ -437,6 +437,10 @@ export const video_files = pgTable('video_files', {
   storage_key: text('storage_key'),
   status: videoFileStatusEnum('status').notNull().default('uploading'),
   duration_sec: real('duration_sec'),
+  // Displayed geometry (migration 082): rotation tag and sample aspect already applied. NULL means
+  // "not probed" and every reader treats it as landscape — what every row was before 082.
+  width: integer('width'),
+  height: integer('height'),
   hls_status: hlsTranscodeStatusEnum('hls_status').notNull().default('pending'),
   hls_master_key: text('hls_master_key'),
   hls_current_tier: text('hls_current_tier'),

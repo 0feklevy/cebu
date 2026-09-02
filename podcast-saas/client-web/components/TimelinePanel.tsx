@@ -233,7 +233,19 @@ function useVideoFrames(url: string | null, duration: number, enabled: boolean) 
     };
     const onSeeked = () => {
       if (aborted) return;
-      try { ctx.drawImage(vid, 0, 0, FRAME_W, FRAME_H); captured.push(canvas.toDataURL('image/jpeg', 0.6)); }
+      try {
+        // Fit the frame into the cell instead of stretching it: a portrait source used to be
+        // squashed to a third of its width in every thumbnail (night run 2026-09-03 §3).
+        const vw = vid.videoWidth || FRAME_W;
+        const vh = vid.videoHeight || FRAME_H;
+        const scale = Math.min(FRAME_W / vw, FRAME_H / vh);
+        const dw = Math.max(1, Math.round(vw * scale));
+        const dh = Math.max(1, Math.round(vh * scale));
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, FRAME_W, FRAME_H);
+        ctx.drawImage(vid, Math.round((FRAME_W - dw) / 2), Math.round((FRAME_H - dh) / 2), dw, dh);
+        captured.push(canvas.toDataURL('image/jpeg', 0.6));
+      }
       catch { captured.push(''); }
       setFrames([...captured]);   // reveal thumbnails progressively (left→right) so it feels instant
       i++; captureNext();

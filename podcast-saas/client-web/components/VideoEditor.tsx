@@ -29,6 +29,7 @@ import {
 } from '../lib/simServedUrl';
 import { getStoredSelection } from '../lib/simUiControls';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, VideoGenerationJob, ImageFile, AudioFile, VideoDeleteBlocked, VideoDeleteChoice } from 'shared/src/generated/client-v1';
+import { projectOrientation } from 'shared/src/video/orientation';
 
 type ToolMode = 'video' | 'simulation' | 'broll';
 
@@ -1210,7 +1211,13 @@ export function VideoEditor({ projectId }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [handlePlaceMarker]);
 
-  const previewAspect = previewViewportSize.width / Math.max(1, previewViewportSize.height);
+  // A PORTRAIT project previews at 9:16 whatever the monitor's shape, so the timeline, every
+  // simulation section and the share page are authored in the frame they will ship in (night run
+  // 2026-09-03 §3). Landscape keeps following the window, as it always has.
+  const editorOrientation = projectOrientation(videos);
+  const previewAspect = editorOrientation === 'portrait'
+    ? 9 / 16
+    : previewViewportSize.width / Math.max(1, previewViewportSize.height);
   const previewFrameStyle: React.CSSProperties = (() => {
     const { width: shellW, height: shellH } = previewShellSize;
     if (!shellW || !shellH) return { width: '100%', height: '100%' };

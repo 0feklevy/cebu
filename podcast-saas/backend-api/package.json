@@ -28,7 +28,8 @@
     "lint": "eslint src",
     "bench:crop": "tsx bench/crop/turn.ts && tsx bench/crop/smooth.ts && tsx bench/crop/frames.ts",
     "eval:crop": "tsx scripts/crop-eval/run-eval.ts",
-    "eval:crop:field": "tsx scripts/crop-eval/run-field-eval.ts"
+    "eval:crop:field": "tsx scripts/crop-eval/run-field-eval.ts",
+    "videos:backfill-dimensions": "tsx --env-file=../.env src/scripts/backfill-video-dimensions.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.38.0",

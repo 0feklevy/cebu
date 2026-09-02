@@ -280,6 +280,17 @@ export function useCropOverlay(
       const vW = active.videoWidth  || 1920;
       const vH = active.videoHeight || 1080;
 
+      // A portrait SOURCE is never cropped (night run 2026-09-03 §3). The server already withholds
+      // crop_url for portrait projects; this guard is the belt to that brace, reading the element's
+      // own displayed size so a portrait video on a portrait phone keeps every pixel it has.
+      if (vH > vW) {
+        for (const v of [vA, vB]) {
+          if (v.style.objectFit)       v.style.objectFit       = '';
+          if (v.style.objectPosition)  v.style.objectPosition  = '';
+        }
+        return;
+      }
+
       const P      = cropXToObjectPosition(cropX, cW, cH, vW, vH);
       const objPos = `${P.toFixed(2)}% 50%`;
 

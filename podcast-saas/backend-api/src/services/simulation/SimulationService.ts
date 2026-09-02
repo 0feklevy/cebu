@@ -3,8 +3,9 @@ import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
 import { LLMService } from '../llm/LLMService.js';
 import { db } from '../../db/index.js';
-import { simulations, system_prompts } from '../../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { simulations, system_prompts, video_files } from '../../db/schema.js';
+import { asc, eq } from 'drizzle-orm';
+import { projectOrientation } from 'shared/video/orientation';
 import { logger } from '../../lib/logger.js';
 import { SIM_SCANNER_SOURCE } from './simScannerSource.js';
 import { assertSafeZipArchive } from '../security/zipGuard.js';
@@ -2179,6 +2180,30 @@ function buildBridgeSummary(bridge: GeneratedBridge, prompt: string): string {
 
 // ── ContextPack builder (source files → system/context prompt) ───────────────
 
+/**
+ * The one extra rule a PORTRAIT project's bridge generator gets, or '' for landscape so every
+ * existing prompt stays byte-identical (and its provider cache warm). Kept tiny and stable — it
+ * is part of the cached system prefix.
+ */
+export const PORTRAIT_VIEWPORT_RULES =
+  '\n\nVIEWPORT: this project is PORTRAIT. The simulation is displayed in a 9:16 frame (e.g. 1080×1920) ' +
+  'in the editor, the viewer and the exported video. Lay out for a tall, narrow viewport: stack controls ' +
+  'vertically, keep the main visual centred and full-width, never assume a wide canvas, and read the ' +
+  'actual window size on resize rather than hard-coding a landscape aspect.';
+
+async function portraitViewportRules(projectId: string): Promise<string> {
+  try {
+    const rows = await db.query.video_files.findMany({
+      where: eq(video_files.project_id, projectId),
+      orderBy: [asc(video_files.created_at)],
+      columns: { width: true, height: true, is_broll: true },
+    });
+    return projectOrientation(rows) === 'portrait' ? PORTRAIT_VIEWPORT_RULES : '';
+  } catch {
+    return '';
+  }
+}
+
 export function buildContextPrompt(
   baseInstructions: string,
   sourceMap: Map<string, string>,
@@ -2771,7 +2796,11 @@ export class SimulationService {
     // simulation that works. Appending them to the hardcoded default instead made them INERT for
     // exactly the case the comment above calls expected.
     const authored = dbPrompt?.is_customized ? dbPrompt.content : BRIDGE_GENERATION_SYSTEM_PROMPT;
-    const baseSystemPrompt = `${CAPTURE_AUTHORING_RULES}\n\n${authored}`;
+    // A portrait project (night run 2026-09-03 §3) tells the generator so: the simulation will
+    // be shown in a 9:16 frame in the editor, the viewer and the export, and a layout that
+    // assumes a wide viewport wastes most of it. Landscape says nothing — byte-identical prompt.
+    const viewportRules = await portraitViewportRules(projectId);
+    const baseSystemPrompt = `${CAPTURE_AUTHORING_RULES}${viewportRules}\n\n${authored}`;
 
     // 6. Build deterministic ContextPack — source files + manifest live in the system prompt.
     //    This is provider-neutral: Claude caches it; OpenAI/Gemini receive it in system role.

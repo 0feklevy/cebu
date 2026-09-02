@@ -250,3 +250,31 @@ describe('buildTierArgs is pure', () => {
     expect(tier).toEqual(snapshot);
   });
 });
+
+// ── Portrait ladder (night run 2026-09-03 §3) ─────────────────────────────────────────────────
+import { PORTRAIT_TIERS, tiersFor } from '../HLSTranscoder.js';
+
+describe('portrait ladder', () => {
+  it('is the landscape matrix on its side: same names, bitrates, profiles and levels', () => {
+    expect(PORTRAIT_TIERS.map((t) => [t.name, t.width, t.height, t.videoBitrate, t.audioBitrate, t.bandwidth, t.profile, t.level])).toEqual([
+      ['360p',  360,  640,  '500k',  '96k',  700000,  'baseline', 30],
+      ['480p',  480,  854,  '1000k', '128k', 1400000, 'main',     31],
+      ['720p',  720,  1280, '2800k', '128k', 3200000, 'main',     31],
+      ['1080p', 1080, 1920, '5500k', '192k', 6000000, 'high',     40],
+    ]);
+  });
+
+  it('tiersFor: landscape is the SAME array object as before, portrait is the turned one', () => {
+    expect(tiersFor('landscape')).toBe(TIERS);
+    expect(tiersFor('portrait')).toBe(PORTRAIT_TIERS);
+  });
+
+  it('a portrait tier fits and pads onto the portrait box', () => {
+    const tier = PORTRAIT_TIERS[3]!;
+    const args = buildTierArgs(tier, ctx(30));
+    expect(argOf(args, '-vf')).toBe(
+      'scale=trunc(iw*sar/2)*2:ih,setsar=1,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
+    );
+    expect(argOf(args, '-level')).toBe('4.0');
+  });
+});

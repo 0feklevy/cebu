@@ -31,6 +31,7 @@ import {
   type PosterFormat, type PosterKey,
 } from 'shared/sim/posterIdentity';
 import type { SimPackageClass } from 'shared/sim/simFailurePolicy';
+import { projectOrientation } from 'shared/video/orientation';
 import { requireProjectAccess } from './projectAccess.js';
 import { collaboratorContentIds } from './collabAccess.js';
 
@@ -287,6 +288,12 @@ export async function buildPlayerConfig(
       }),
   ]);
 
+  // ONE orientation for the whole config (night run 2026-09-03 §3): the primary video's probed
+  // geometry decides, unknown is landscape. 'portrait' selects portrait poster identities and
+  // suppresses the crop track below.
+  const orientation = projectOrientation(allVideos);
+  const posterAspect = orientation === 'portrait' ? 'portrait' as const : 'wide' as const;
+
   // Re-applied IN MEMORY, not because the `ORDER BY` above is wrong but because this order is a
   // contract and a contract needs one owner. `compareTimelineSections` is that owner; the SQL is an
   // optimisation that lets Postgres do the work. Belt and braces here is cheap (one sort of a small
@@ -395,9 +402,9 @@ export async function buildPlayerConfig(
         // DEFAULT_PRESENTATION_CONFIG at quality 'high', and 'wide' is the aspect a full-width
         // player lays out for.
         quality: 'high',
-        aspect:  'wide',
+        aspect:  posterAspect,
       }),
-      aspectProfile:  'wide',
+      aspectProfile:  posterAspect,
       qualityProfile: 'high',
     };
 
@@ -646,7 +653,11 @@ export async function buildPlayerConfig(
         };
       });
 
-    const crop_url = v.crop_status === 'ready' && v.crop_key ? storage.getPublicUrl(v.crop_key) : null;
+    // A portrait project never gets a crop track: the source already IS the portrait frame, and
+    // a crop applied to it would cut the top and bottom off (night run 2026-09-03 §3). This is the
+    // cheapest kill switch — the viewer's overlay does nothing without a URL.
+    const crop_url = orientation !== 'portrait' && v.crop_status === 'ready' && v.crop_key
+      ? storage.getPublicUrl(v.crop_key) : null;
 
     return {
       id: v.id,
@@ -1061,6 +1072,10 @@ export async function buildPlayerConfig(
     title:          project.title,
     description:    project.topic ?? null,
     thumbnail_url:  project.thumbnail_url ?? null,
+    // The project's frame: 'portrait' when the primary video is taller than wide (082 geometry),
+    // 'landscape' otherwise and for everything probed before 082. The editor preview, the lesson
+    // page and the poster identity above all key off this one word.
+    orientation,
     segments,
     // ── The viewer's language switcher (migration 067) ──────────────────────
     //

@@ -28,6 +28,7 @@ import { logger } from '../../lib/logger.js';
 import { processVideoCrop } from './cropProcessor.js';
 import { algoVersion } from './algo.js';
 import { enqueueJob } from '../../queue/index.js';
+import { orientationOf } from 'shared/video/orientation';
 
 export function sourceHash(
   storageKey: string,
@@ -61,6 +62,9 @@ export async function enqueueCropForProject(projectId: string): Promise<void> {
   const vids = await db.query.video_files.findMany({ where: eq(video_files.project_id, projectId) });
   for (const v of vids) {
     if (v.is_broll || !v.storage_key) continue;
+    // A portrait source is already the portrait frame; there is nothing to follow. Skip the job
+    // entirely rather than burn a worker slot on a track that degenerates to x = 0.5.
+    if (orientationOf(v) === 'portrait') continue;
     enqueueCropAnalysis(v.id);
   }
 }
@@ -83,6 +87,18 @@ async function runCropAnalysisInner(videoFileId: string): Promise<void> {
 
   const video = await db.query.video_files.findFirst({ where: eq(video_files.id, videoFileId) });
   if (!video || !video.storage_key || video.is_broll) return;
+  if (orientationOf(video) === 'portrait') {
+    // Never crop a portrait source (night run 2026-09-03 §3). Leave the row at 'none' so the
+    // player config emits no crop_url; a stale 'ready' from before the geometry was known is
+    // cleared for the same reason. The JSON object, if any, is harmless and left to the sweeps.
+    if (video.crop_status !== 'none') {
+      await db.update(video_files)
+        .set({ crop_status: 'none', crop_key: null, crop_source_hash: null, crop_error: null, crop_updated_at: new Date() })
+        .where(eq(video_files.id, videoFileId));
+    }
+    logger.info({ videoFileId, width: video.width, height: video.height }, '[crop] portrait source — crop skipped');
+    return;
+  }
 
   const hash = sourceHash(video.storage_key, video.file_size, video.duration_sec);
   const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);

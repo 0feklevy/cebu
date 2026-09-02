@@ -61,7 +61,11 @@ export default async function LessonPage({ params }: Params) {
 
         {/* Interactive player island — composes the existing renderer */}
         {player && (
-          <div className="relative mb-6 aspect-video w-full overflow-hidden rounded-lg bg-black">
+          <div
+            className={`relative mb-6 w-full overflow-hidden rounded-lg bg-black ${
+              player.orientation === 'portrait' ? 'mx-auto aspect-[9/16] max-w-md' : 'aspect-video'
+            }`}
+          >
             <LessonPlayer config={player} />
           </div>
         )}

@@ -28,3 +28,8 @@ export * from './timeline/overlayStack.js';
 // The audio edition's status vocabulary. Exported from the index because BOTH sides need it and
 // the bug it exists to prevent was precisely the two sides each keeping their own list.
 export * from './audio/editionStatus.js';
+
+// Whether a project is portrait — ONE derived truth for the editor preview, the HLS ladder, the
+// export grid, the crop skip and the poster identity, so none of them can disagree (night run
+// 2026-09-03 §3).
+export * from './video/orientation.js';

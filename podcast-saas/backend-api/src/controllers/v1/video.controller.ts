@@ -109,6 +109,13 @@ function tooLargeForProxy(observed: number): { message: string } {
 // The transcode probe remains authoritative; this just seeds a good value at insert so the editor
 // timeline and published player are correct immediately instead of null-until-transcode. A bad or
 // hostile value is dropped (undefined → stored null, as before). (timeline-50s-cap fix)
+/** A client-measured pixel dimension: a positive integer ≤ 16384, else undefined (never trusted past a seed). */
+function sanitizeDimension(d: unknown): number | undefined {
+  const n = typeof d === 'number' ? d : Number(d);
+  if (!Number.isFinite(n) || n <= 0 || n > 16384) return undefined;
+  return Math.round(n);
+}
+
 function sanitizeDurationSec(d: unknown): number | undefined {
   return typeof d === 'number' && Number.isFinite(d) && d > 0 && d <= 86400 ? d : undefined;
 }
@@ -132,6 +139,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     file_size: number | undefined,
     replaceVideoId?: string,
     durationSec?: number,
+    geometry?: { width?: number; height?: number },
   ) {
     const ext = storage_key.split('.').pop() ?? 'mp4';
 
@@ -157,6 +165,10 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
           hls_error: null,
           crop_status: 'none',
           crop_source_hash: null,
+          // The NEW file's client-measured geometry (082) — never the old file's; the transcode
+          // probe overwrites it with the authoritative displayed size.
+          width: geometry?.width ?? null,
+          height: geometry?.height ?? null,
         })
         .where(eq(video_files.id, replaceVideoId))
         .returning();
@@ -185,6 +197,10 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         // Seed the client-measured length so the timeline/player are correct pre-transcode; the
         // transcode probe overwrites it with the authoritative value (runVideoTranscode). (timeline-50s-cap fix)
         duration_sec: durationSec ?? null,
+        // Same seeding rule for geometry (082): the browser's videoWidth/videoHeight lets the
+        // editor know a project is portrait before the transcode finishes; the probe is final.
+        width: geometry?.width ?? null,
+        height: geometry?.height ?? null,
       })
       .returning();
 
@@ -322,7 +338,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
       const project = await findOwnedProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number; replace_video_id?: string; duration_sec?: number };
+      const body = (request.body ?? {}) as { storage_key?: string; filename?: string; file_size?: number; replace_video_id?: string; duration_sec?: number; width?: number; height?: number };
       const storage_key = body.storage_key ?? '';
       // The key must be one we minted for THIS project (defends against confirming arbitrary keys).
       if (!storage_key.startsWith(`videos/${project.id}/`)) {
@@ -340,7 +356,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         logger.warn({ err, storage_key }, 'confirm: existence check errored — proceeding');
       }
 
-      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec));
+      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec), { width: sanitizeDimension(body.width), height: sanitizeDimension(body.height) });
       if (!videoFile) return reply.code(404).send({ message: 'Video to replace not found' });
       return reply.code(201).send(videoFile);
     },
@@ -435,6 +451,8 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         file_size?: number;
         replace_video_id?: string;
         duration_sec?: number;
+        width?: number;
+        height?: number;
         parts?: { partNumber?: number; etag?: string }[];
       };
       const storage_key = body.storage_key ?? '';
@@ -460,7 +478,7 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec));
+      const videoFile = await finalizeUpload(project.id, storage_key, body.filename, body.file_size, body.replace_video_id, sanitizeDurationSec(body.duration_sec), { width: sanitizeDimension(body.width), height: sanitizeDimension(body.height) });
       if (!videoFile) return reply.code(404).send({ message: 'Video to replace not found' });
       return reply.code(201).send(videoFile);
     },
