@@ -158,6 +158,19 @@ export async function sweepOrphanBlobs(now = Date.now()): Promise<SweepResult> {
  * blob is unmarked at that moment, so the earliest anything can be removed is a full grace period
  * after this process first saw it.
  */
+export const BLOB_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/** Repeat the sweep every six hours (night run 2026-09-03 §7); the startup pass stays as it was. */
+export function startBlobSweep(intervalMs = BLOB_SWEEP_INTERVAL_MS): () => void {
+  const timer = setInterval(() => {
+    void sweepOrphanBlobs().catch((e) => {
+      logger.warn({ err: (e as Error)?.message?.slice(0, 200) }, '[BlobSweep] periodic pass failed');
+    });
+  }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return () => clearInterval(timer);
+}
+
 export async function sweepOrphanBlobsOnStartup(): Promise<void> {
   try {
     await sweepOrphanBlobs();

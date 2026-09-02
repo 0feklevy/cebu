@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../../db/index.js';
-import { invalidateRumSampleRateCache } from '../../../services/simulation/RumService.js';
+import { invalidateRumSampleRateCache, invalidateSimRuntimeFlagsCache } from '../../../services/simulation/RumService.js';
+import { invalidateSimPoolModeCache } from '../../../services/buildPlayerConfig.js';
 import { admin_settings } from '../../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { firebaseAdminRequired } from '../../../middleware/firebase-admin-required.js';
@@ -57,6 +58,8 @@ export async function registerAdminSettingsRoutes(app: FastifyInstance): Promise
       // an operator setting it to 0 during an incident sees it take effect now, not whenever the
       // cache happens to expire.
       invalidateRumSampleRateCache();
+      invalidateSimRuntimeFlagsCache();
+      invalidateSimPoolModeCache();
 
       return reply.send(updated);
     },

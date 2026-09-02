@@ -13,13 +13,26 @@ export type SimPoolMode = 'adaptive' | 'single';
  *  setting per-process (staging); otherwise admin_settings.sim_pool_mode (default 'adaptive').
  *  'single' makes the viewer mount one sim frame on activation with per-URL navigation — the
  *  conservative pre-pool behavior — without reverting the deployment. */
+export const SIM_POOL_MODE_CACHE_MS = 10_000;
+let poolModeCache: { at: number; value: SimPoolMode } | null = null;
+/** Test seam; also called when the admin setting is written so an operator sees the change at once. */
+export function invalidateSimPoolModeCache(): void { poolModeCache = null; }
+
 export async function resolveSimPoolMode(): Promise<SimPoolMode> {
   const env = (process.env.SIM_POOL_MODE ?? '').trim().toLowerCase();
   if (env === 'single' || env === 'adaptive') return env;
+  // CACHED for the same reason resolveRumSampleRate is: this runs on the hottest endpoint
+  // (player-config) as one of two uncached admin_settings reads beside a third that was cached —
+  // two round trips per public view against a pool of ten (night run 2026-09-03 §7).
+  const now = Date.now();
+  if (poolModeCache && now - poolModeCache.at < SIM_POOL_MODE_CACHE_MS) return poolModeCache.value;
   try {
     const s = await db.query.admin_settings.findFirst({ columns: { sim_pool_mode: true } });
-    return s?.sim_pool_mode === 'single' ? 'single' : 'adaptive';
+    const value: SimPoolMode = s?.sim_pool_mode === 'single' ? 'single' : 'adaptive';
+    poolModeCache = { at: now, value };
+    return value;
   } catch {
+    poolModeCache = { at: now, value: 'adaptive' };
     return 'adaptive';   // column not migrated yet, or DB hiccup → safe default
   }
 }

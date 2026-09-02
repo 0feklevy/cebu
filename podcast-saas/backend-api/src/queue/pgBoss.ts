@@ -1,4 +1,5 @@
 import type { PgBoss as PgBossType, QueueOptions, QueuePolicy } from 'pg-boss';
+import { describeTransactionPooler } from '../db/migrate.js';
 import type { JobName } from './types.js';
 import { PGBOSS_STOP_TIMEOUT_MS } from './shutdownBudget.js';
 import { logger } from '../lib/logger.js';
@@ -214,6 +215,22 @@ function needsSsl(url: string): boolean {
   }
 }
 
+/**
+ * LISTEN/NOTIFY needs a session: on a transaction pooler the NOTIFY never reaches the connection
+ * that LISTENed, and pg-boss silently degrades to polling while the operator believes the opt-in
+ * took. The migration runner already refuses such an endpoint; this is the same check, applied
+ * to the same class of URL, with a log line instead of a refusal (night run 2026-09-03 §7).
+ */
+export function listenNotifyEnabled(env: NodeJS.ProcessEnv, url: string): boolean {
+  if (env.QUEUE_PGBOSS_LISTEN !== '1') return false;
+  const reason = describeTransactionPooler(url);
+  if (reason) {
+    logger.warn({ reason }, '[pg-boss] QUEUE_PGBOSS_LISTEN=1 ignored — the queue URL is not a session endpoint');
+    return false;
+  }
+  return true;
+}
+
 let bossPromise: Promise<PgBossType> | null = null;
 
 /** Get the started pg-boss singleton, creating + starting it (and its queues) on first use. */
@@ -228,7 +245,7 @@ export function getBoss(): Promise<PgBossType> {
       schema,
       max: Number(process.env.QUEUE_PGBOSS_MAX ?? '4'),
       ssl: needsSsl(url) ? { rejectUnauthorized: false } : undefined,
-      useListenNotify: process.env.QUEUE_PGBOSS_LISTEN === '1',
+      useListenNotify: listenNotifyEnabled(process.env, url),
     });
     boss.on('error', (err) => logger.error({ err }, '[pg-boss] runtime error'));
     await boss.start();

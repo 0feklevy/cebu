@@ -30,6 +30,13 @@ const queryClient = postgres({
   max:             10,
   idle_timeout:    30,
   connect_timeout: 10,
+  // The app pool's URL is documented as Supabase's TRANSACTION pooler (:6543), and Supabase's own
+  // guidance for postgres-js in transaction mode is `prepare: false`: a named prepared statement
+  // lives on one backend, and the pooler hands each transaction to whichever backend is free — so
+  // a statement prepared on one can be executed on another that never saw it. The failure looks
+  // like an intermittent database outage and appears only under load (night run 2026-09-03 §7,
+  // ruling D10). Postgres re-plans small index-covered statements cheaply; the class of error goes.
+  prepare:         false,
 });
 
 export const db = drizzle(queryClient, { schema });

@@ -1,4 +1,5 @@
 import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
+import { rateLimit } from './lib/rateLimit.js';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -93,7 +94,9 @@ import { registerPodcastRenderRoutes } from './controllers/v1/podcast-render.con
 import { registerPodcastStudioRoutes } from './controllers/v1/podcast-studio.controller.js';
 import { recoverStuckPodcastScripts } from './services/podcast/runPodcastScript.js';
 import { recoverStuckPodcastRenders } from './services/podcast/audio/runPodcastRender.js';
-import { sweepOrphanBlobsOnStartup } from './services/storage/blobSweeper.js';
+import { sweepOrphanBlobsOnStartup, startBlobSweep } from './services/storage/blobSweeper.js';
+import { startBranchEventRetentionSweep } from './services/branching/branchEventRetention.js';
+import { defaultCacheControl, isPublicReadPath, PUBLIC_READ_LIMIT_PER_MINUTE } from './lib/edgeCachePolicy.js';
 import { recoverStuckPodcastMixes } from './services/podcast/audio/runPodcastClips.js';
 import { recoverStuckVideoGenerations } from './jobs/video.generate.js';
 
@@ -555,6 +558,23 @@ async function build() {
   // until an operator raises rum_sample_rate above 0, and the client sends nothing until the player
   // config tells it to. Gating the ROUTE on the flag would mean flipping the switch requires a
   // deploy, which is the property the switch exists to avoid.
+  // ── Edge discipline (night run 2026-09-03 §7) ─────────────────────────────────────────────
+  // Every /api/ response that has not chosen a Cache-Control gets `no-store`, so a CDN placed in
+  // front of the API origin can never store an authenticated reply for the next visitor. Routes
+  // that mean to be cached set their own header first and are left alone.
+  app.addHook('onSend', async (request, reply) => {
+    const value = defaultCacheControl(request.url, reply.getHeader('cache-control') as string | undefined);
+    if (value) reply.header('Cache-Control', value);
+  });
+  // The anonymous viewer reads had no ceiling at all while every paid vendor did. Generous, and
+  // per process like every limiter here — a scraper hits it, a class of viewers never does.
+  app.addHook('onRequest', async (request, reply) => {
+    if (!isPublicReadPath(request.method, request.url)) return;
+    if (!rateLimit(`pubread:${request.ip}`, PUBLIC_READ_LIMIT_PER_MINUTE, 60_000)) {
+      return reply.code(429).send({ message: 'Too many requests — please slow down.' });
+    }
+  });
+
   registerSimRumRoutes(app);
   // Retention is enforced, not intended. Without a caller the migration's own promise that "the
   // reaper is part of this change rather than a follow-up" would be false and the table would grow
@@ -590,6 +610,12 @@ async function build() {
   // NOTHING in production, a fact two of its neighbours assert in their own comments. Superseded
   // simulation revisions accumulated for the life of every live simulation.
   startRevisionGcSweep();
+  // And the eighth: branch_path_events grew per viewer interaction with nothing ever removing a
+  // row — the fastest-growing table in the product. Ninety days, bounded batches.
+  startBranchEventRetentionSweep();
+  // The orphan-blob sweeper ran ONLY at startup; a process that stays up for a month collected
+  // nothing after its first minute. Every six hours now, the startup pass unchanged.
+  startBlobSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

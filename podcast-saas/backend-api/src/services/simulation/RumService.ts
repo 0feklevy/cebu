@@ -367,6 +367,26 @@ export const SIM_RUNTIME_FLAGS_OFF: SimRuntimeFlags = {
  * missing column, an unparseable env var or a database hiccup all resolve to today's behaviour, so
  * no path can enable a viewer-visible feature by accident.
  */
+export const SIM_RUNTIME_FLAGS_CACHE_MS = 10_000;
+type RuntimeFlagRow = { sim_scheduler_mode?: string | null; sim_adaptive_quality?: boolean | null; sim_boundary_sentinel?: boolean | null; sim_transition_coordinator?: boolean | null } | undefined;
+let runtimeFlagsRowCache: { at: number; row: RuntimeFlagRow } | null = null;
+/** Test seam; also called when the admin settings are written. */
+export function invalidateSimRuntimeFlagsCache(): void { runtimeFlagsRowCache = null; }
+
+/** The admin_settings row for the runtime switches, cached 10 s (the hot-path reason is in resolveRumSampleRate). */
+async function readSimRuntimeFlagsRow(): Promise<RuntimeFlagRow> {
+  const now = Date.now();
+  if (runtimeFlagsRowCache && now - runtimeFlagsRowCache.at < SIM_RUNTIME_FLAGS_CACHE_MS) return runtimeFlagsRowCache.row;
+  const row = await db.query.admin_settings.findFirst({
+    columns: {
+      sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true,
+      sim_transition_coordinator: true,
+    },
+  });
+  runtimeFlagsRowCache = { at: now, row: row ?? undefined };
+  return row ?? undefined;
+}
+
 export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
   const envMode = (process.env.SIM_SCHEDULER_MODE ?? '').trim().toLowerCase();
   const envAdaptive = (process.env.SIM_ADAPTIVE_QUALITY ?? '').trim().toLowerCase();
@@ -377,12 +397,7 @@ export async function resolveSimRuntimeFlags(): Promise<SimRuntimeFlags> {
   // reads as a third possible state that does not exist.
   let fromDb: Partial<SimRuntimeFlags>;
   try {
-    const s = await db.query.admin_settings.findFirst({
-      columns: {
-        sim_scheduler_mode: true, sim_adaptive_quality: true, sim_boundary_sentinel: true,
-        sim_transition_coordinator: true,
-      },
-    });
+    const s = await readSimRuntimeFlagsRow();
     fromDb = {
       schedulerMode: s?.sim_scheduler_mode === 'predictive' ? 'predictive' : 'off',
       adaptiveQuality: s?.sim_adaptive_quality === true,

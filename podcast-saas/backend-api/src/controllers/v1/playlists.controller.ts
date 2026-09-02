@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import { mapWithLimit } from '../../lib/mapWithLimit.js';
 import { randomUUID } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -640,7 +641,9 @@ export async function buildPlaylistPlayConfig(
   });
 
   const [configs, projectRows] = await Promise.all([
-    Promise.all(items.map((i) => buildPlayerConfig(i.project_id, viewerUserId))),
+    // Four at a time, not N: each build is 11–17 queries against a pool of ten, and one long
+    // playlist could occupy the whole pool (night run 2026-09-03 §7).
+    mapWithLimit(items, 4, (i) => buildPlayerConfig(i.project_id, viewerUserId)),
     items.length > 0
       ? db.query.projects.findMany({ where: inArray(projects.id, items.map((i) => i.project_id)) })
       : Promise.resolve([]),
