@@ -1,14 +1,14 @@
 # Open decisions
 
-**State as of 2026-08-30.** Production runs **v0.2.10** (deployed 2026-08-26). `main` carries
-**eight unreleased commits — #155 through #162**: the import gallery, the browser-suite CI wiring,
-the webkit sampling fix, the podcast status vocabulary, the contract unions, the public library
-page, and the Load-bridge fix.
+**State as of 2026-09-03.** Production runs **v0.2.11**, deployed 2026-08-30 13:07Z through the full
+pipeline (`refs/deployed/production` = `794064a` = tag `v0.2.11`), three green daily audits since.
+`main` is v0.2.11 plus docs only (#163, #164). **Nothing merged is unshipped.** A night run started
+2026-09-03 under the plan of record `NIGHT-RUN-2026-09-03.md` (indexed below); it ends with v0.3.0.
 
-**v0.2.11 was dispatched on 2026-08-26 and never deployed** — it was created 32 seconds into a
-GitHub Actions major outage (incident opened 15:11:58 UTC; the run's `updated_at` never moved off
-its `created_at`) and ended cancelled. That is why production is still on v0.2.10 with eight
-commits waiting: not a gate, not a failure, an outage.
+**The previous version of this header said v0.2.11 "was dispatched on 2026-08-26 and never
+deployed".** True when written (a GitHub Actions outage cancelled that run) and false four days
+later: it was re-dispatched on 08-30 and deployed. The header is corrected here, and the rule it
+keeps re-teaching stands — a state sentence names the moment it describes, and a release updates it.
 
 An earlier version of this paragraph said "nothing sits merged-and-unshipped", written minutes
 before #158 and #159 merged. It was true when typed and false within the hour, which is the same
@@ -43,6 +43,43 @@ closed rounds belong rather than in an ever-growing archive file. The verificati
 Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit closed its findings.
 
 ---
+
+## 📋 NIGHT RUN 2026-09-03 — plan of record, rulings, and PR index
+
+**The plan:** `.claude/review/NIGHT-RUN-2026-09-03.md` — seven owner-ordered items (branch
+hygiene, open rulings, vertical video, podcast car mode, the "?" help, import gallery + posters +
+library speed, the storage/scale decision), each with design, files, acceptance and tests, ending in
+release v0.3.0. Read it before touching any of those areas; this entry is only the index.
+
+**Housekeeping (done, verified against GitHub):** #163 squash-merged, #164 merged after taking
+`main` into it; every other remote branch proven fully in `main` by `git merge-tree` against the
+merged state; `backup/audio-landing-orig` and `recovery/P7-stash-2026-08-04` archived as
+`archive/*` tags and deleted (their content re-landed via #78/#79/#139 and migration 081
+respectively); merged branches deleted; four stale worktrees pruned. Also recorded here because it
+was missing: **PR #161** (2026-08-30, `794064a`) gave the public library page sim-poster banners,
+keyword search and a full-width responsive grid — its reasoning lived only in the squash message.
+
+**Rulings by delegated authority (owner instruction 2026-09-03: "answer the open decisions").**
+Each takes the recommendation already recorded unless a measurement contradicted it:
+
+| # | Item | Ruling |
+|---|---|---|
+| D1 | Crop v2 — delete or implement | **Keep, guarded; closed.** It is the lever the YuNet plan (P2.8) flips; `V2_IMPLEMENTED=false` + clamp + warning + test make it inert. |
+| D2 | C1 #1 `/sim-public/*` policy | **Scoped tokens (`t/{token}/`), as recommended — its own round after this run**, together with the sim-asset cache work, or it is done twice. |
+| D3 | C1 #3 bucket cutover to proxied URLs | **Superseded.** Never proxy bytes through the VM; the plan's §7 answers the same security goal with signed URLs on a CDN-fronted zero-egress bucket. |
+| D4 | A2.3 option (1), SW kill-switch narrowing | **Not now.** Car mode keeps plain `<audio>` + Media Session; "Save for the drive" remains the explicit offline path. |
+| D5/D6 | Video dedup; revision dedup (FIX C) | Unchanged — owner-deferred / owner-declined. |
+| D7 | "Publish release job reported skipped" | **Closed by evidence:** v0.2.10 and v0.2.11 are published, not drafts. |
+| D8 | P3-A item 1, `/admin` under the app domain | Open, owner-approved, not in this run — recorded so it is not lost. |
+| D9 | Podcast plan §7 (provider, mic UX) | **Chained STT→LLM→TTS with on-device Silero VAD; realtime vendor deferred** — plan §4. |
+| D10 | `prepare` on the transaction pooler | **`prepare: false`** (Supabase docs require it for postgres-js in transaction mode). |
+
+**Policy:** only commercially-usable open source may enter the product — the allow/deny list is
+`.claude/reference/stack.md` §8, mirrored in `PROTOCOL.md` rule 8, `review-fixer` rule 9,
+`dependency-auditor` item 7 and `CLAUDE.md` §8.
+
+**PR index (appended as each opens):**
+- docs — this plan, the rulings above, the licence policy, the ledger header (`docs/night-2026-09-03-plan`).
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 
@@ -862,7 +899,7 @@ and spending them on a condition only a human can clear delays the error the ope
 while making it look transient. **Owner action if it ever fires:** free a custom-voice slot in the
 ElevenLabs workspace; no code change will help.
 
-## 🟡 CROP v2 — the recompute trap is DEFUSED in code; only the delete-vs-implement ruling remains
+## ✅ CROP v2 — RULED 2026-09-03: keep the guarded flag (it is the YuNet plan's rollout lever); the recompute trap is defused in code
 
 Found on the first real run of the field eval, 2026-08-22.
 
@@ -1336,7 +1373,7 @@ recommendation on each:
    comment reads "BOUNDED FAIL-OPEN (security-012). Ratified, not removed." This section
    previously described the OLD unbounded state — it postdated the fix and missed it.
 
-**Only #1 (sim-public scoped tokens) and #3 (bucket cutover scheduling) still need your ruling.**
+**RULED 2026-09-03 (delegated):** #1 → scoped tokens, its own round after the night run; #3 → superseded by the storage plan in `NIGHT-RUN-2026-09-03.md` §7 (no proxied-URL cutover; signed URLs on a CDN-fronted bucket). Nothing in this block waits on a ruling any more.
 
 ## 🔵 Blocked on you — materials and approvals (unchanged, restated once)
 

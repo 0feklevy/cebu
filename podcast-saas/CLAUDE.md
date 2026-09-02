@@ -231,6 +231,15 @@ browser bundle.
 - Do not start, stop or deploy anything from a development machine.
 - Local-disk storage is refused in production by an explicit guard; do not try to work around it.
 
+
+## 8. Open source: commercial-use licences only
+
+Owner ruling, 2026-09-03. Anything that ships — packages, vendored code, model weights, fonts,
+assets — must be MIT / ISC / BSD / Apache-2.0-class (full list in `../.claude/reference/stack.md` §8).
+GPL, AGPL, LGPL-linked, SSPL, BUSL, "non-commercial" or "research only" weights, and any code with
+no licence file are out. Read the LICENSE before copying a line; name every new dependency and its
+licence in the PR body; when unsure, leave it out and say so.
+
 ---
 
 *Deeper detail — the subsystem map, review protocol and known-sensitive areas — lives in
