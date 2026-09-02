@@ -208,3 +208,36 @@ registered project-wide in `.claude/settings.json`). The read-only policy lives 
 frontmatter, and frontmatter hooks do not execute in an untrusted or non-interactive workspace — so
 in a headless run `Edit` is not blocked for reviewers. **These rules bind you regardless of whether
 anything is enforcing them.** See *What is actually guaranteed* in `.claude/review/PROTOCOL.md`.
+
+---
+
+## 8. Open-source and third-party code policy (binding — owner ruling 2026-09-03)
+
+Every agent that writes, recommends, vendors, or reviews code, models, fonts or other assets is bound
+by this, whether or not any hook enforces it. Written after the owner's instruction that only code
+permitted for commercial use may enter the product.
+
+**Allowed in shipped code, model weights, and assets:** MIT, ISC, BSD-2-Clause, BSD-3-Clause,
+Apache-2.0, 0BSD, Unlicense, CC0, Zlib, PostgreSQL, MPL-2.0 (file-level copyleft: unmodified files
+only, licence notice kept), CC-BY-4.0 for assets with the attribution actually rendered.
+
+**Forbidden in anything we ship, bundle, or run in production:** GPL-2.0/3.0, AGPL, LGPL (unless used
+as a separate, unmodified, dynamically-linked component — ask first), SSPL, BUSL and every other
+"source-available" licence, Commons Clause, Elastic License, CC-BY-NC / CC-BY-ND, model weights
+marked "research only" or "non-commercial", and any repository, gist, or snippet with **no licence
+file at all** (no licence means all rights reserved). Named traps already met in this repo:
+Ultralytics YOLOv8 (AGPL), InsightFace/SCRFD pretrained weights (non-commercial). A GPL ffmpeg
+build is acceptable only as a separate process invoked by path, never linked or bundled.
+
+**Rules of conduct:**
+1. Read the LICENSE (and the model card, for weights) before copying a single line or file.
+2. Record every new package, model, font or asset **and its licence** in the PR body.
+3. Never vendor code without its licence text placed beside it.
+4. A snippet from a blog, forum, or answer site is used only if it is trivially re-derivable
+   (an API call in its documented form); anything with design in it is rewritten, not copied.
+5. When unsure, do not use it, and say so in the finding or the PR.
+6. `dependency-auditor` checks the lockfile against this list; every other agent checks what it
+   itself introduces. A violation is a P1 finding, category `licence`.
+
+Verified 2026-09-03 for the podcast car-mode work: `@ricky0123/vad-web` 0.0.30 (ISC),
+`onnxruntime-web` 1.29.0 (MIT), Silero VAD v5 weights (MIT).

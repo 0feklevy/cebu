@@ -49,6 +49,12 @@ given.
    one genuinely must change, update every call site *and* the hand-maintained
    `shared/src/generated/client-v1.ts` — nothing regenerates it, so typecheck is your only net.
 
+9. **Commercial-use licences only.** A fix may introduce or copy code, a package, a model or an
+   asset only under MIT/ISC/BSD/Apache-2.0-class terms — the binding list is
+   `.claude/reference/stack.md` §8 (owner ruling 2026-09-03). No GPL/AGPL/SSPL/BUSL, no
+   non-commercial weights, no unlicensed snippets. Name every new dependency and its licence in
+   the fix log; when unsure, leave it out and say so.
+
 ## Procedure
 1. **Baseline, and write it down.** You cannot claim you did not regress anything without a
    before-picture:

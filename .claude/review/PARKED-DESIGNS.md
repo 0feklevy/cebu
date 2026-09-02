@@ -119,6 +119,8 @@ anything written there is gone by the next navigation.
 Deliberately NOT offline-by-default: ~29 MB for a forty-minute lesson, and playback cannot start
 until it lands, so making it the default would trade an instant start for a wait on every listen.
 
+**RULED 2026-09-03 (delegated): not now.** The hands-free car mode (`NIGHT-RUN-2026-09-03.md` §4) keeps the plain `<audio>` element and Media Session and needs no service worker.
+
 **What is still open, and only if the owner wants it:** offline-by-DEFAULT needs option (1) —
 narrowing the kill-switch to foreign workers. That remains a real ruling about a protection added
 after an incident, and it now buys a convenience rather than the feature itself.

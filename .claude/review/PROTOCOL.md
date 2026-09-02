@@ -197,6 +197,11 @@ Write findings expecting an adversary to read them. That is the point.
    finding that rests on it inherits whatever that suite cannot see. Say which test, and say what
    would break it.
 
+8. **Only commercially-usable open source, ever.** MIT/ISC/BSD/Apache-2.0-class only; no GPL,
+   AGPL, SSPL, BUSL, non-commercial weights, or unlicensed snippets in anything that ships. The full
+   list and the rules of conduct are `.claude/reference/stack.md` §8 (owner ruling 2026-09-03).
+   A finding or a fix that introduces or recommends a violation is itself a P1 `licence` finding.
+
 If the guard blocks you, it is telling you the approach is wrong — **do not look for a way around
 it.** Record what you wanted and why, and move on. If the guard *fails* to block something on this
 list, that is a bug in the guard and a rule you must still keep: do it anyway and file it as a

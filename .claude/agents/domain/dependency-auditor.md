@@ -58,7 +58,10 @@ try to route around it.
 6. **System dependencies in the image.** The pinned static ffmpeg build and any other apt/binary
    pin in the Dockerfiles: is the version pinned (not `latest`), and does a comment record *why*?
 7. **Licences.** Anything copyleft reaching a shipped bundle or a distributed binary — most
-   relevant for ffmpeg builds and browser-bundled packages.
+   relevant for ffmpeg builds and browser-bundled packages. The binding allow/deny list is
+   `.claude/reference/stack.md` §8 (owner ruling 2026-09-03): MIT/ISC/BSD/Apache-class only; GPL,
+   AGPL, SSPL, BUSL, non-commercial weights and unlicensed code are P1 `licence` findings. Check
+   the lockfile, model files under version control, and fonts — not only `package.json`.
 8. **Supply-chain hygiene.** Dependencies pointing at a git URL or a tarball rather than the
    registry; `file:` links that will not resolve in the deploy image (note `"shared": "file:../shared"`
    in `backend-api` and confirm how the Docker build handles it).
