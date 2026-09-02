@@ -32,9 +32,10 @@ import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
 import { resolveSimulationUrl } from '../simulation/simulationUrlResolver.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
+import { projectOrientation } from 'shared/video/orientation';
 import {
   DEFAULT_PRESENTATION_CONFIG, computeConfigHash, derivePackageRevision, variantKeyFor,
-  variantParamOf,
+  variantParamOf, type SimAspectProfile,
 } from 'shared/sim/simIdentity';
 import { buildMainSegmentTimeline, resolveSectionPlacement, sortTimelineSections } from 'shared';
 import {
@@ -43,7 +44,7 @@ import {
 } from 'shared/sim/posterIdentity';
 
 import {
-  EXPORT_GRID,
+  EXPORT_GRID, exportGridFor,
   type ClipWindow, type ExportAudioWindow, type ExportPlan, type ExportSourceIdentity,
   type ExportWindow, type ImageWindow, type PosterFallbackWindow, type SimCaptureWindow,
   type VideoWindow,
@@ -313,6 +314,10 @@ export async function buildExportPlan(
 
   // ── Main timeline: created_at ASC order, cumulative offsets ──────────────────────────────────
   const mainVideos = allVideos.filter((v) => !v.is_broll);
+  // The project's orientation decides the grid AND the poster aspect below. Derived from the
+  // primary video's probed geometry; unknown geometry is landscape, as every project was.
+  const orientation = projectOrientation(allVideos);
+  const posterAspect: SimAspectProfile = orientation === 'portrait' ? 'portrait' : 'wide';
   const videoById = new Map(allVideos.map((v) => [v.id, v]));
   const imageById = new Map(imageRows.map((i) => [i.id, i]));
   const audioById = new Map(audioRows.map((a) => [a.id, a]));
@@ -418,7 +423,9 @@ export async function buildExportPlan(
       hideSelectors: uiHide ?? [],
       autoScript:    s.auto_script ?? true,
       quality: 'high',
-      aspect:  'wide',
+      // Moves in lockstep with buildPlayerConfig's poster lookup: a portrait project captures and
+      // looks up 'portrait' posters, so the export and the viewer name the same identity.
+      aspect:  posterAspect,
     });
     const packageRevision = packageRevisionOf(s.simulation_id, s.simulation_url);
     if (!s.simulation_id || !packageRevision) return { configHash, posterKey: null };
@@ -426,7 +433,7 @@ export async function buildExportPlan(
       packageRevision,
       variantKey: variantKeyFor(s),
       configHash,
-      aspectProfile:  'wide',
+      aspectProfile:  posterAspect,
       qualityProfile: 'high',
     };
     const row = postersByIdentity.get(`${s.simulation_id}|${posterIdentityString(key)}`);
@@ -697,7 +704,7 @@ export async function buildExportPlan(
     // Frozen with the plan: the profile this export was described and consented to under.
     rendererProfile: (process.env.EXPORT_CAPTURE_RENDERER?.trim() === 'hardware' ? 'hardware' : 'swiftshader') as 'swiftshader' | 'hardware',
     projectId,
-    grid: EXPORT_GRID,
+    grid: exportGridFor(orientation),
     timeline,
     audio,
     sources,

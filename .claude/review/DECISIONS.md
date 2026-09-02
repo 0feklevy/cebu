@@ -80,6 +80,7 @@ Each takes the recommendation already recorded unless a measurement contradicted
 
 **PR index (appended as each opens):**
 - docs — this plan, the rulings above, the licence policy, the ledger header (`docs/night-2026-09-03-plan`).
+- §3 vertical video — migration 082 (`video_files.width/height`, displayed geometry), one derived `orientation`, portrait HLS ladder, portrait export grid, crop skipped for portrait sources, editor preview + filmstrip cell + settings + lesson page follow the frame, library/playlist tiles contain a portrait banner, portrait poster identity, b-roll/thumbnail/sim-prompt follow orientation, backfill script; real-ffmpeg portrait cases in both real-encode suites (`feat/vertical-video`).
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 

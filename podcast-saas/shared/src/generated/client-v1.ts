@@ -399,6 +399,9 @@ export interface VideoFile {
   /** `videoFileStatusEnum`, a real Postgres enum — as closed as `hls_status` two lines below. */
   status: VideoFileStatus;
   duration_sec: number | null;
+  /** Displayed geometry (082): rotation + SAR applied. Null until probed — read as landscape. */
+  width: number | null;
+  height: number | null;
   hls_status: 'pending' | 'processing' | 'ready' | 'failed';
   hls_master_key: string | null;
   hls_error: string | null;
@@ -1336,7 +1339,7 @@ export class ClientV1Api {
 
   confirmVideoUpload(
     projectId: string,
-    body: { storage_key: string; filename: string; file_size: number; replace_video_id?: string; duration_sec?: number },
+    body: { storage_key: string; filename: string; file_size: number; replace_video_id?: string; duration_sec?: number; width?: number; height?: number },
   ): Promise<VideoFile> {
     return this.request(`/api/v1/projects/${projectId}/videos/confirm`, { method: 'POST', body });
   }
@@ -1367,6 +1370,8 @@ export class ClientV1Api {
       parts: { partNumber: number; etag: string }[];
       replace_video_id?: string;
       duration_sec?: number;
+      width?: number;
+      height?: number;
     },
   ): Promise<VideoFile> {
     return this.request(`/api/v1/projects/${projectId}/videos/upload/multipart/complete`, { method: 'POST', body });

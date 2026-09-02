@@ -47,6 +47,11 @@ let fx: {
   avgFrameRate: string;
   rFrameRate: string;
   duration: string;
+  /** Coded geometry the fake ffprobe reports for the SOURCE; undefined = the stream names none. */
+  width?: number;
+  height?: number;
+  rotation?: number;
+  sar?: string;
   profiles: Record<string, { profile: string; level: number }>;
   keyframe: Record<string, number>;         // first-frame key_frame per tier, default 1
   extinfs: Record<string, string[]>;        // playlist EXTINF durations per tier
@@ -84,7 +89,11 @@ function probePayload(args: string[]): unknown {
   if (args.includes('-show_format')) {
     return {
       format: { duration: fx.duration },
-      streams: [{ avg_frame_rate: fx.avgFrameRate, r_frame_rate: fx.rFrameRate }],
+      streams: [{
+        avg_frame_rate: fx.avgFrameRate, r_frame_rate: fx.rFrameRate,
+        ...(fx.width ? { width: fx.width, height: fx.height, sample_aspect_ratio: fx.sar ?? '1:1' } : {}),
+        ...(fx.rotation !== undefined ? { side_data_list: [{ rotation: fx.rotation }] } : {}),
+      }],
     };
   }
   if (args.includes('-show_streams')) {
@@ -164,7 +173,7 @@ const uploadedKeys = () => h.upload.mock.calls.map((c) => c[0] as string);
 describe('transcodeToHLS (fake ffmpeg/ffprobe)', () => {
   it('uploads the whole versioned run tree with the immutable Cache-Control, master included', async () => {
     const result = await run();
-    expect(result).toEqual({ masterKey: `${PREFIX}/master.m3u8`, durationSec: 10 });
+    expect(result).toEqual({ masterKey: `${PREFIX}/master.m3u8`, durationSec: 10, width: null, height: null, orientation: 'landscape' });
 
     // 4 tiers × (3 segments + index.m3u8) + master = 17 objects.
     expect(h.upload).toHaveBeenCalledTimes(17);
@@ -259,4 +268,44 @@ describe('transcodeToHLS (fake ffmpeg/ffprobe)', () => {
       'start:1080p', `done:1080p:${PREFIX}/1080p/index.m3u8`,
     ]);
   });
+
+  // ── Portrait sources (night run 2026-09-03 §3) ───────────────────────────────────────────
+  it('a 1080×1920 source gets the PORTRAIT ladder: portrait RESOLUTIONs in the master, portrait fit boxes in every encode', async () => {
+    fx.width = 1080; fx.height = 1920;
+    const result = await run();
+    expect(result).toEqual({ masterKey: `${PREFIX}/master.m3u8`, durationSec: 10, width: 1080, height: 1920, orientation: 'portrait' });
+    const masterCall = h.upload.mock.calls.find((c) => c[0] === `${PREFIX}/master.m3u8`)!;
+    const master = (masterCall[1] as Buffer).toString('utf8');
+    expect(master.split('\n').filter((l) => l.startsWith('#EXT-X-STREAM-INF'))).toEqual([
+      '#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=360x640,CODECS="avc1.42e01e,mp4a.40.2"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=480x854,CODECS="avc1.4d401f,mp4a.40.2"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=3200000,RESOLUTION=720x1280,CODECS="avc1.4d401f,mp4a.40.2"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1080x1920,CODECS="avc1.640028,mp4a.40.2"',
+    ]);
+    const ffmpegCalls = h.spawn.mock.calls.filter((c) => c[0] === 'ffmpeg').map((c) => c[1] as string[]);
+    expect(ffmpegCalls.map((a) => a[a.indexOf('-vf') + 1])).toEqual([
+      expect.stringContaining('pad=360:640:'),
+      expect.stringContaining('pad=480:854:'),
+      expect.stringContaining('pad=720:1280:'),
+      expect.stringContaining('pad=1080:1920:'),
+    ]);
+    // The tier names — and so hls_current_tier / hls_360p_key — are unchanged.
+    expect(uploadedKeys()).toContain(`${PREFIX}/360p/index.m3u8`);
+    expect(uploadedKeys()).toContain(`${PREFIX}/1080p/index.m3u8`);
+  });
+
+  it('a landscape-coded phone clip with a 90° rotation tag is PORTRAIT — the tag is applied, not ignored', async () => {
+    fx.width = 1920; fx.height = 1080; fx.rotation = 90;
+    const result = await run();
+    expect(result).toMatchObject({ width: 1080, height: 1920, orientation: 'portrait' });
+  });
+
+  it('an anamorphic 1440×1080 SAR 4:3 source is a 1920×1080 LANDSCAPE source', async () => {
+    fx.width = 1440; fx.height = 1080; fx.sar = '4:3';
+    const result = await run();
+    expect(result).toMatchObject({ width: 1920, height: 1080, orientation: 'landscape' });
+    const masterCall = h.upload.mock.calls.find((c) => c[0] === `${PREFIX}/master.m3u8`)!;
+    expect((masterCall[1] as Buffer).toString('utf8')).toContain('RESOLUTION=1920x1080');
+  });
+
 });

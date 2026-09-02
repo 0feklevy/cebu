@@ -58,6 +58,7 @@ import { runVideoTranscode } from '../services/video/runVideoTranscode.js';
 import { enqueueJob } from '../queue/index.js';
 import { recordPublishedAnchorImpact } from '../services/timeline/placementImpact.js';
 import { logger } from '../lib/logger.js';
+import { projectOrientation } from 'shared/video/orientation';
 
 const _llmService = new LLMService(new ApiKeyService(), new UsageTrackingService());
 
@@ -278,7 +279,15 @@ export async function runVideoGenerate(
         await fencedSet(job_id, token, { status: 'submitting' });
       }
 
-      externalTaskId = await withRetry(() => svc.submit(job.model as VideoModel, prompt, job.target_duration_sec));
+      // Generated b-roll takes the PROJECT's frame (night run 2026-09-03 §3): a portrait project
+      // asks for 9:16 so the clip is not pillarboxed by the export's fit chain later.
+      const projectVideos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, job.project_id),
+        columns: { width: true, height: true, is_broll: true, created_at: true },
+      });
+      projectVideos.sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+      const orientation = projectOrientation(projectVideos);
+      externalTaskId = await withRetry(() => svc.submit(job.model as VideoModel, prompt, job.target_duration_sec, orientation));
       await fencedSet(job_id, token, { external_task_id: externalTaskId, status: 'generating' });
       logger.info({ job_id, model: job.model, externalTaskId }, 'B-roll generation submitted');
 

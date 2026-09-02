@@ -14,9 +14,10 @@
 import type OpenAI from 'openai';
 import { deleteSupersededThumbnail } from './storage/deleteSupersededThumbnail.js';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { projects } from '../db/schema.js';
+import { projects, video_files } from '../db/schema.js';
+import { projectOrientation } from 'shared/video/orientation';
 import { uploadWithFallback } from './storage/uploadWithFallback.js';
 import { MODELS } from './avatar/models.js';
 import {
@@ -105,6 +106,15 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) throw new Error('Project not found');
 
+  // The thumbnail takes the project's frame (night run 2026-09-03 §3): portrait for a portrait
+  // project, the landscape sizes every project got before 082 otherwise.
+  const projectVideos = await db.query.video_files.findMany({
+    where: eq(video_files.project_id, projectId),
+    orderBy: [asc(video_files.created_at)],
+    columns: { width: true, height: true, is_broll: true },
+  });
+  const portrait = projectOrientation(projectVideos) === 'portrait';
+
   const userId = opts.userId ?? project.created_by ?? null;
   // Image generation is the most expensive call in the app — honor the platform
   // pause switch and the per-user generation quota like every other LLM path.
@@ -144,16 +154,16 @@ export async function generateAiThumbnail(projectId: string, opts: AiThumbnailOp
     logger.warn({ err: (err as Error).message, projectId }, '[ai-thumbnail] prompt build failed — using raw info');
   }
 
-  // 3. Generate the image (landscape). gpt-image-1 first, dall-e-3 fallback.
+  // 3. Generate the image in the project's orientation. gpt-image-1 first, dall-e-3 fallback.
   const model = opts.model || MODELS.imageGeneration;
   let b64: string | undefined;
   try {
-    b64 = await genImage(openai, { model, prompt: imagePrompt.slice(0, 4000), quality: 'high', size: '1536x1024', n: 1 });
+    b64 = await genImage(openai, { model, prompt: imagePrompt.slice(0, 4000), quality: 'high', size: portrait ? '1024x1536' : '1536x1024', n: 1 });
     await recordImageUsage({ userId, projectId, model, task: 'thumbnail_image', quality: 'high' });
   } catch (genErr) {
     logger.warn({ err: (genErr as Error).message, projectId }, '[ai-thumbnail] gpt-image-1 failed — falling back to dall-e-3');
     const resp = await openai.images.generate({
-      model: 'dall-e-3', prompt: imagePrompt.slice(0, 4000), quality: 'standard', size: '1792x1024', n: 1, response_format: 'b64_json',
+      model: 'dall-e-3', prompt: imagePrompt.slice(0, 4000), quality: 'standard', size: portrait ? '1024x1792' : '1792x1024', n: 1, response_format: 'b64_json',
     });
     b64 = resp?.data?.[0]?.b64_json;
     await recordImageUsage({ userId, projectId, model: 'dall-e-3', task: 'thumbnail_image', quality: 'standard' });

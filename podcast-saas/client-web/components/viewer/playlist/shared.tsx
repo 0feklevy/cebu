@@ -68,6 +68,7 @@ export function PlaylistThumb({
   active?: boolean;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [portraitThumb, setPortraitThumb] = useState(false);
   const p = PALETTES[index % PALETTES.length];
   const isSmall = size === 'sm';
   const w = isSmall ? 108 : '100%';
@@ -105,7 +106,9 @@ export function PlaylistThumb({
           alt={title ?? ''}
           draggable={false}
           onError={() => setImageFailed(true)}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          // A portrait thumbnail (a 9:16 project, night run 2026-09-03 §3) is shown whole.
+          onLoad={(e) => setPortraitThumb(e.currentTarget.naturalHeight > e.currentTarget.naturalWidth)}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: portraitThumb ? 'contain' : 'cover' }}
         />
       ) : (
         /* Gradient fallback when thumbnail not yet generated */

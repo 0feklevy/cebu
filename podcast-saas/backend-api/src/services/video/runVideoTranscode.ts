@@ -133,6 +133,10 @@ export async function runVideoTranscode(
         hls_master_key: result.masterKey,
         hls_finished_at: new Date(),
         duration_sec: result.durationSec > 0 ? result.durationSec : video.duration_sec,
+        // The probe's displayed geometry is authoritative (migration 082); the client-seeded
+        // value from finalizeUpload only survives when ffprobe reported no dimensions at all.
+        width: result.width ?? video.width ?? null,
+        height: result.height ?? video.height ?? null,
         hls_error: null,
         waveform_peaks: waveformJson,
       })

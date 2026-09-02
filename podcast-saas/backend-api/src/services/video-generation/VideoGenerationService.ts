@@ -1,4 +1,5 @@
 import { createHmac } from 'crypto';
+import type { Orientation } from 'shared/video/orientation';
 import { pipeline } from 'stream/promises';
 import { createWriteStream } from 'fs';
 import { mkdtemp, rm } from 'fs/promises';
@@ -51,6 +52,11 @@ function makeKlingJwt(accessKey: string, secretKey: string): string {
 
 // ── VideoGenerationService ────────────────────────────────────────────────────
 
+/** The provider aspect string for a project orientation — every provider here speaks 'W:H'. */
+export function aspectRatioFor(orientation: Orientation): '16:9' | '9:16' {
+  return orientation === 'portrait' ? '9:16' : '16:9';
+}
+
 export class VideoGenerationService {
   constructor(
     private readonly storage: StorageService,
@@ -84,7 +90,7 @@ export class VideoGenerationService {
 
   // ── Kling ───────────────────────────────────────────────────────────────────
 
-  async submitKling(prompt: string, durationSec: number): Promise<string> {
+  async submitKling(prompt: string, durationSec: number, orientation: Orientation = 'landscape'): Promise<string> {
     if (!this.klingAccessKey || !this.klingSecretKey) {
       throw new Error('Kling API credentials not configured');
     }
@@ -99,7 +105,7 @@ export class VideoGenerationService {
         model_name: 'kling-v2-master',
         prompt,
         duration,
-        aspect_ratio: '16:9',
+        aspect_ratio: aspectRatioFor(orientation),
       }),
     });
     const text = await res.text();
@@ -156,7 +162,7 @@ export class VideoGenerationService {
 
   // ── Seedance ────────────────────────────────────────────────────────────────
 
-  async submitSeedance(prompt: string, durationSec: number): Promise<string> {
+  async submitSeedance(prompt: string, durationSec: number, orientation: Orientation = 'landscape'): Promise<string> {
     if (!this.seedanceKey) throw new Error('Seedance API key not configured');
     const duration = Math.min(15, Math.max(4, Math.round(durationSec)));
 
@@ -168,7 +174,7 @@ export class VideoGenerationService {
         body: JSON.stringify({
           model: 'seedance-2.0',
           content: [{ type: 'text', text: prompt }],
-          parameters: { duration, aspect_ratio: '16:9', resolution: '1080p' },
+          parameters: { duration, aspect_ratio: aspectRatioFor(orientation), resolution: '1080p' },
         }),
       },
     );
@@ -206,7 +212,7 @@ export class VideoGenerationService {
 
   // ── Veo 3 (raw fetch — SDK hardcodes predictLongRunning which Veo 3 doesn't support) ──
 
-  async submitVeo(prompt: string, durationSec: number): Promise<string> {
+  async submitVeo(prompt: string, durationSec: number, orientation: Orientation = 'landscape'): Promise<string> {
     if (!this.googleAiKey) throw new Error('Google AI key not configured');
     const duration = Math.min(8, Math.max(5, Math.round(durationSec)));
 
@@ -220,7 +226,7 @@ export class VideoGenerationService {
           parameters: {
             sampleCount: 1,
             durationSeconds: duration,
-            aspectRatio: '16:9',
+            aspectRatio: aspectRatioFor(orientation),
           },
         }),
       },
@@ -271,10 +277,15 @@ export class VideoGenerationService {
 
   // ── Unified submit / poll ───────────────────────────────────────────────────
 
-  async submit(model: VideoModel, prompt: string, durationSec: number): Promise<string> {
-    if (model === 'kling') return this.submitKling(prompt, durationSec);
-    if (model === 'seedance') return this.submitSeedance(prompt, durationSec);
-    return this.submitVeo(prompt, durationSec);
+  /**
+   * Generated b-roll follows the PROJECT's orientation (night run 2026-09-03 §3): a portrait
+   * project asks every provider for 9:16 so the clip is not pillarboxed by the export's fit chain.
+   * Landscape — the default, and what every caller passed before orientation existed — is 16:9.
+   */
+  async submit(model: VideoModel, prompt: string, durationSec: number, orientation: Orientation = 'landscape'): Promise<string> {
+    if (model === 'kling') return this.submitKling(prompt, durationSec, orientation);
+    if (model === 'seedance') return this.submitSeedance(prompt, durationSec, orientation);
+    return this.submitVeo(prompt, durationSec, orientation);
   }
 
   async poll(model: VideoModel, externalTaskId: string): Promise<GenerationResult> {

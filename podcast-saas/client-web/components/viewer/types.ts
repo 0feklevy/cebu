@@ -231,6 +231,8 @@ export interface PlayerConfig {
   title: string | null;
   description: string | null;   // emitted by buildPlayerConfig (project.topic); was undeclared (types-008)
   thumbnail_url: string | null;
+  /** 'portrait' when the primary video is taller than wide (migration 082); absent/landscape otherwise. */
+  orientation?: 'landscape' | 'portrait';
   segments: PlayerSegment[];
   broll_clips: BrollClip[];
   clip_overlays?: ClipOverlay[];

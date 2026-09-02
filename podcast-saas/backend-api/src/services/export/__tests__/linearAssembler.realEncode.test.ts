@@ -482,3 +482,39 @@ describe.runIf(ENABLED)('LinearAssembler against real ffmpeg', () => {
     expect(baseAudio.mean).toBeGreaterThan(-45);
   }, 300_000);
 });
+
+// ── Portrait grid against real ffmpeg (night run 2026-09-03 §3) ──────────────────────────────
+describe.runIf(ENABLED)('LinearAssembler on the PORTRAIT grid', () => {
+  const PORTRAIT_GRID = { w: 1080, h: 1920, fps: 30 };
+
+  it('a portrait main video assembles to a 1080×1920 High@4.0 master that passes the master gates', async () => {
+    const portraitMain = join(root, 'portrait-main.mp4');
+    await ff([
+      '-f', 'lavfi', '-i', 'testsrc2=size=1080x1920:rate=30:duration=3',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
+      portraitMain,
+    ]);
+    const plan: ResolvedAssembly = {
+      grid: { ...PORTRAIT_GRID },
+      timeline: [
+        { kind: 'video', startSec: 0, endSec: 2, sourcePath: portraitMain, sourceInSec: 0 },
+        // A LANDSCAPE b-roll dropped into a portrait export is letterboxed, never stretched.
+        { kind: 'clip', startSec: 2, endSec: 3, sourcePath: brollPath, sourceInSec: 0, brollVolume: 0.8 },
+      ],
+      audio: [{ sourcePath: portraitMain, startSec: 0, endSec: 2, sourceInSec: 0 }],
+    };
+    const work = join(root, 'work-portrait');
+    await mkdir(work, { recursive: true });
+    const { masterPath: portraitMaster } = await assembleResolved(plan, work);
+
+    const j = await probeJson(portraitMaster);
+    const v = j.streams.find((s) => s.codec_type === 'video')!;
+    expect(v).toMatchObject({ codec_name: 'h264', profile: 'High', level: 40, pix_fmt: 'yuv420p', width: 1080, height: 1920 });
+    expect(Number(v.nb_frames)).toBe(90);
+    // The same gate production runs — geometry is compared against the PLAN's grid.
+    await expect(assertMasterGates(portraitMaster, PORTRAIT_GRID, 3)).resolves.toBeDefined();
+    // And the landscape master from the main fixture would be REFUSED against the portrait grid.
+    await expect(assertMasterGates(masterPath, PORTRAIT_GRID, 14)).rejects.toMatchObject({ name: 'ExportGateError' });
+  }, 300_000);
+});

@@ -12,6 +12,7 @@ import { DubbingSettings } from './dubbing/DubbingSettings';
 import { GuidedTour, type TourStep } from './GuidedTour';
 import { TourButton } from './TourButton';
 import type { Project, VideoFile } from 'shared/src/generated/client-v1';
+import { projectOrientation } from 'shared/src/video/orientation';
 
 interface Props {
   projectId: string;
@@ -805,7 +806,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
             </div>
 
-            {/* Smart Crop */}
+            {/* Smart Crop — only for a landscape source; a portrait project IS the portrait frame and is never cropped (night run 2026-09-03 §3). */}
+            {projectOrientation(videos) !== 'portrait' && (
             <div data-tour="settings-crop" style={sectionCardStyle}>
               {sectionHead(<Crop size={16} strokeWidth={2} />, 'Smart Crop', 'Auto-follow the speaker for vertical viewing', '#f59e0b')}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
@@ -829,6 +831,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
               {cropError && <p style={{ fontSize: 12, color: '#ef4444', marginTop: 4 }}>{cropError}</p>}
             </div>
+            )}
 
             {/* Access */}
             <div data-tour="settings-access" style={sectionCardStyle}>

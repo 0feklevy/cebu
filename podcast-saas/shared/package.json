@@ -20,6 +20,11 @@
       "types": "./src/sim/*.ts",
       "import": "./dist/sim/*.js",
       "default": "./dist/sim/*.js"
+    },
+    "./video/*": {
+      "types": "./src/video/*.ts",
+      "import": "./dist/video/*.js",
+      "default": "./dist/video/*.js"
     }
   },
   "scripts": {

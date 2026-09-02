@@ -1,3 +1,4 @@
+import type { Orientation } from 'shared/video/orientation';
 /**
  * Linear video export — the shared contracts (plan doc "THE DECISION", Phase 1).
  *
@@ -31,6 +32,19 @@ export interface ExportGrid {
 }
 
 export const EXPORT_GRID: ExportGrid = { w: 1920, h: 1080, fps: 30 };
+
+/** The portrait grid — the same pixel count on its side, so level 4.0 and the cost model hold. */
+export const EXPORT_GRID_PORTRAIT: ExportGrid = { w: 1080, h: 1920, fps: 30 };
+
+/**
+ * The grid for a project's orientation (night run 2026-09-03 §3). Landscape projects keep the
+ * ruled 1920×1080@30 exactly; a portrait project — one whose primary video is taller than it is
+ * wide — exports 1080×1920@30 so nothing is cropped or pillarboxed. Everything below the plan
+ * (`ffmpegGraph`, the capture spec, the assembler gate) already reads `plan.grid`.
+ */
+export function exportGridFor(orientation: Orientation): ExportGrid {
+  return orientation === 'portrait' ? EXPORT_GRID_PORTRAIT : EXPORT_GRID;
+}
 
 // ── Timeline windows ──────────────────────────────────────────────────────────────────────────
 
