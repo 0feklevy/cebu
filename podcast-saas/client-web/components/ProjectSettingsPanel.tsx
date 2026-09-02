@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SETTINGS_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { createPortal } from 'react-dom';
 import { Crop, Film, Globe, Image as ImageIcon, Layers, Loader2, Lock, Settings, Sparkles, Type, Upload, Users } from 'lucide-react';
 import { api } from '../lib/api';
@@ -20,14 +22,7 @@ interface Props {
   onProjectChange: (p: Project) => void;
 }
 
-const SETTINGS_TOUR_STEPS: TourStep[] = [
-  { selector: '[data-tour="settings-thumbnail"]', title: 'Thumbnail',  content: 'Set the video\'s thumbnail — AI-generate one, or grab a frame from the timeline once the clip finishes processing.' },
-  { selector: '[data-tour="settings-details"]',   title: 'Title & description', content: 'Edit the title and description, or click "Generate with AI" to write them from the video\'s captions.' },
-  { selector: '[data-tour="settings-crop"]',      title: 'Smart Crop', content: 'Re-run the smart portrait crop that follows the speaker when the video is viewed vertically.' },
-  { selector: '[data-tour="settings-access"]',    title: 'Access',     content: 'Control who can see this video — private, unlisted, or public — and set a price to lock it.' },
-  { selector: '[data-tour="settings-avatar"]',    title: 'Interactive overlays', content: 'Configure the Ask-the-Avatar persona and the audio-reactive speaker circles shown during b-roll.' },
-  { selector: '[data-tour="settings-collab"]',    title: 'Collaborators', content: 'Invite people by email to co-edit this video — like GitHub collaborators, they can edit everything except deleting it.' },
-];
+const SETTINGS_TOUR_STEPS: TourStep[] = toTourSteps(SETTINGS_STEPS);
 
 export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Props) {
   const [open, setOpen] = useState(false);
@@ -565,7 +560,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             borderBottom: isCompact ? '1px solid hsl(var(--border))' : 'none',
             backgroundColor: 'hsl(var(--card))', boxSizing: 'border-box',
           }}>
-            <div data-tour="settings-thumbnail" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-thumbnail')} style={sectionCardStyle}>
               {sectionHead(<ImageIcon size={16} strokeWidth={2} />, 'Thumbnail', 'The cover image viewers see first', '#6366f1')}
 
             {/* Preview */}
@@ -711,7 +706,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             )}
             </div>
 
-            <div data-tour="settings-avatar" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-avatar')} style={sectionCardStyle}>
               {sectionHead(<Layers size={16} strokeWidth={2} />, 'Interactive overlays', 'Avatar Q&A and audio-reactive circles', '#a855f7')}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 <button onClick={() => setPage('avatar')} style={settingsActionCard('#4338ca', 'rgba(99,102,241,0.1)', 'rgba(168,85,247,0.05)')}>
@@ -733,7 +728,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
             </div>
 
-            <div data-tour="settings-dubbing" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-dubbing')} style={sectionCardStyle}>
               {sectionHead(<Globe size={16} strokeWidth={2} />, 'Languages', 'Dub this video into other languages', '#0ea5e9')}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 <button onClick={() => setPage('dubbing')} style={settingsActionCard('#0369a1', 'rgba(14,165,233,0.1)', 'rgba(59,130,246,0.05)')}>
@@ -763,7 +758,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
           }}>
 
             {/* Details */}
-            <div data-tour="settings-details" style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
+            <div {...tourAnchor('settings-details')} style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
               {sectionHead(<Type size={16} strokeWidth={2} />, 'Details', 'Title & description for SEO and sharing', '#0ea5e9')}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
@@ -808,7 +803,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
 
             {/* Smart Crop — only for a landscape source; a portrait project IS the portrait frame and is never cropped (night run 2026-09-03 §3). */}
             {projectOrientation(videos) !== 'portrait' && (
-            <div data-tour="settings-crop" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-crop')} style={sectionCardStyle}>
               {sectionHead(<Crop size={16} strokeWidth={2} />, 'Smart Crop', 'Auto-follow the speaker for vertical viewing', '#f59e0b')}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
                 <button
@@ -834,7 +829,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             )}
 
             {/* Access */}
-            <div data-tour="settings-access" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-access')} style={sectionCardStyle}>
               {sectionHead(<Lock size={16} strokeWidth={2} />, 'Access', 'Who can watch, and the unlock price', '#10b981')}
               <div style={{ marginBottom: 14 }}>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', marginBottom: 6 }}>
@@ -858,7 +853,7 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
 
             {/* Collaboration */}
-            <div data-tour="settings-collab" style={sectionCardStyle}>
+            <div {...tourAnchor('settings-collab')} style={sectionCardStyle}>
               {sectionHead(<Users size={16} strokeWidth={2} />, 'Collaborators', 'Invite people by email to edit this video with you', '#8b5cf6')}
               <CollaboratorsSection contentType="project" contentId={projectId} />
             </div>

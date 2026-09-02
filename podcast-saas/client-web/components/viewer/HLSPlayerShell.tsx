@@ -18,6 +18,7 @@ import {
 } from '../../lib/sim/browserFloor';
 import { simTelemetry } from '../../lib/simTelemetry';
 import { ControlsBar, type CaptionStyle } from './ControlsBar';
+import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { ImageOverlay } from '../ImageOverlay';
 import { AvatarCirclesOverlay } from './AvatarCirclesOverlay';
 import { ChoiceOverlay } from './ChoiceOverlay';
@@ -755,6 +756,10 @@ export function HLSPlayerShell({
           onMouseMove={actions.revealControls}
         />
       )}
+
+      {/* The viewer's keys, on ? (night run 2026-09-03 §5). */}
+
+      <ShortcutsOverlay />
 
       <ControlsBar
         playing={state.playing}

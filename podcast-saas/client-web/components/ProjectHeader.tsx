@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { tourAnchor } from '@/lib/tours/anchors';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { ArrowLeft, Check, Copy, ExternalLink, Eye, Film, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
@@ -195,6 +196,7 @@ export function ProjectHeader({ projectId }: Props) {
         <button
           type="button"
           aria-label="Export video"
+          {...tourAnchor('export')}
           onClick={handleExportClick}
           disabled={noVideos}
           title={noVideos ? 'Add a video first to export' : undefined}
@@ -216,7 +218,7 @@ export function ProjectHeader({ projectId }: Props) {
       </div>
 
       <a
-        data-tour="preview"
+        {...tourAnchor('preview')}
         href={noVideos ? undefined : `/projects/${projectId}/view`}
         target="_blank"
         rel="noopener noreferrer"
@@ -361,16 +363,18 @@ export function ProjectHeader({ projectId }: Props) {
                   </p>
                 </>
               ) : (
-                <PermalinkEditor
-                  contentType="project"
-                  contentId={projectId}
-                  hideTitle
-                  visibility={project?.visibility ?? 'private'}
-                  onMakePublic={async () => {
-                    await api.setProjectVisibility(projectId, 'public');
-                    setProject(prev => (prev ? { ...prev, visibility: 'public' } : prev));
-                  }}
-                />
+                <div {...tourAnchor('share')}>
+                  <PermalinkEditor
+                    contentType="project"
+                    contentId={projectId}
+                    hideTitle
+                    visibility={project?.visibility ?? 'private'}
+                    onMakePublic={async () => {
+                      await api.setProjectVisibility(projectId, 'public');
+                      setProject(prev => (prev ? { ...prev, visibility: 'public' } : prev));
+                    }}
+                  />
+                </div>
               )}
             </div>
 
