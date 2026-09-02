@@ -128,6 +128,17 @@ const SNAP_THRESHOLD = 0.12;
  * @param target   the keyframe value for this instant
  * @param dtMs     elapsed wall-clock since the previous tick (0 on the first)
  */
+/**
+ * A PORTRAIT source is never cropped (night run 2026-09-03 §3): the crop track is a landscape→9:16
+ * reframing, and `object-fit: cover` on a source that is already taller than wide cuts the top
+ * and bottom off. Read from the element's own displayed size, so it holds even if a server ever
+ * hands out a crop_url for a portrait project by mistake. Unknown (0) dimensions are landscape,
+ * which is what the player assumed for every video before geometry existed.
+ */
+export function isPortraitSource(videoWidth: number, videoHeight: number): boolean {
+  return videoHeight > 0 && videoWidth > 0 && videoHeight > videoWidth;
+}
+
 export function nextCropX(current: number | null, target: number, dtMs: number): number {
   // First frame of a segment: adopt. A segment change is a cut, and starting from frame-centre
   // made every boundary begin with a visible pan to wherever the speaker actually is.
@@ -283,7 +294,7 @@ export function useCropOverlay(
       // A portrait SOURCE is never cropped (night run 2026-09-03 §3). The server already withholds
       // crop_url for portrait projects; this guard is the belt to that brace, reading the element's
       // own displayed size so a portrait video on a portrait phone keeps every pixel it has.
-      if (vH > vW) {
+      if (isPortraitSource(active.videoWidth, active.videoHeight)) {
         for (const v of [vA, vB]) {
           if (v.style.objectFit)       v.style.objectFit       = '';
           if (v.style.objectPosition)  v.style.objectPosition  = '';

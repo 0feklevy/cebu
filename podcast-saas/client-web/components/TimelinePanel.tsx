@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import { FILMSTRIP_FRAME_H, FILMSTRIP_FRAME_W, filmstripCellWidth } from '@/lib/filmstrip';
 import { createPortal } from 'react-dom';
 import { CircleDot, Flag, Loader2, Music, Plus, Trash2, Volume2, X } from 'lucide-react';
 import type { VideoFile, TimelineSection, TimelineMarker, Simulation, ImageFile, AudioFile } from 'shared/src/generated/client-v1';
@@ -19,8 +20,8 @@ const VIDEO_TRACK_H  = 52;
 const AUDIO_TRACK_H  = 22;   // A1 original track
 const RULER_H        = 24;
 const LABEL_W        = 110;
-const FRAME_W        = 80;
-const FRAME_H        = 45;
+const FRAME_W        = FILMSTRIP_FRAME_W;   // the widest cell: a 16:9 frame at FRAME_H
+const FRAME_H        = FILMSTRIP_FRAME_H;
 const FRAMES_COUNT   = 20;
 const WAVEFORM_PEAKS = 200;
 const SCROLLBAR_H    = 12;
@@ -221,7 +222,7 @@ function useVideoFrames(url: string | null, duration: number, enabled: boolean) 
     vid.muted = true;
     vid.playsInline = true;
     const canvas = document.createElement('canvas');
-    canvas.width = FRAME_W; canvas.height = FRAME_H;
+    canvas.width = FRAME_W; canvas.height = FRAME_H;   // resized to the frame's shape on first metadata
     const ctx = canvas.getContext('2d')!;
     const captured: string[] = [];
     let i = 0;
@@ -234,16 +235,19 @@ function useVideoFrames(url: string | null, duration: number, enabled: boolean) 
     const onSeeked = () => {
       if (aborted) return;
       try {
-        // Fit the frame into the cell instead of stretching it: a portrait source used to be
-        // squashed to a third of its width in every thumbnail (night run 2026-09-03 §3).
+        // The cell takes the frame's shape (a portrait clip gets a 26×45 cell, not an 80×45 one
+        // with bars) and the frame is fitted into it, never stretched: a portrait source used to
+        // be squashed to a third of its width in every thumbnail (night run 2026-09-03 §3).
         const vw = vid.videoWidth || FRAME_W;
         const vh = vid.videoHeight || FRAME_H;
-        const scale = Math.min(FRAME_W / vw, FRAME_H / vh);
+        const cellW = filmstripCellWidth(vw, vh);
+        if (canvas.width !== cellW) canvas.width = cellW;
+        const scale = Math.min(cellW / vw, FRAME_H / vh);
         const dw = Math.max(1, Math.round(vw * scale));
         const dh = Math.max(1, Math.round(vh * scale));
         ctx.fillStyle = '#0f172a';
-        ctx.fillRect(0, 0, FRAME_W, FRAME_H);
-        ctx.drawImage(vid, Math.round((FRAME_W - dw) / 2), Math.round((FRAME_H - dh) / 2), dw, dh);
+        ctx.fillRect(0, 0, cellW, FRAME_H);
+        ctx.drawImage(vid, Math.round((cellW - dw) / 2), Math.round((FRAME_H - dh) / 2), dw, dh);
         captured.push(canvas.toDataURL('image/jpeg', 0.6));
       }
       catch { captured.push(''); }

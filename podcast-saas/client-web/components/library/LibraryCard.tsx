@@ -77,6 +77,7 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
   // A material whose bytes have gone (deleted image, moved object) falls back to the gradient
   // rather than showing a broken-image glyph. The server already dropped anything unresolvable.
   const [imageFailed, setImageFailed] = useState(false);
+  const [portraitBanner, setPortraitBanner] = useState(false);
   // The tile's still picture: an image IS its own picture; a simulation or video rides on the
   // stored artifact the backend re-emitted as `bannerUrl` (sim poster / video-derived thumbnail).
   // Nothing is captured for this tile — no bannerUrl, no picture, gradient.
@@ -102,6 +103,9 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
             loading={eager ? 'eager' : 'lazy'}
             decoding="async"
             onError={() => setImageFailed(true)}
+            // A portrait poster (a 9:16 project's simulation, night run 2026-09-03 §3) is shown
+            // whole inside the 16:9 tile rather than having its top and bottom cut off.
+            onLoad={(e) => setPortraitBanner(e.currentTarget.naturalHeight > e.currentTarget.naturalWidth)}
             // The stored crop fractions map the chosen region onto the whole tile — the same
             // arithmetic `ImageOverlay.tsx` uses, so a tile and the editor agree on the framing.
             // Only images carry a crop; a poster or thumbnail arrives already framed.
@@ -113,7 +117,7 @@ export function LibraryCard({ material, eager = false, onOpen, buttonRef }: Prop
               top:    `${(-material.crop.y / (material.crop.h || 1)) * 100}%`,
               objectFit: 'fill',
               display: 'block',
-            } : { width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            } : { width: '100%', height: '100%', objectFit: portraitBanner ? 'contain' : 'cover', display: 'block' }}
           />
         ) : (
           <span className="absolute inset-0 flex items-center justify-center text-primary-foreground/90">
