@@ -82,3 +82,21 @@ variants of the same standing property, both non-blocking once re-verified:
   historical. Lesson for a pre-ship SHIP/DO-NOT-SHIP call specifically: poll `gh pr checks <n>` to
   completion (this gate reliably takes ~15-16 min) before issuing the verdict, don't snapshot a
   pending check as a blocker.
+
+**Fifth confirmed occurrence, 2026-09-03 (§2/§3 of `NEXT-PHASE-2026-09-03.md`, PRs #174/#175).**
+A new flavor: the audit itself found the live-red state, not a stale doc. `gh pr checks 175` showed
+"Release verification gate" FAIL; the job log pinpointed `raiseHand.test.tsx` broken by the new
+mount-time `listCreatorReplies` fetch in `AudioEditionPlayer.tsx` racing the test's shared mocked
+`fetch` (order-dependent — failed on the first local repro, then passed 20+ consecutive local
+reruns, an honest flake tied to effect-scheduling timing under load, not a fluke to dismiss). Within
+~6 minutes a new commit (`b01932f`, co-authored by an agent) landed on the SAME open PR fixing
+exactly that gap by scoping the mock; CI went green (17m44s), and the PR merged mid-session. Two
+mechanical notes this occurrence adds: (1) the shared primary checkout's branch changed THREE times
+during this one audit (`feat/listener-inbox` → `feat/publish-playlist-as-course` →
+`ops/storage-reconcile`) — a background `git checkout`/mutating command issued against the primary
+repo can get silently blocked by the permission classifier since the repo is read-only for this
+role; use `git worktree add --detach <scratchpad-path> origin/<branch>` instead, and remove it after
+(`git worktree remove --force`). (2) A background test run kicked off against the primary checkout
+before a branch-switch can silently execute against the WRONG tree and produce unrelated failures
+(ENOENT on a migration file that exists on the intended branch) — always pin background test runs to
+a ref-stable worktree, not the shared primary checkout, when the session might run long.
