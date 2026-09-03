@@ -47,6 +47,7 @@ describe('answerVoiceQuestion', () => {
     expect(d.ask).toHaveBeenCalledWith({
       projectId: 'proj-1', language: 'en', positionMs: 83_000,
       question: 'why do the birds turn together', intent: 'answer', userId: null,
+      source: 'voice',
     });
     expect(d.recordStt).toHaveBeenCalledWith(expect.objectContaining({ task: 'listener_voice_question', durationSec: 3.2, projectId: 'proj-1' }));
     expect(d.recordTts).toHaveBeenCalledWith(expect.objectContaining({ task: 'listener_voice_answer', characters: 'Each bird follows its neighbours.'.length }));
