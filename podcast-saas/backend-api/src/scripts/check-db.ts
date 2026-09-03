@@ -99,7 +99,6 @@ const MIGRATION_FILES = [
   '080_sim_files.sql',
   '081_sim_revision_proof_states.sql',
   '082_video_dimensions.sql',
-  '083_listener_question_replies.sql',
 ];
 
 type Row = Record<string, unknown>;

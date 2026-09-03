@@ -14,11 +14,11 @@ import {
   type AudioChapter,
   type AudioEditionView,
   type VoiceQuestionResponse,
-  CreatorRepliesResponseSchema, type CreatorReply } from 'shared/src/audio/listener';
+} from 'shared/src/audio/listener';
 
 export {
-  AskQuestionResponseSchema, AudioEditionViewSchema, VoiceQuestionResponseSchema, CreatorRepliesResponseSchema,
-  type AskQuestionResponse, type AudioChapter, type AudioEditionView, type VoiceQuestionResponse, type CreatorReply,
+  AskQuestionResponseSchema, AudioEditionViewSchema, VoiceQuestionResponseSchema,
+  type AskQuestionResponse, type AudioChapter, type AudioEditionView, type VoiceQuestionResponse,
 };
 
 const BACKEND =
@@ -186,23 +186,5 @@ export async function askVoiceQuestion(
     return parsed.success ? parsed.data : refusedVoice('Could not read the answer.');
   } catch {
     return refusedVoice('You appear to be offline — your question was not sent.');
-  }
-}
-
-// ── The creator's replies (migration 083) ───────────────────────────────────────────────────
-
-/**
- * What the creator wrote back, for this episode and language — shown on the progress bar and in
- * a sheet. A failure is an empty list: the episode plays whether or not the replies load.
- */
-export async function listCreatorReplies(slug: string, language?: string | null): Promise<CreatorReply[]> {
-  try {
-    const qs = language ? `?language=${encodeURIComponent(language)}` : '';
-    const res = await fetch(`${BACKEND}/api/v1/public/audio/${encodeURIComponent(slug)}/replies${qs}`);
-    if (!res.ok) return [];
-    const parsed = CreatorRepliesResponseSchema.safeParse(await res.json());
-    return parsed.success ? parsed.data.replies : [];
-  } catch {
-    return [];
   }
 }

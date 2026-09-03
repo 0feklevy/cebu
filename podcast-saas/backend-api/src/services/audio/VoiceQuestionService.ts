@@ -139,7 +139,6 @@ export async function answerVoiceQuestion(
     question: heard.text,
     intent: 'answer',
     userId: input.userId ?? null,
-    source: 'voice',
   });
   if (asked.status !== 'answered' || !asked.answer) {
     return {

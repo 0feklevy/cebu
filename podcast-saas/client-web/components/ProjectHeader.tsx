@@ -1,12 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tourAnchor } from '@/lib/tours/anchors';
-import { ListenerInboxDialog } from './ListenerInboxDialog';
-import type { ListenerQuestionSummary } from 'shared/src/generated/client-v1';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, Film, Globe, Link2, Loader2, Lock, Share2, Unlink2, X, MessageSquare } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, Film, Globe, Link2, Loader2, Lock, Share2, Unlink2, X } from 'lucide-react';
 import { TourButton } from './TourButton';
 import { api, createShareToken, getShareToken, revokeShareToken } from '../lib/api';
 import { PermalinkEditor } from './PermalinkEditor';
@@ -121,14 +119,6 @@ export function ProjectHeader({ projectId }: Props) {
   // Only disable Preview/Share when the timeline has no main clip (fresh project). Once any main
   // video exists they're enabled — regardless of project.status, which lingers at 'draft'.
   const noVideos = !hasMainVideo;
-
-  // The listener-question inbox (owner ruling 2026-09-03): a button with the unanswered count.
-  const [inboxOpen, setInboxOpen] = useState(false);
-  const [inboxSummary, setInboxSummary] = useState<ListenerQuestionSummary | null>(null);
-  const refreshInboxSummary = useCallback(() => {
-    Promise.resolve().then(() => api.getListenerQuestionSummary(projectId)).then(setInboxSummary).catch(() => {});
-  }, [projectId]);
-  useEffect(() => { refreshInboxSummary(); }, [refreshInboxSummary]);
   const rawTitle    = project?.title ?? project?.topic ?? '';
   const title       = rawTitle.length > 60 ? rawTitle.slice(0, 60) + '…' : rawTitle;
   const shareUrl    = shareToken && typeof window !== 'undefined' ? `${window.location.origin}/v/${shareToken}` : null;
@@ -242,24 +232,6 @@ export function ProjectHeader({ projectId }: Props) {
         <Eye size={13} strokeWidth={1.8} aria-hidden />
         <span className="hidden min-[390px]:inline">Preview</span>
       </a>
-
-      <button
-        type="button"
-        onClick={() => setInboxOpen(true)}
-        title="Listener questions from the podcast"
-        aria-label={inboxSummary && inboxSummary.unanswered > 0 ? `Listener questions, ${inboxSummary.unanswered} unanswered` : 'Listener questions'}
-        className="relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium shell-muted transition-colors focus-ring shell-hover hover:text-[hsl(var(--shell-foreground))] sm:px-3"
-        style={{ borderColor: 'hsl(var(--shell-border))' }}
-      >
-        <MessageSquare size={13} strokeWidth={1.8} aria-hidden />
-        <span className="hidden min-[390px]:inline">Questions</span>
-        {inboxSummary && inboxSummary.unanswered > 0 && (
-          <span aria-hidden className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
-            {inboxSummary.unanswered > 99 ? '99+' : inboxSummary.unanswered}
-          </span>
-        )}
-      </button>
-      <ListenerInboxDialog projectId={projectId} open={inboxOpen} onClose={() => setInboxOpen(false)} onChanged={refreshInboxSummary} />
 
       <TourButton
         onClick={() => window.dispatchEvent(new Event('editor:start-tour'))}

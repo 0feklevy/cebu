@@ -56,17 +56,3 @@ export type VoiceQuestionResponse = z.infer<typeof VoiceQuestionResponseSchema>;
 export const VOICE_QUESTION_MAX_BYTES = 2 * 1024 * 1024;
 /** The longest utterance the loop will send. Longer than this and the listener is dictating, not asking. */
 export const VOICE_QUESTION_MAX_SECONDS = 30;
-
-// ── The creator's replies, as the public audio page reads them (migration 083) ────────────────
-
-export const CreatorReplySchema = z.object({
-  id: z.string(),
-  position_ms: z.number().int().nonnegative(),
-  question: z.string(),
-  reply: z.string(),
-  replied_at: z.string(),
-});
-export type CreatorReply = z.infer<typeof CreatorReplySchema>;
-
-export const CreatorRepliesResponseSchema = z.object({ replies: z.array(CreatorReplySchema) });
-export type CreatorRepliesResponse = z.infer<typeof CreatorRepliesResponseSchema>;
