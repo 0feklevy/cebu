@@ -126,7 +126,7 @@ describe('Supabase: the bodyless HEADs a duplication hammers', () => {
     });
 
     await expect(adapter.headObject('videos/q/main.mp4')).resolves.toEqual({
-      contentType: 'video/mp4', cacheControl: 'no-cache', size: 1234, etag: '"e"',
+      contentType: 'video/mp4', cacheControl: 'no-cache', size: 1234, etag: '"e"', lastModified: null,
     });
     expect(s3.of('HeadObject')).toHaveLength(2);
   });

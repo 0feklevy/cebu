@@ -95,6 +95,7 @@ import { registerPodcastStudioRoutes } from './controllers/v1/podcast-studio.con
 import { recoverStuckPodcastScripts } from './services/podcast/runPodcastScript.js';
 import { recoverStuckPodcastRenders } from './services/podcast/audio/runPodcastRender.js';
 import { sweepOrphanBlobsOnStartup, startBlobSweep } from './services/storage/blobSweeper.js';
+import { startMultipartAbortSweep } from './services/storage/multipartSweeper.js';
 import { startBranchEventRetentionSweep } from './services/branching/branchEventRetention.js';
 import { defaultCacheControl, isPublicReadPath, PUBLIC_READ_LIMIT_PER_MINUTE } from './lib/edgeCachePolicy.js';
 import { recoverStuckPodcastMixes } from './services/podcast/audio/runPodcastClips.js';
@@ -616,6 +617,9 @@ async function build() {
   // The orphan-blob sweeper ran ONLY at startup; a process that stays up for a month collected
   // nothing after its first minute. Every six hours now, the startup pass unchanged.
   startBlobSweep();
+  // And the multipart uploads a closed tab left open (census G9: four, 81 parts, billed and
+  // invisible to any object LIST): listed daily, aborted after a week. MULTIPART_ABORT_SWEEP=0 disables.
+  startMultipartAbortSweep();
 
   // Local upload endpoint — receives PUT from client for large video files in dev
   app.put<{ Params: { '*': string } }>(

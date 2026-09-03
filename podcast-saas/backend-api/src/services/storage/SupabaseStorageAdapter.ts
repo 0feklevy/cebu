@@ -11,10 +11,11 @@ import {
   UploadPartCommand,
   UploadPartCopyCommand,
   CompleteMultipartUploadCommand,
-  AbortMultipartUploadCommand,
+  AbortMultipartUploadCommand
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
+import { listOpenMultipartUploads } from './listMultipartUploads.js';
+import type { CompletedPart, StorageService, StoredObjectHead, MultipartUploadInfo } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject, readThenWriteCopy } from './s3Copy.js';
 import { reroot } from './prefixScope.js';
@@ -273,6 +274,10 @@ export class SupabaseStorageAdapter implements StorageService {
     );
   }
 
+  async listMultipartUploads(prefix?: string): Promise<MultipartUploadInfo[]> {
+    return this.withRetry(() => listOpenMultipartUploads((cmd) => this.client.send(cmd), this.bucket, prefix));
+  }
+
   async deleteFile(path: string): Promise<void> {
     await this.withRetry(() =>
       this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: path })),
@@ -524,6 +529,7 @@ export class SupabaseStorageAdapter implements StorageService {
           cacheControl: r.CacheControl ?? null,
           size: typeof r.ContentLength === 'number' ? r.ContentLength : null,
           etag: r.ETag ?? null,
+          lastModified: r.LastModified instanceof Date ? r.LastModified.toISOString() : null,
         };
       } catch (err) {
         if (SupabaseStorageAdapter.isMissing(err)) return null;
