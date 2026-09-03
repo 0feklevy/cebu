@@ -27,6 +27,8 @@ import { moderateGenerationInput } from '../../services/llm/ContentModerationSer
 import { AppError } from 'shared';
 import { extname } from 'path';
 import { logger } from '../../lib/logger.js';
+import { PlaylistCourseService, courseAuthUserOf } from '../../services/course/PlaylistCourseService.js';
+import { CourseAuthzError } from '../../services/course/CoursePublishingService.js';
 import {
   UPLOAD_MAX_BYTES,
   declaredTooLarge,
@@ -544,8 +546,60 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
         await tx.update(playlists).set({ updated_at: new Date() }).where(eq(playlists.id, playlist.id));
       });
 
+      // A course published from this playlist follows its items (owner ruling 2026-09-03).
+      const courseUser = courseAuthUserOf(user);
+      if (courseUser) {
+        await PlaylistCourseService.syncIfCourse(courseUser, playlist.id).catch((err) => {
+          logger.warn({ err: (err as Error)?.message?.slice(0, 200), playlistId: playlist.id }, '[playlists] course sync after items change failed');
+        });
+      }
+
       const items = await playlistItemsWithProjects(playlist.id);
       return reply.send({ ...playlist, items });
+    },
+  );
+
+  // ── Playlist → course (owner ruling 2026-09-03, priority 6) ──────────────
+  // GET: the state; POST { publish, force }: create/sync, publish when asked; DELETE: unpublish.
+  // Errors from the course services (404/403/422 with the thin lessons) pass through as they are.
+  const courseHandle = async (reply: FastifyReply, fn: () => Promise<unknown>) => {
+    try {
+      return reply.send(await fn());
+    } catch (err) {
+      if (err instanceof CourseAuthzError) {
+        return reply.code(err.statusCode).send({ message: err.message, details: (err as CourseAuthzError & { details?: unknown }).details ?? null });
+      }
+      throw err;
+    }
+  };
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/playlists/:id/course',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const courseUser = courseAuthUserOf(request.dbUser);
+      if (!courseUser) return reply.code(400).send({ message: 'User has no organization' });
+      return courseHandle(reply, () => PlaylistCourseService.state(courseUser, request.params.id));
+    },
+  );
+  app.post<{ Params: { id: string }; Body: { publish?: boolean; force?: boolean; slug?: string | null } }>(
+    '/api/v1/playlists/:id/course',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const courseUser = courseAuthUserOf(request.dbUser);
+      if (!courseUser) return reply.code(400).send({ message: 'User has no organization' });
+      return courseHandle(reply, () => PlaylistCourseService.publish(courseUser, request.params.id, {
+        publish: request.body?.publish !== false, force: request.body?.force === true,
+        slug: typeof request.body?.slug === 'string' ? request.body.slug : null,
+      }));
+    },
+  );
+  app.delete<{ Params: { id: string } }>(
+    '/api/v1/playlists/:id/course',
+    { preHandler: [firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const courseUser = courseAuthUserOf(request.dbUser);
+      if (!courseUser) return reply.code(400).send({ message: 'User has no organization' });
+      return courseHandle(reply, () => PlaylistCourseService.unpublish(courseUser, request.params.id));
     },
   );
 

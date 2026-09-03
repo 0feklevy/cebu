@@ -71,7 +71,7 @@ export const HOME_STEPS: readonly Step[] = [
   {
     anchor: 'home-playlists',
     title: 'Playlists',
-    body: 'Group public videos into a playlist: one address that plays them in order — a series, or a course of lessons. Viewers who finish one video are offered the next.',
+    body: 'Group public videos into a playlist: one address that plays them in order. Viewers who finish one video are offered the next — and “Publish as course” in the playlist editor turns the same videos into a course of lessons at /c/….',
   },
 ];
 

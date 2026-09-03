@@ -235,6 +235,10 @@ leak on delete, 4 unfinished multipart uploads with 81 parts.
 tests per family; adapter `listMultipartUploads` against the existing S3 mock; the GC's prefix list
 asserted in `projects.controller` tests; the sweep's age rule.
 
+**As shipped (#176), two names differ from the text above:** the multipart family uses the same
+`--older-than=<age>` flag as every family (there is no separate `--abort-older-than`), and the
+probe's scratch prefix is `_probe/<ts>/` (underscored, so it sorts first in a listing).
+
 **Owner steps.** Run `storage:reconcile --family=multipart` first (the 4 uploads: keys and dates),
 then each family dry-run, read the JSON, decide per family; only then `--apply`. Nothing runs
 against production from the dev machine.
