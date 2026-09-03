@@ -29,6 +29,7 @@ export class R2StorageAdapter implements StorageService {
   private readonly client: S3Client;
   private readonly bucket: string;
   private readonly publicUrl: string;
+  private readonly legacyPublicUrl: string;
 
   constructor() {
     const accountId = process.env.R2_ACCOUNT_ID;
@@ -42,7 +43,10 @@ export class R2StorageAdapter implements StorageService {
     }
 
     this.bucket = process.env.R2_BUCKET_NAME ?? 'podcast-saas';
-    this.publicUrl = process.env.R2_PUBLIC_URL ?? '';
+    // A custom domain in front of the bucket (CDN-cached, zero egress) is the public base when
+    // set; the r2.dev URL stays recognised for rows written before the domain existed.
+    this.legacyPublicUrl = (process.env.R2_PUBLIC_URL ?? '').replace(/\/+$/, '');
+    this.publicUrl = (process.env.R2_PUBLIC_BASE_URL ?? '').replace(/\/+$/, '') || this.legacyPublicUrl;
 
     this.client = new S3Client({
       region: 'auto',
@@ -339,6 +343,7 @@ export class R2StorageAdapter implements StorageService {
     return keyFromPublicUrlAgainst(url, [
       `${publicApiOrigin().replace(/\/+$/, '')}/hls-proxy`,
       this.publicUrl,
+      this.legacyPublicUrl,
     ]);
   }
 
