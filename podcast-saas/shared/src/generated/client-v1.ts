@@ -783,6 +783,22 @@ export interface GuidanceMeta {
 
 export type GuidanceStatus = 'none' | 'analyzing' | 'draft' | 'publishing' | 'ready' | 'error';
 
+// ── Playlist → course (owner ruling 2026-09-03) ───────────────────────────────────────────────
+
+export interface PlaylistCourseState {
+  course: {
+    id: string;
+    slug: string;
+    publish_state: string;
+    published_at: string | null;
+    lesson_count: number;
+    /** `/c/<slug>` — the page renders only while published. */
+    public_path: string;
+  } | null;
+  item_count: number;
+  readiness: { ready: boolean; thinLessons: Array<{ lessonSlug: string; reason: string }> } | null;
+}
+
 // ── Listener questions, the creator's view (migration 083) ────────────────────────────────────
 
 export interface ListenerQuestion {
@@ -1931,6 +1947,28 @@ export class ClientV1Api {
       method: 'PUT',
       body: { items: projectIds.map((project_id) => ({ project_id })) },
     });
+  }
+
+  // ── Playlist → course (owner ruling 2026-09-03) ──
+
+  getPlaylistCourse(playlistId: string): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`);
+  }
+
+  /** Create the course if needed, sync its lessons from the playlist, publish when `publish` is true. */
+  publishPlaylistCourse(playlistId: string, body: { publish: boolean; force?: boolean; slug?: string | null }): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'POST', body });
+  }
+
+  unpublishPlaylistCourse(playlistId: string): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'DELETE' });
+  }
+
+  /** Is this course address free? `normalized` is what the server would store. */
+  courseSlugAvailable(slug: string, excludeId?: string): Promise<{ available: boolean; normalized: string }> {
+    const q = new URLSearchParams({ slug });
+    if (excludeId) q.set('excludeId', excludeId);
+    return this.request(`/api/v1/courses/slug-available?${q.toString()}`);
   }
 
   // ── Permalinks (migration 043) ──────────────────────────────────────────
