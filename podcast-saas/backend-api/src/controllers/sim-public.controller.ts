@@ -91,9 +91,16 @@ function buildSimBootSnippet(): string {
     // overlay sat on "Loading simulation…" for load + 2.5 s). The gate is baked at publication;
     // this runs at serve time, so it reaches every stored package. Two frames after load is
     // when a document that draws at all has drawn; a gated package answers first and this stays
-    // silent (the gate's own flag is checked at fire time, not at load).
-    'try{window.addEventListener("load",function(){requestAnimationFrame(function(){requestAnimationFrame(function(){' +
-    'if(window.__SIM_RAF_GATE__)return;try{if(window.parent&&window.parent!==window)window.parent.postMessage({type:"SIM_PAINTED",fallback:1},"*")}catch(e){}' +
+    // silent. It is its OWN message type, deliberately: SIM_PAINTED means "a real frame was
+    // drawn" and the player's hold is built on that (sim-transitions spec 11 — a package that
+    // never draws must never get one). The library overlay honours both; the player keeps its
+    // contract. AND the gate is checked BEFORE any frame is scheduled: the gate wraps
+    // requestAnimationFrame and acks SIM_PAINTED on the first callback that completes, so a
+    // fallback that scheduled its own frames through the wrapper would make the gate lie about a
+    // package that never draws — exactly the false ack spec 11 exists to catch. The gate script
+    // runs at the top of <head>, so its flag is set long before `load`.
+    'try{window.addEventListener("load",function(){if(window.__SIM_RAF_GATE__)return;requestAnimationFrame(function(){requestAnimationFrame(function(){' +
+    'try{if(window.parent&&window.parent!==window)window.parent.postMessage({type:"SIM_PAINTED_FALLBACK"},"*")}catch(e){}' +
     '})})})}catch(e){}' +
     '})()</script>';
 }

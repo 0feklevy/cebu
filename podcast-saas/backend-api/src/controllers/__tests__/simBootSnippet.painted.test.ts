@@ -1,6 +1,7 @@
 /**
- * The serve-time boot snippet posts SIM_PAINTED for a package that has no rAF gate — run for real
- * in a sandbox with a fake window, not read as text.
+ * The serve-time boot snippet posts SIM_PAINTED_FALLBACK for a package that has no rAF gate — run
+ * for real in a sandbox with a fake window, not read as text. Its own type, not SIM_PAINTED: the
+ * gate's message means a real frame was drawn and the player's hold relies on that.
  *
  * Every cover that waits for the gate's first frame waited for a timer instead when the package
  * predated the gate (the library overlay: "Loading simulation…" for load + 2.5 s). The gate is
@@ -49,7 +50,7 @@ function runSnippet(opts: { gate: boolean; parentIsSelf?: boolean }): Fake {
 beforeEach(() => { resetSimBootSnippetForTest(); });
 
 describe('the boot snippet’s painted fallback', () => {
-  it('a document WITHOUT the gate posts SIM_PAINTED two frames after load', () => {
+  it('a document WITHOUT the gate posts SIM_PAINTED_FALLBACK two frames after load — never the gate’s own SIM_PAINTED', () => {
     const fake = runSnippet({ gate: false });
     expect(fake.listeners.load).toHaveLength(1);
     fake.listeners.load![0]!();
@@ -59,14 +60,13 @@ describe('the boot snippet’s painted fallback', () => {
     expect(fake.posted).toEqual([]);
     expect(fake.raf).toHaveLength(2);
     fake.raf[1]!();                     // second frame: painted
-    expect(fake.posted).toEqual([{ type: 'SIM_PAINTED', fallback: 1 }]);
+    expect(fake.posted).toEqual([{ type: 'SIM_PAINTED_FALLBACK' }]);
   });
 
-  it('a document WITH the gate stays silent — the gate posts its own, from a real frame', () => {
+  it('a document WITH the gate schedules NO frame at all — the gate wraps rAF and would ack a paint for a fallback frame', () => {
     const fake = runSnippet({ gate: true });
     fake.listeners.load![0]!();
-    fake.raf[0]!();
-    fake.raf[1]!();
+    expect(fake.raf).toHaveLength(0);
     expect(fake.posted).toEqual([]);
   });
 
