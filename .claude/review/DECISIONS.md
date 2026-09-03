@@ -1,15 +1,17 @@
 # Open decisions
 
-**State as of 2026-09-03 (evening).** Production runs **v0.5.0**, dispatched by the owner 17:49Z
-(`refs/deployed/production` = `5b7d933`) — every PR through #185: the night run, the next phase,
-the v0.3.0 layout fix, the Questions removal, Tap to ask interactive, the portable-setup panel, and
-its own UX follow-ups. Release dispatch changed hands the same evening — see the standing
-constraints below.
+**State as of 2026-09-03 (night).** Production runs **v0.5.1**, deployed 21:04Z
+(`refs/deployed/production` = `fe0139c`) — every PR through #187: the night run, the next phase,
+the v0.3.0 layout fix, the Questions removal, Tap to ask interactive, the portable-setup panel, its
+own UX follow-ups, and the CORS hotfix below. Release dispatch changed hands the same evening —
+see the standing constraints below. This was the first release dispatched under that change, and
+it taught a second lesson the same night: dispatch and deploy **approval** are different
+authorities, and a risk-gated file (`publicOrigins.ts`) correctly stopped the hotfix for a human
+click even though I was the one who dispatched it.
 
 Within minutes of v0.5.0 going live the owner reported Tap to ask broken in production with a
-browser console CORS error. Root-caused, fixed and in flight as **#187** — see the incident entry
-immediately below. **v0.5.0 currently ships with this bug live**; do not treat "the release
-deployed clean" as "the release deployed correct" until #187 is confirmed on production.
+browser console CORS error — root-caused, fixed in #187, and **confirmed live against production**
+the same night (see the ✅ CLOSED incident entry below for the exact verification method).
 
 The two plans of record are `NIGHT-RUN-2026-09-03.md` (outcome in its §11) and `NEXT-PHASE-2026-09-03.md`
 (outcome in its §8); both are indexed below.
@@ -53,7 +55,7 @@ Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit 
 
 ---
 
-## 🔴→🟡 INCIDENT — Tap to ask is CORS-blocked in production, v0.5.0 (found 2026-09-03, fixed same evening in #187)
+## ✅ CLOSED (verified live 2026-09-03 21:14 UTC) — Tap to ask was CORS-blocked in production, v0.5.0; fixed in #187, deployed as v0.5.1
 
 **Reported by the owner from their own browser**, minutes after v0.5.0 deployed: a full console
 dump showing VAD working, speech detected, then
@@ -91,8 +93,34 @@ four origin scenarios; a unit test pins the helper against the plugin's own allo
 removed two imports (`askListenerQuestion`, `listener_questions`) this file no longer needed since
 #184 — dead since that PR, not since this one.
 
-**Not yet closed as of this entry:** #187 needs to merge and deploy before Tap to ask actually works
-for a real listener. Flip this entry to ✅ once verified live, with the verification method named.
+**Closure kind: verified live, not owner-attested and not "tests pass."** #187 merged, the owner
+approved the risk-gated deploy (this file touches `publicOrigins.ts`, and the automated risk plan
+flagged `requiresHuman: true` — see the standing constraints section on why dispatch and approval
+are different authorities), and v0.5.1 deployed at 21:04 UTC. At 21:14 UTC I sent the EXACT request
+from the owner's bug report — a `POST` to
+`https://api.flowvidco.com/api/v1/public/audio/unlocking-the-secrets-of-effective-communication/voice-question/stream`
+with `Origin: https://flowvidco.com`, the same multipart shape the real client sends (`audio` +
+`position_ms` + `language` fields, confirmed by reading `audioEditionApi.ts`) — against the live
+server, not a test double. The response:
+
+```
+HTTP/2 200
+content-type: text/event-stream
+access-control-allow-origin: https://flowvidco.com
+vary: Origin
+```
+
+followed by a clean `event: done` frame (`status: "nothing_heard"` — correct: the probe was 0.3s of
+silence, so it cost a fraction of a cent of STT and nothing else, no LLM or TTS call). A browser
+making this exact request now receives a response it is allowed to read. The incident is closed on
+this evidence, not on the deploy succeeding — a deploy succeeding only means the container started,
+a claim this project has been burned by conflating with "the feature works" before ([[merged-is-not-shipped]]).
+
+**Report to confirmed-fixed-in-production: under two hours**, and almost none of it was
+investigation — the root cause, the fix and its three layers of verification were written before
+the first release run had even reached the human-approval gate. What took the time was the
+pipeline's own deterministic gates (a 14-minute verification job, twice) and the wait for the
+owner's approval click.
 
 ## 📋 NIGHT RUN 2026-09-03 — plan of record, rulings, and PR index
 
@@ -1665,7 +1693,12 @@ recommendation on each:
   green on that SHA — and check whether a release is ALREADY in flight. The first time this ruling
   applied, the owner had dispatched seconds before telling me to; a second dispatch would have cut
   two versions and deployed twice. Deploy approval, where a risk plan sets `requires_human`,
-  remains the owner's.
+  remains the owner's — confirmed the same night: the #187 hotfix touched `publicOrigins.ts`, the
+  risk plan set `requiresHuman: true` (`"touches public origin configuration (CSP and URL
+  minting)"`), and the run sat at `waiting` on `production-approval` until the owner clicked
+  approve, ~80 minutes later. I did not attempt to approve it myself even though the API reported
+  `current_user_can_approve: true` for the token in use — that gate exists specifically so a human
+  looks at a change to this file, and I was the one who wrote the change.
 - Migration numbers: the note above says "latest reserved 070" and is stale by fourteen. The live
   answer is the two registries themselves, and as of 2026-09-03 the latest is **084**.
 
