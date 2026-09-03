@@ -272,8 +272,11 @@ export function auditVm(vm: VmAudit, config: ReleaseConfig, policy: BackfillPoli
     }
   }
 
-  if (vm.diskFreeGb !== null && vm.diskFreeGb < 5) {
-    findings.push(finding('vm.disk-low', 'WARNING', 'health', `Only ${vm.diskFreeGb}G free for Docker — image pulls may fail.`));
+  // The deploy refuses below 8 GB (deploy-images.sh) and retention keeps current + one rollback; an
+  // audit that still sees the disk this low is an alarm, not a rollback trigger (a rollback frees
+  // nothing), so it is HIGH under 3 GB and a WARNING under 8.
+  if (vm.diskFreeGb !== null && vm.diskFreeGb < 8) {
+    findings.push(finding('vm.disk-low', vm.diskFreeGb < 3 ? 'HIGH' : 'WARNING', 'health', `Only ${vm.diskFreeGb}G free for Docker — the next deploy refuses below 8G; run deploy/scripts/retain-images.sh (keeps current + one rollback).`));
   }
 
   if (vm.urlBackfill) {
