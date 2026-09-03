@@ -58,6 +58,11 @@ const DIRECT_DELETE_ALLOWED: Record<string, string> = {
   // Avatar library items, keyed from `avatar_visuals` (image_key / sim_storage_prefix). Also not
   // blob-carrying today; revisit if the library is folded into the dedup store.
   'services/avatar/libraryService.ts': 'avatar_visuals keys, not a blob-carrying table',
+  // The cutover adapter IS a storage layer: the chokepoint calls its deleteFile, which fans the
+  // delete out to both providers. It never chooses keys; it forwards what the guard already allowed.
+  'services/storage/MigratingStorageAdapter.ts': 'an adapter — forwards the guarded delete to both providers',
+  // The capability probe writes and removes its own keys under _probe/<ts>/, disjoint from blobs/.
+  'scripts/storage-probe.ts': 'deletes only the probe prefix it just wrote',
 };
 
 const walk = (dir: string, out: string[] = []): string[] => {
