@@ -16,7 +16,8 @@ import {
 } from '@aws-sdk/client-s3';
 
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
+import { listOpenMultipartUploads } from './listMultipartUploads.js';
+import type { CompletedPart, MultipartUploadInfo, StorageService, StoredObjectHead } from './StorageService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
 import { mediaKeyScope, mintMediaToken } from './mediaToken.js';
 import { copySourceFor, isCopyTooLarge, isCopyUnsupported, multipartCopyObject, readThenWriteCopy } from './s3Copy.js';
@@ -175,6 +176,10 @@ export class R2StorageAdapter implements StorageService {
     await this.client.send(
       new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: path, UploadId: uploadId }),
     );
+  }
+
+  async listMultipartUploads(prefix?: string): Promise<MultipartUploadInfo[]> {
+    return listOpenMultipartUploads((cmd) => this.client.send(cmd), this.bucket, prefix);
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -359,6 +364,7 @@ export class R2StorageAdapter implements StorageService {
         cacheControl: r.CacheControl ?? null,
         size: typeof r.ContentLength === 'number' ? r.ContentLength : null,
         etag: r.ETag ?? null,
+        lastModified: r.LastModified instanceof Date ? r.LastModified.toISOString() : null,
       };
     } catch (err) {
       const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
