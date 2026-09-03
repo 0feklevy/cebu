@@ -8,6 +8,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+// The player also reads the creator's replies on mount (migration 083). That read is not what this
+// file tests, and it must not be the first fetch these assertions see — stub it at the module.
+vi.mock('../lib/audioEditionApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/audioEditionApi')>()),
+  listCreatorReplies: async () => [],
+}));
+
 import { AudioEditionPlayer } from '../components/audio/AudioEditionPlayer';
 import type { AudioEditionView } from '../lib/audioEditionApi';
 

@@ -1896,6 +1896,14 @@ export const listener_questions = pgTable('listener_questions', {
   answered_at: timestamp('answered_at', { withTimezone: true }),
   cost_cents:  integer('cost_cents'),
   created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // ── the creator's half (migration 083) ──
+  /** 'text' | 'voice' — the spoken path stores its transcript as the question. */
+  source:             text('source').notNull().default('text'),
+  /** What the creator wrote back. NULL = unanswered by the creator (the model's `answer` is separate). */
+  creator_reply:      text('creator_reply'),
+  creator_replied_at: timestamp('creator_replied_at', { withTimezone: true }),
+  /** When the creator first opened the inbox after this row existed; unread = NULL. */
+  seen_at:            timestamp('seen_at', { withTimezone: true }),
 }, (t) => ({
   idxProject: index('idx_listener_questions_project').on(t.project_id, t.created_at),
 }));
