@@ -19,9 +19,9 @@ tooling, (5) staged R2 readiness/migration, (6) narrow playlist → course publi
 | 1 | credential rotation | — (owner) | — | **rotate Anam key** | owner |
 | 2 | #174 deploy: keep current + one rollback, refuse a low-disk deploy | `ops/image-retention-disk-guard` | — | none | S — built, waiting for #173 to merge |
 | 3 | #175 listener inbox: creator reads, replies, listener sees the reply | `feat/listener-inbox` | — | none | L — built, waiting for #174 |
-| 4 | #176 storage reconciliation (dry-run) + multipart listing/abort sweep + delete-GC gaps | `ops/storage-reconcile` | — | run the dry-run on the VM, read the report | L |
-| 5 | #177 R2 readiness: capability probe, adapter parity, dual-read adapter, URL-rewrite dry-run | `feat/r2-readiness` | 4 (census facts) | R2 token with write/list/multipart; run the probe | L |
-| 6 | #178 playlist → publish as course | `feat/publish-playlist-as-course` | — | none | M |
+| 4 | #176 storage reconciliation (dry-run) + multipart listing/abort sweep + delete-GC gaps | `ops/storage-reconcile` | — | run the dry-run on the VM, read the report | L — built |
+| 5 | #177 R2 readiness: capability probe, adapter parity, dual-read adapter, URL-rewrite dry-run | `feat/r2-readiness` | 4 (stacked) | R2 token with write/list/multipart; run the probe | L — built |
+| 6 | #178 playlist → publish as course | `feat/publish-playlist-as-course` | — | none | M — built |
 
 Each PR carries its own tests, a ledger line, and a `release:verify`-green CI. Releases: v0.3.1
 (0a) now; v0.3.2 after 0b + 2 (both user-visible or ops-critical); the rest ride the next minor.
@@ -324,3 +324,27 @@ playlist editor; reordering the playlist reorders the course; unpublish takes it
 Each PR adds one line to the ledger's PR index under the OWNER REPORT section. The open 🔴 for the
 share library closes with #173; the 🟡 for courses closes with #178; the ops 🔴 for retention closes
 with #174. The next-phase's own outcome table is appended here as §8 when the sequence is done.
+
+---
+
+## 8. Outcome (2026-09-03, end of the sequence)
+
+| # | PR | State | Delivered |
+|---|---|---|---|
+| 0a | #172 | merged | the layout regression of v0.3.0 (every `min-[…]:`/`max-[…]:` variant disabled by a raw screen; the import gallery trapped in the rail) — the owner dispatches v0.3.1 |
+| 0b | #173 | merged | a banner for every simulation (editor sweep + simulation-level poster route + retired-revision fallback) and a first paint that does not wait for a timer (resolved prefetch, serve-time `SIM_PAINTED_FALLBACK`, legacy text cache) |
+| 1 | — | owner | credential rotation (Anam), the smoke variables, the demo avatar's session length — owner actions, see §1 |
+| 2 | #174 | merged | release retention (current + one rollback) and the 8 GB disk guard in the deploy; shell-tested with a docker/df shim |
+| 3 | #175 | merged | the listener-question creator inbox: migration 083, five routes, the dialog, the header badge, the car-mode replies |
+| 4 | #176 | merged | `storage:reconcile` (dry-run), the multipart listing + weekly abort sweep, project delete sweeps dubs/ and editions/ |
+| 5 | #177 | merged | `storage:probe` per named provider, the migrating adapter, `R2_PUBLIC_BASE_URL`, `storage:rewrite-urls` (dry-run) |
+| 6 | #178 | merged | playlist → publish as course, with the address field and availability check |
+
+**What the owner does next (in order):** rotate the Anam key; dispatch the releases (one `bump=patch`
+after #172/#173 if not yet done, then `bump=minor` once #174–#178 are in); on the VM run
+`storage:reconcile --family=multipart` then `--family=all --json`; with the R2 token run
+`storage:probe -- --backend=r2`; decide the R2 window from the probe; set the three smoke variables.
+
+**Audits.** Every PR was audited by the task-tracker against this plan before merge; the one gap it
+found (§6's slug field) was built before the PR opened. Deviations from the text are recorded
+inline (§4, §5) or in the ledger.
