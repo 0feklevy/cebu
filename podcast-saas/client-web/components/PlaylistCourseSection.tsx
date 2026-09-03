@@ -26,7 +26,9 @@ export function PlaylistCourseSection({ playlistId, itemCount }: Props) {
   const [slugCheck, setSlugCheck] = useState<{ available: boolean; normalized: string } | null>(null);
 
   const load = useCallback(() => {
-    api.getPlaylistCourse(playlistId).then((s) => { setState(s); if (s.course) setSlug(s.course.slug); }).catch(() => setState(null));
+    // Through a promise chain, so a missing or throwing API (a test double, an older backend)
+    // rejects here and never breaks the playlist editor around this section.
+    Promise.resolve().then(() => api.getPlaylistCourse(playlistId)).then((s) => { setState(s); if (s.course) setSlug(s.course.slug); }).catch(() => setState(null));
   }, [playlistId]);
   useEffect(() => { load(); }, [load]);
 
@@ -35,7 +37,7 @@ export function PlaylistCourseSection({ playlistId, itemCount }: Props) {
     const wanted = slug.trim();
     if (!wanted || wanted === state?.course?.slug) { setSlugCheck(null); return; }
     const t = window.setTimeout(() => {
-      api.courseSlugAvailable(wanted, state?.course?.id).then(setSlugCheck).catch(() => setSlugCheck(null));
+      Promise.resolve().then(() => api.courseSlugAvailable(wanted, state?.course?.id)).then(setSlugCheck).catch(() => setSlugCheck(null));
     }, 400);
     return () => window.clearTimeout(t);
   }, [slug, state?.course?.id, state?.course?.slug]);
