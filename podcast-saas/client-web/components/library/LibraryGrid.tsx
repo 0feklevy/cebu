@@ -6,6 +6,7 @@ import { LibraryCard, TYPE_LABEL } from './LibraryCard';
 import { LibraryOverlay } from './LibraryOverlay';
 import { libraryTypeLabel } from 'shared/src/types/library-view';
 import type { LibraryMaterial } from 'shared/src/types/library-view';
+import { resolveSimUrl } from '@/lib/simUrl';
 
 /**
  * The tile grid and the page's client state: which material is open, and the search query.
@@ -61,11 +62,14 @@ export function LibraryGrid({ materials, typeNav, emptyMessage }: Props) {
   // to have the entry document in flight before the frame mounts (night run 2026-09-03 §6).
   const handleWarm = useCallback((material: LibraryMaterial) => {
     if (material.type !== 'simulation' || typeof document === 'undefined') return;
-    if (document.querySelector(`link[rel="prefetch"][href="${material.url}"]`)) return;
+    // The SAME resolution the frame applies (origin rebase, `?dpr=` and the device hints): a
+    // prefetch of the bare URL is a different cache key and was never reused (v0.3.0).
+    const href = resolveSimUrl(material.url, { hideSelectors: [] });
+    if (document.querySelector(`link[rel="prefetch"][href="${href}"]`)) return;
     const link = document.createElement('link');
     link.rel = 'prefetch';
     link.as = 'document';
-    link.href = material.url;
+    link.href = href;
     document.head.appendChild(link);
   }, []);
 

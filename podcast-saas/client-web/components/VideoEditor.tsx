@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { EDITOR_STEPS, toTourSteps } from '@/lib/tours/steps';
 import { tourAnchor } from '@/lib/tours/anchors';
+import { useBannerSweep } from './useBannerSweep';
+import { SimSurface } from '../lib/sim/SimSurface';
 import { readLocalUserPrefs } from '@/lib/userPrefs';
 import { AlertTriangle, Clapperboard, Copy, Flag, GitBranch, Maximize2, Minimize2, Music, Pencil, Plus, Redo2, RefreshCw, Sparkles, Trash2, Undo2, Upload } from 'lucide-react';
 import { useAuth } from '../lib/firebase';
@@ -1214,6 +1216,8 @@ export function VideoEditor({ projectId }: Props) {
   // simulation section and the share page are authored in the frame they will ship in (night run
   // 2026-09-03 §3). Landscape keeps following the window, as it always has.
   const editorOrientation = projectOrientation(videos);
+  // A banner for every ready simulation, captured offscreen one at a time (useBannerSweep.ts).
+  const bannerSweep = useBannerSweep({ projectId, simulations, aspect: editorOrientation === 'portrait' ? 'portrait' : 'wide' });
   const previewAspect = editorOrientation === 'portrait'
     ? 9 / 16
     : previewViewportSize.width / Math.max(1, previewViewportSize.height);
@@ -1499,6 +1503,21 @@ export function VideoEditor({ projectId }: Props) {
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Simulations</p>
                   </div>
                   <div className="flex items-center gap-1">
+                    {(bannerSweep.state.running || bannerSweep.state.failed > 0 || bannerSweep.state.stored > 0) && (
+                      <span className="text-[10px] text-muted-foreground" aria-live="polite" title="Banners for the share library, captured from each simulation">
+                        {bannerSweep.state.running
+                          ? `Banners… ${bannerSweep.state.stored + bannerSweep.state.existed + bannerSweep.state.failed + 1}/${bannerSweep.state.stored + bannerSweep.state.existed + bannerSweep.state.failed + 1 + bannerSweep.state.queued}`
+                          : `Banners: ${bannerSweep.state.stored + bannerSweep.state.existed} captured${bannerSweep.state.failed > 0 ? ` · ${bannerSweep.state.failed} could not draw` : ''}`}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => bannerSweep.run(true)}
+                      disabled={bannerSweep.state.running}
+                      title="Capture a banner for every simulation — the share library's tiles"
+                      className="flex h-8 items-center justify-center rounded-lg border border-border px-2 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted focus-ring disabled:opacity-50"
+                    >
+                      Banners
+                    </button>
                     <button
                       onClick={() => setShowSimImport(true)}
                       title="Import from another project — nothing is uploaded or stored twice"
@@ -1972,6 +1991,13 @@ export function VideoEditor({ projectId }: Props) {
       onClose={() => setExtendedLibraryOpen(false)}
       projectId={projectId}
     />
+    {bannerSweep.frameSrc && (
+      // Offscreen, inside the viewport (a frame outside it has its animation frames throttled),
+      // invisible and inert: the simulation draws, answers SNAPSHOT, and is unmounted.
+      <div key={bannerSweep.frameKey ?? undefined} aria-hidden style={{ position: 'fixed', right: 0, bottom: 0, width: 640, height: 360, opacity: 0, pointerEvents: 'none', zIndex: -1 }}>
+        <SimSurface src={bannerSweep.frameSrc} visible frameRef={bannerSweep.frameRef} onLoad={bannerSweep.onFrameLoad} interactive={false} fade={false} title="Banner capture" />
+      </div>
+    )}
     {showBranching && (
       <BranchingModal projectId={projectId} onClose={() => setShowBranching(false)} />
     )}

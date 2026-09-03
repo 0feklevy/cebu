@@ -287,3 +287,58 @@ describe('POST /api/v1/projects/:id/sections/:sid/poster', () => {
     await app.close();
   });
 });
+
+// ── POST /projects/:id/simulations/:simId/poster (the banner sweep) ───────────
+
+describe('POST /api/v1/projects/:id/simulations/:simId/poster', () => {
+  const url = `/api/v1/projects/${PROJECT_ID}/simulations/${SIM_ID}/poster`;
+
+  it('stores under the SIMULATION identity — the entry has no section, so the variant key is the simulation id', async () => {
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url, payload: { renditions: WIDE, force: true } });
+    expect(res.statusCode).toBe(201);
+    const packageRevision = packageRevisionFor(SIM, derivePackageRevision);
+    const expectedKey = posterKeyForSection(
+      { id: SIM_ID, simulation_url: SIM.entry_file, sim_script: null, simple_ui: false, auto_script: true, sim_meta: null },
+      packageRevision, 'wide',
+    );
+    expect(expectedKey.variantKey).toBe(SIM_ID);
+    expect(mocks.storePoster.mock.calls[0]![2]).toEqual(expectedKey);
+    expect(res.json()).toMatchObject({ identity: posterIdentityString(expectedKey), aspectProfile: 'wide' });
+    expect(mocks.order).toEqual(['store', 'invalidate']);
+    await app.close();
+  });
+
+  it('shares the section route\'s validation: an existing poster is reported, a wrong size refused', async () => {
+    const app = await build();
+    mocks.getPoster.mockResolvedValueOnce({ id: 'poster-row' });
+    expect((await app.inject({ method: 'POST', url, payload: { renditions: WIDE } })).json()).toMatchObject({ outcome: 'existed' });
+    const wrong = await app.inject({ method: 'POST', url, payload: { renditions: [WIDE[0], { size: 'compact', format: 'png', dataUrl: pngDataUrl(600, 300) }] } });
+    expect(wrong.statusCode).toBe(400);
+    expect(mocks.storePoster).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('404 for a simulation outside the project, or a project the user cannot edit', async () => {
+    const app = await build();
+    mocks.simulations.findFirst.mockResolvedValueOnce(null);
+    expect((await app.inject({ method: 'POST', url, payload: { renditions: WIDE } })).statusCode).toBe(404);
+    mocks.editable.mockResolvedValueOnce(null);
+    expect((await app.inject({ method: 'POST', url, payload: { renditions: WIDE } })).statusCode).toBe(404);
+    expect(mocks.storePoster).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe('GET /api/v1/projects/:id/simulations carries poster_url', () => {
+  it('the tile banner for each simulation, null when there is none — what the banner sweep reads', async () => {
+    mocks.simulations.findMany.mockResolvedValue([SIM, { ...SIM, id: 'sim-2' }]);
+    mocks.stills.mockResolvedValue(new Map([[SIM_ID, { banner: 'https://cdn/sim-1/compact.png', poster: 'https://cdn/sim-1/standard.png' }]]));
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: `/api/v1/projects/${PROJECT_ID}/simulations` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Array<{ id: string; poster_url: string | null }>;
+    expect(body.map((s) => [s.id, s.poster_url])).toEqual([[SIM_ID, 'https://cdn/sim-1/compact.png'], ['sim-2', null]]);
+    await app.close();
+  });
+});

@@ -789,6 +789,8 @@ export interface Simulation {
   name:             string;
   storage_prefix:   string;
   entry_file:       string;
+  /** The tile banner (compact rendition) of the current package revision, or null — the editor's banner sweep captures the missing ones. */
+  poster_url?:      string | null;
   bridge_functions: Array<{ name: string; windowFn: string; description: string }> | null;
   status:           'processing' | 'ready' | 'failed';
   error:            string | null;
@@ -1739,6 +1741,11 @@ export class ClientV1Api {
    */
   uploadSectionPoster(projectId: string, sectionId: string, body: SectionPosterUpload): Promise<SectionPosterResult> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/poster`, { method: 'POST', body });
+  }
+
+  /** A poster for the simulation itself (the library's banner), from the editor's banner sweep. */
+  uploadSimulationPoster(projectId: string, simulationId: string, body: SectionPosterUpload): Promise<SectionPosterResult> {
+    return this.request(`/api/v1/projects/${projectId}/simulations/${simulationId}/poster`, { method: 'POST', body });
   }
 
   uploadSimulation(projectId: string, formData: FormData): Promise<Simulation> {

@@ -20,9 +20,9 @@
  *
  * Zero bytes are written anywhere. Every URL below already exists and is simply re-emitted.
  */
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, eq, inArray, and } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { audio_files, image_files, sim_posters, simulations, video_files } from '../../db/schema.js';
+import { audio_files, image_files, sim_posters, simulations, video_files, sim_revisions } from '../../db/schema.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { captionUrlForVideo } from '../captions/CaptionService.js';
 import { publicApiOrigin } from '../../config/publicOrigins.js';
@@ -121,6 +121,26 @@ const BANNER_FORMATS: readonly PosterFormat[] = ['webp', 'avif', 'png'];
  */
 export interface SimStills { /** compact rendition — the tile */ banner: string; /** standard rendition — the overlay */ poster: string }
 
+/** simulation_id → the package revisions of its RETIRED revisions (served once, then replaced). */
+async function retiredPackageRevisions(simIds: readonly string[]): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  const revs = await db.query.sim_revisions
+    .findMany({
+      where: and(inArray(sim_revisions.simulation_id, [...simIds]), eq(sim_revisions.status, 'retired')),
+      columns: { id: true, simulation_id: true },
+    })
+    .catch((err: unknown) => {
+      logger.warn({ err }, 'library banners: sim_revisions read failed — no retired-revision fallback');
+      return [] as Array<{ id: string; simulation_id: string }>;
+    });
+  for (const r of revs) {
+    const set = out.get(r.simulation_id) ?? new Set<string>();
+    set.add(packageRevisionFor({ id: r.simulation_id, active_revision_id: r.id }, derivePackageRevision));
+    out.set(r.simulation_id, set);
+  }
+  return out;
+}
+
 export async function loadSimBannerUrls(
   sims: readonly { id: string; bridge_hash?: string | null; active_revision_id?: string | null }[],
 ): Promise<Map<string, SimStills>> {
@@ -151,13 +171,28 @@ export async function loadSimBannerUrls(
       return [];
     });
 
+  // A revision that WAS served and was then replaced (status 'retired') is the one kind of
+  // non-current revision whose poster is safe to show: it was public. A candidate that never
+  // activated still is not (the 2026-08-30 ruling above stands). Used only when the served
+  // revision has no poster yet — a republish used to blank every banner of that simulation
+  // until a creator re-opened each section; now the last public picture stays until the
+  // editor's banner sweep replaces it.
+  const retired = await retiredPackageRevisions(simIds);
+
   const bySim = new Map<string, typeof rows>();
+  const byRetired = new Map<string, typeof rows>();
   for (const row of rows) {
-    if (row.package_revision !== wantedRevision.get(row.simulation_id)) continue;
-    const list = bySim.get(row.simulation_id) ?? [];
-    list.push(row);
-    bySim.set(row.simulation_id, list);
+    if (row.package_revision === wantedRevision.get(row.simulation_id)) {
+      const list = bySim.get(row.simulation_id) ?? [];
+      list.push(row);
+      bySim.set(row.simulation_id, list);
+    } else if (retired.get(row.simulation_id)?.has(row.package_revision)) {
+      const list = byRetired.get(row.simulation_id) ?? [];
+      list.push(row);
+      byRetired.set(row.simulation_id, list);
+    }
   }
+  for (const [simId, list] of byRetired) if (!bySim.has(simId)) bySim.set(simId, list);
 
   const storage = getStorageAdapter();
   for (const [simId, posterRows] of bySim) {

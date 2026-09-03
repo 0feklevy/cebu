@@ -4,8 +4,9 @@
 (`refs/deployed/production` = `e74c58e`, the merge of #171) — the whole night run #165–#171 under the plan of
 record `NIGHT-RUN-2026-09-03.md` (indexed below, outcome in its §11). **v0.3.0 shipped a layout regression**
 (every `min-[…]:`/`max-[…]:` Tailwind variant disabled by a raw screen; the import gallery trapped inside the
-editor rail) — owner-reported, fixed in **#172**, which ships as **v0.3.1** by the owner's instruction. Still open
-after that: the share library's simulation tiles have no captured poster and load slowly (🔴 below).
+editor rail) — owner-reported, fixed in **#172**, which ships as **v0.3.1** by the owner's instruction. The share
+library's missing banners and slow first paint (owner-reported the same morning) are fixed in **#173**.
+The next phase — the owner's six priorities — is planned in `NEXT-PHASE-2026-09-03.md` and indexed below.
 
 **The previous version of this header said v0.2.11 "was dispatched on 2026-08-26 and never
 deployed".** True when written (a GitHub Actions outage cancelled that run) and false four days
@@ -89,8 +90,87 @@ Each takes the recommendation already recorded unless a measurement contradicted
 - §7 scale, phase 1 — the DECISION (plan §7): keep Supabase Postgres (28 fixed connections, every hot path indexed; a migration moves the database and leaves a 2-vCPU box doing the same work), move public bytes to a zero-egress CDN-fronted store in a phase 2 runbook that needs the owner’s account, take the app tier off the byte path. CODE tonight: `prepare: false` on the app pool (D10); LISTEN/NOTIFY refused on a transaction-pooler URL; the two uncached admin_settings reads on player-config cached 10 s with invalidation on the admin write; `users.last_seen_at` written at most once per 5 min per user instead of per request; every `/api/` response without a Cache-Control gets `no-store` (the discipline a CDN in front of the API needs); a per-IP ceiling (120/min) on the anonymous viewer reads that had none; the playlist play-config fan-out bounded to 4; `GET /projects` capped at 500; `branch_path_events` gets a 90-day retention sweep; the orphan-blob sweep repeats every 6 h instead of running once at boot (#170, `perf/scale-phase-1`). C1 #3 (bucket cutover to proxied URLs) is superseded by this entry.
 - #171 fix — the task-tracker audits of §5 and §6, answered: a mount test per anchored surface (`tourAnchors.*.test.tsx`, with `tourSurfaces.test.ts` forcing every registered anchor to be claimed by one) — the dropped-anchor rot that stayed green under mutation is red now; `HowItWorksDialog.tsx` deleted for real (the #168 line above said it was, and it was not); tour steps for branching (new `branching` anchor on the editor button), raise-your-hand and playlists, and a home-page walkthrough (`HOME_STEPS`, `home-projects`/`home-playlists`, a "?" beside New project); Fastify-inject tests for `GET /simulations/importable` and `POST …/sections/:sid/poster` asserting the identity `sectionPosterKey` predicts and the store→invalidate order; the ten dead imports the poster refactor left; and, from the §4 audit's correction, a route-level suite for `POST /public/audio/:slug/voice-question` (per-IP key and limit, public-only, no-file 400, the multipart fields into the service, the response shape, a real 413 through the bounded temp file, the 502 that leaves playback alone) and the info route's `artwork_url`. §7's audit found every item DONE at the merged tip. Recorded, not changed: the 4 MB per-rendition cap, the 10-minute text cache, the session-scoped capture throttle (plan §11).
 - #172 hotfix — **v0.3.0 shipped with every `min-[…]:` / `max-[…]:` variant disabled.** Owner-reported in production the morning after: the editor rail "messed up", Export / Preview labels gone, the import gallery neither full-screen nor above the editor. Root cause, verified by compiling a probe through both configs: #167's `theme.extend.screens.landscape` with a `raw` media query makes Tailwind refuse the arbitrary min/max variants (it can no longer order the screens), so 22 classes across ProjectHeader, VideoEditor, BrollPanel, BranchingModal, PlaylistEditorDialog and PlaylistViewer produced no CSS — and `landscape:` itself fell back to the built-in orientation variant, so the podcast page took the phone-sideways layout on every desktop. Fix: the screen removed, the car-mode player on an arbitrary `[@media(orientation:landscape)_and_(max-height:560px)]:` variant, and the import gallery portaled to `<body>` so no ancestor stacking context can trap it (that part was a second, independent defect). Guard: `tailwindResponsiveVariants.test.ts` compiles the real config and goes red if a variant stops emitting or a screen carries `raw`. Why the gates missed it: no test compiles the stylesheet, and the release smoke has no fixtures (§9 item 3) so no page was looked at after the deploy. Dispatched by delegated authority — the owner's instruction in the report ("restore the layout and release").
-- 🔴 **Share library: simulation tiles show no captured poster, and the overlay loads slowly** (owner, production v0.3.0, 2026-09-03 morning). §6 captures a poster only in the creator's browser when a section is previewed in the editor, keyed by that section's identity; a library that never had a creator re-open its sections since v0.3.0 has nothing to show, and the tile falls back to a live iframe. Being mapped (identity match between capture and library lookup; overlay request path); fix follows the hotfix #172.
+- #173 fix — the share library's banners and first paint (the ✅ CLOSED entry above; plan `NEXT-PHASE-2026-09-03.md` §0b). Also carries the owner's post-deploy report and rulings (the 📋 OWNER REPORT section) and the next-phase plan itself.
+- ✅ CLOSED in #173 (was 🔴, owner-reported on v0.3.0) — **Share library: simulation tiles show no captured poster, and the overlay loads slowly.** Mapped with file:line evidence (plan `NEXT-PHASE-2026-09-03.md` §0b): the only capture was the section editor's, 1.5 s after a section's preview loaded, so a simulation never re-opened since v0.3.0 — or never placed in a section — could not have a picture, and every failure was swallowed; the prefetch named a URL the frame never requested (no `?dpr=`); pre-gate packages waited the full 2.5 s painted-signal timer; legacy packages were excluded from the text cache. Fix: a simulation-level poster route (identity = the simulation's default presentation; the library looks up by package revision), an editor banner sweep (`useBannerSweep.ts`: one offscreen frame at a time for every ready simulation without a banner, 12 per session, failures counted and shown, a "Banners" button forces all), `poster_url` on the listings, a fallback to a RETIRED revision's poster (served once, never a candidate — the 2026-08-30 ruling stands), the prefetch resolved like the frame, a serve-time SIM_PAINTED fallback in the boot snippet two frames after load when the gate is absent (client timer 2.5 s → 1.2 s), and a 30 s legacy text cache evicted by prefix on every in-place writer (Replace, upload, guidance). Tests: route (simulation identity, listing poster_url), retired-revision fallback, the snippet run in a sandbox, legacy cache + eviction, the sweep hook, the prefetch href.
 - 🟡 **Courses have no creator UI.** `courses.controller.ts` (create, slug, lessons) and the public `/c/[courseSlug]/[lessonSlug]` pages exist; nothing in `client-web` calls the create routes. A walkthrough cannot point at what is not there. Either build the creator side (playlist → "publish as course") or retire the routes; owner's call (plan §9).
+
+## 📋 OWNER REPORT 2026-09-03 (after the v0.3.0 deploy) — production state, closures, and the rulings for the next phase
+
+Everything in this section is **owner-attested** (the owner ran it on production and reported the numbers);
+nothing here was re-derived from code, per the owner's instruction not to reopen completed diagnostics.
+The plan built from it is `NEXT-PHASE-2026-09-03.md` (indexed at the end of this section).
+
+### Closed by the owner, on production
+
+- ✅ **Video-dimension backfill (§9 item 8) — done.** Dry run found 5 legacy videos without geometry; apply wrote 4
+  (1916×1080, 1280×720, 1920×1080, 1920×1080 — all landscape, 0 portrait). One remains unresolved because
+  `ffprobe` reports no geometry for the file: video `292ea47d-8df5-47b5-8661-04f63c40b68c`
+  ("vidssave.com But how did proteins evolve to be so complex_ 720P.mp4"). **Ruling: do not invent dimensions for
+  it**; investigate separately only if needed. The script exits 1 while any probe fails — that exit is not a
+  rollback of the four writes (the writes are per-row and committed). 🟡 small follow-up: make the exit code say
+  "N written, M unresolved" instead of failing the whole run for one unreadable file.
+- ✅ **Production disk emergency — resolved.** The VM was at ~94% (`/` 3.6 GB free): Docker/containerd retained
+  every historical release image. The owner deleted the older FlowVid/Cebu image IDs and their GHCR digest refs,
+  keeping v0.3.0 (backend, client-web, admin-web), v0.2.11 as the rollback set, every image backing a running
+  container, nginx and certbot. After: 58 GB total, 16 GB used, 42 GB free (28%); 8 images, ~7.2 GB; 6/6
+  containers healthy. ~2.9 GB shows as "reclaimable" and is the retained rollback — **do not prune it blindly.**
+  → 🔴 ops item below: retention must be a policy in the deploy, not a manual rescue.
+- ✅ **Read-only DB census — done.** Database total ≈ 27 MB. No database-size problem; some tiny tables have
+  high dead-row percentages, not a capacity concern. Cleanup CANDIDATES the census enumerated (candidates for a
+  dry-run reconciliation tool, **not** permission to delete): 18 terminal exports with no `output_key`; 7 ready
+  exports whose `sections/` may be redundant; 3 failed duplications with a surviving plan (orphans enumerable);
+  4 videos with both inline captions and a captions storage key; avatar references that can leak on project
+  deletion (2 project rows with sim prefixes, 6 with image keys).
+- ✅ **Full bucket census (LIST + HEAD against the live Supabase S3 bucket) — done.** 3,200 objects,
+  10,799,246,594 bytes (~10.30 GiB), 0 objects of unknown size. By prefix: `dubs/` ~3.21 GiB / 878 objects;
+  `exports/` ~3.12 GiB / 7; `hls/` ~1.93 GiB / 1,513; `videos/` ~1.73 GiB / 4; `podcasts/` ~183 MiB;
+  `images/` ~45.7 MiB; `simulations/` ~41.8 MiB; `avatar-circles/` ~17 MiB; the rest small. **Reading:**
+  storage volume is modest; an R2 move is about delivery/egress architecture, not a 10 GB crisis.
+- 🟡 **4 unfinished multipart uploads, 81 stored parts, reported part bytes 0.** Not aborted. Ruling: inspect keys
+  and initiation timestamps first (the zero may be an API reporting limit, not proof nothing is billable); if
+  clearly abandoned, add a safe **age-based multipart-abort sweep** rather than a one-off manual clean.
+
+### Rulings (owner, 2026-09-03)
+
+- **R2 — YES, staged.** R2 is the media-storage direction; production is NOT flipped now. `R2StorageAdapter`,
+  `SupabaseStorageAdapter`, `StorageService`, `getStorageAdapter` and the R2 env names already exist on the
+  production backend, and code comments say the R2 token may be read-only with Supabase the writable provider.
+  Sequence: audit the R2 bucket/account/token → verify write/delete/list/multipart permissions → run the existing
+  storage round-trip probe against R2 in a controlled configuration → design an explicit staged migration (not
+  merely `STORAGE_BACKEND=r2`) → preserve rollback/read compatibility while objects move → verify public HLS/sim
+  URLs, CORS, cache headers, multipart and server-side copy → only then change production writes. "Do not migrate
+  merely because R2 variables happen to be present."
+- **Courses — YES, deliberately narrow.** V1 is `Playlist → Publish as course → /course/lesson`. Reuse the
+  playlist/lesson/media/simulation infrastructure and the dormant `courses` / `course_lessons` schema (no live
+  rows). Creator UI scoped to "Publish playlist as course", not a course-management product. Closes the 🟡
+  "Courses have no creator UI" above (decision taken; work in the plan).
+- **Listener questions — YES, higher priority than courses.** Build the creator inbox:
+  `Listener → question → Creator Inbox → answer`. Minimum: unanswered/answered, project/lesson context,
+  timestamp, text or audio question, creator response. Keep it simple. Closes the "creator-facing list of
+  listener questions" deferral in plan §11.
+- **Priorities for the next phase, in order:** (1) credential rotation, (2) permanent Docker release retention +
+  low-disk guard, (3) listener-question creator inbox, (4) safe storage-orphan reconciliation tooling (dry-run),
+  (5) staged R2 readiness, (6) narrow playlist → course publishing.
+
+### The owner queue, restated (supersedes plan §9)
+
+- 🔴 **HIGH — rotate the exposed Anam credential**: issue a new key and invalidate the old one; hiding it in
+  history is not rotation.
+- 🟡 Smoke variables `SMOKE_PUBLIC_PATH`, `SMOKE_PLAYLIST_PATH`, `SMOKE_ADMIN_PREVIEW_PATH`: set only to real
+  production pages expected to stay valid (a dead path rolls back a healthy deploy). Real public playlist/test
+  URLs were created during earlier production work — use those, do not invent routes.
+- 🟡 Demo avatar "Max session length" — check.
+- 🟡 Paid dubbing probe (~$2.20) — useful; **not without explicit approval**.
+- ⚪ Crop-eval dataset (20–50 clips) — deferred; evaluation work, not a blocker.
+- ⚪ Previously shared document — re-upload only if continued access to the old URL is sensitive.
+- ✅ Backfill, DB census, bucket census, disk cleanup — done (above).
+
+### Ops item the owner wants implemented
+
+- 🔴 **Docker release retention + disk guard in the deploy.** Keep the current production release and one
+  previous rollback release; remove older local application image references safely after a successful
+  deploy/health gate; never touch running images, persistent volumes, nginx/certbot data or environment backups.
+  Add a low-disk warning/refusal before deploy so a >90% VM fails early.
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 

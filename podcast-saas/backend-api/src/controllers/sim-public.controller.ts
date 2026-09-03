@@ -10,7 +10,7 @@ import { serveLocalFile } from '../services/storage/serveFile.js';
 import { getStorageAdapter } from '../services/storage/getStorageAdapter.js';
 import { cacheControlForKey } from 'shared/sim/simRevision';
 import { revisionServingFacts, isRevisionStatusPublic } from '../services/simulation/revisionIdentity.js';
-import { simTextCache, strongEtag } from '../services/simulation/simTextCache.js';
+import { simTextCache, simLegacyTextCache, strongEtag } from '../services/simulation/simTextCache.js';
 import { resolveSimFileKey } from '../services/simulation/simFileResolver.js';
 import { LocalStorageAdapter } from '../services/storage/LocalStorageAdapter.js';
 import { getSimulationContentType } from '../services/simulation/SimulationService.js';
@@ -86,6 +86,15 @@ function buildSimBootSnippet(): string {
     'for(var i=0;i<s.length;i++){var x=s[i];if(typeof x==="string"&&!/[{}<\\\\]/.test(x))r.push(x+"{display:none !important}")}' +
     'if(r.length){var st=document.createElement("style");st.id="__simBootHide";st.textContent=r.join("\\n");' +
     '(document.head||document.documentElement).appendChild(st)}}}catch(e){}' +
+    // Painted fallback THIRD, own try. A package published before the rAF gate never posts
+    // SIM_PAINTED, and every cover that waits for it waits for a timer instead (the library
+    // overlay sat on "Loading simulation…" for load + 2.5 s). The gate is baked at publication;
+    // this runs at serve time, so it reaches every stored package. Two frames after load is
+    // when a document that draws at all has drawn; a gated package answers first and this stays
+    // silent (the gate's own flag is checked at fire time, not at load).
+    'try{window.addEventListener("load",function(){requestAnimationFrame(function(){requestAnimationFrame(function(){' +
+    'if(window.__SIM_RAF_GATE__)return;try{if(window.parent&&window.parent!==window)window.parent.postMessage({type:"SIM_PAINTED",fallback:1},"*")}catch(e){}' +
+    '})})})}catch(e){}' +
     '})()</script>';
 }
 
@@ -364,7 +373,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         // brotli that used to run per file per viewer is the single largest CPU cost this route
         // had (night run 2026-09-03 §6/§7). Legacy, in-place-replaceable keys are never cached.
         const resolvedKey = await resolveSimFileKey(key);
-        const cached = isRevision ? simTextCache.get(resolvedKey) : null;
+        const cached = isRevision ? simTextCache.get(resolvedKey) : simLegacyTextCache.get(resolvedKey);
         let buf: Buffer;
         let etag: string;
         if (cached) {
@@ -381,7 +390,7 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           // rewritable entry HTML / bridge JS this is the point: the browser still
           // revalidates every load, but an unchanged file costs a 304, not a re-download.
           etag = strongEtag(buf);
-          if (isRevision) simTextCache.set(resolvedKey, { bytes: buf, etag, contentType });
+          (isRevision ? simTextCache : simLegacyTextCache).set(resolvedKey, { bytes: buf, etag, contentType });
         }
 
         reply
