@@ -125,7 +125,7 @@ function renderEditor() {
 
 /** Open the Load picker, select the recipe preset, and confirm the load. */
 async function loadRecipePreset() {
-  fireEvent.click(screen.getByText('Load bridge…'));
+  fireEvent.click(screen.getByText('Load setup…'));
   const row = await screen.findByText('Boids pluck');
   await act(async () => { fireEvent.click(row.closest('button') as HTMLButtonElement); });
   // The confirm button settles on "Load settings" once the fit resolves (recipe, not "Apply instantly").

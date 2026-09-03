@@ -118,7 +118,7 @@ function renderEditor() {
 /** Open the picker and wait for the first scan to land. */
 async function openPicker(): Promise<void> {
   renderEditor();
-  fireEvent.click(screen.getByText(/UI controls/i));
+  fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
   await waitFor(() => expect(screen.getByText('Speed')).toBeTruthy());
 }
 
@@ -139,7 +139,7 @@ describe('the status line and the body can no longer contradict each other', () 
       scanned: true, requestId: 'r1', sid: 'sid-test', controls: [], truncated: false,
     });
     renderEditor();
-    fireEvent.click(screen.getByText(/UI controls/i));
+    fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     await waitFor(() => expect(screen.getByText(/No controls to choose from/)).toBeTruthy());
     // A DIFFERENT sentence from the unreachable case — that distinction is the whole fix.
     expect(screen.getByText(/no buttons or sliders/i)).toBeTruthy();
@@ -151,7 +151,7 @@ describe('the status line and the body can no longer contradict each other', () 
       String(u).includes('ui-controls') ? new Response('', { status: 404 }) : routedResponse(String(u))
     )) as unknown as typeof fetch;
     renderEditor();
-    fireEvent.click(screen.getByText(/UI controls/i));
+    fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     // This path genuinely waits out the old gate's 2s timeout before it can honestly say nothing
     // answered — the delay is the evidence, not an inefficiency to hide.
     await waitFor(() => expect(screen.getByText(/did not answer/i)).toBeTruthy(), { timeout: 5000 });
@@ -239,13 +239,13 @@ describe('the preview has to be usable while picking', () => {
     // the feature not working.
     renderEditor();
     fireEvent.click(screen.getByText(/Files/i));
-    fireEvent.click(screen.getByText(/UI controls/i));
+    fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     await waitFor(() => expect(connectSimAuthoring).toHaveBeenCalled());
   });
 
   it('disposes the session when the panel closes', async () => {
     await openPicker();
-    fireEvent.click(screen.getByText(/UI controls/i));
+    fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     await waitFor(() => expect(session.dispose).toHaveBeenCalled());
   });
 });
