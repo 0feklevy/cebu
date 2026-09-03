@@ -65,6 +65,29 @@ async function backfillMissingThumbnails(rows: ProjectRow[]): Promise<void> {
   }
 }
 
+/**
+ * The whole-prefix sweeps a project's deletion performs, as one list a test can read.
+ *
+ * The thumbnail prefix REPLACES the old single-key delete: four writers overwrite
+ * projects.thumbnail_key without GC, so the prefix holds every thumbnail the project ever had, and
+ * deleting only the current one stranded the rest. Captions are re-minted per run; the corpus is
+ * uploaded documents; exports have no per-export delete route and their rows cascade; avatar
+ * circles were never deleted. `dubs/{videoId}` (audio, muxed video, HLS per language) and
+ * `editions/{projectId}` (the podcast m4a) cascade their ROWS and used to leave every byte behind —
+ * the 2026-09-03 bucket census put dubs at ~3.2 GiB, the largest prefix in the bucket.
+ */
+export function projectGcPrefixes(projectId: string, videoIds: readonly string[]): string[] {
+  return [
+    `thumbnails/${projectId}`,
+    `captions/${projectId}`,
+    `projects/${projectId}/corpus`,
+    `exports/${projectId}`,
+    `avatar-circles/${projectId}`,
+    `editions/${projectId}`,
+    ...videoIds.map((id) => `dubs/${id}`),
+  ];
+}
+
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/projects
   app.post(
@@ -499,19 +522,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
           av.sim_storage_prefix ? deleteWithPrefixFallback(av.sim_storage_prefix) : null,
         ].filter(Boolean)),
         // Whole-prefix sweeps for the classes whose writers mint fresh uuids and never delete
-        // predecessors. The thumbnail prefix REPLACES the old single-key delete: four writers
-        // overwrite projects.thumbnail_key without GC, so the prefix holds every thumbnail the
-        // project ever had, and deleting only the current one stranded the rest.
-        deleteWithPrefixFallback(`thumbnails/${project.id}`),
-        // Caption VTT backups — captions/{projectId}/{videoId}/{uuid}.vtt, re-minted per run.
-        deleteWithPrefixFallback(`captions/${project.id}`),
-        // Uploaded corpus source documents.
-        deleteWithPrefixFallback(`projects/${project.id}/corpus`),
-        // Export masters and section intermediates. There is no per-export delete route, and the
-        // project_exports rows cascade — after this delete nothing will ever name these keys.
-        deleteWithPrefixFallback(`exports/${project.id}`),
-        // Avatar b-roll circle images (avatar-circles/{projectId}/*) — previously never deleted.
-        deleteWithPrefixFallback(`avatar-circles/${project.id}`),
+        // predecessors (projectGcPrefixes: thumbnails, captions, corpus, exports, avatar circles —
+        // and, since the 2026-09-03 census found them stranded, the dubs of every video and the
+        // podcast editions of the project).
+        ...projectGcPrefixes(project.id, videos.map(v => v.id)).map(p => deleteWithPrefixFallback(p)),
       ]);
 
       return reply.code(204).send();

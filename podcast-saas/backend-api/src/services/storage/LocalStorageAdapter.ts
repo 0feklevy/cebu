@@ -1,7 +1,7 @@
 import { writeFile, mkdir, readFile, rm, readdir, stat, copyFile } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { join, dirname, sep } from 'path';
-import type { CompletedPart, StorageService, StoredObjectHead } from './StorageService.js';
+import type { CompletedPart, MultipartUploadInfo, StorageService, StoredObjectHead } from './StorageService.js';
 import { LOCAL_STORAGE_BASE_DIR } from './localStoragePaths.js';
 import { safeLocalPath } from './pathSafety.js';
 import { reroot } from './prefixScope.js';
@@ -97,6 +97,10 @@ export class LocalStorageAdapter implements StorageService {
   async abortMultipartUpload(_path: string, _uploadId: string): Promise<void> {
     return LocalStorageAdapter.multipartUnsupported();
   }
+  /** Local disk never has an open multipart upload: the parts path does not exist here. */
+  async listMultipartUploads(_prefix?: string): Promise<MultipartUploadInfo[]> {
+    return [];
+  }
 
   async deleteFile(path: string): Promise<void> {
     const { unlink } = await import('fs/promises');
@@ -185,6 +189,7 @@ export class LocalStorageAdapter implements StorageService {
         cacheControl: null,
         size: st.size,
         etag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`,
+        lastModified: st.mtime.toISOString(),
       };
     } catch {
       return null;

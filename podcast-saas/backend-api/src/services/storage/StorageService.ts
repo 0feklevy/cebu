@@ -35,6 +35,12 @@ export interface StorageService {
   completeMultipartUpload(path: string, uploadId: string, parts: CompletedPart[]): Promise<string>;
   /** Abort an in-progress multipart upload so the storage drops the orphaned parts. */
   abortMultipartUpload(path: string, uploadId: string): Promise<void>;
+  /**
+   * Every multipart upload the bucket still holds open (optionally under a prefix). A browser
+   * that started one and closed the tab left parts that are billed and invisible to any object
+   * LIST; this is the only way to find them (census G9). Local disk has none.
+   */
+  listMultipartUploads(prefix?: string): Promise<MultipartUploadInfo[]>;
 
   deleteFile(path: string): Promise<void>;
   /** Delete all objects whose key starts with prefix (used to purge HLS segments). */
@@ -120,4 +126,14 @@ export interface StoredObjectHead {
   cacheControl: string | null;
   size: number | null;
   etag: string | null;
+  /** ISO timestamp of the last write, or null when the store did not say — the age an orphan sweep goes by. */
+  lastModified: string | null;
+}
+
+/** One open multipart upload, as the bucket reports it. */
+export interface MultipartUploadInfo {
+  key: string;
+  uploadId: string;
+  /** ISO timestamp, or null when the store did not say. */
+  initiated: string | null;
 }
