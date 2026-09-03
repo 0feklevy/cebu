@@ -2708,14 +2708,14 @@ export function SectionEditor({
                     worth the most — and while this row lived inside that gate the feature was
                     unreachable in the only case it was built for. */}
                 <div style={{ ...cardStyle('#f59e0b'), gap: 8 }}>
-                    <label style={labelStyle}>Reuse this setup</label>
-                    <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '-2px 0 8px', lineHeight: 1.5 }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>Reuse this setup</label>
+                    <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
                       A saved setup is this section’s whole configuration — the prompt, the script, the
                       kept controls, Minimal UI and Auto-script — under a name you can load onto another
                       simulation, in this project or another one.
                     </p>
                     {!simId && (
-                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '0 0 8px', lineHeight: 1.5, padding: '8px 10px', borderRadius: 8, border: '1px dashed hsl(var(--border))' }}>
+                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5, padding: '8px 10px', borderRadius: 8, border: '1px dashed hsl(var(--border))' }}>
                         This section has no simulation yet. Loading a saved setup brings its
                         simulation with it — nothing is stored twice.
                       </p>
