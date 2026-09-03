@@ -80,6 +80,34 @@ describe('the script panel says what will happen', () => {
     expect(button.disabled).toBe(false);
   });
 
+  it('with controls but no prompt: it promises no AI and no cost, and the button says Apply', () => {
+    // The third outcome, and the one the panel used to hide completely: pressing the SAME button
+    // with an empty prompt does something mechanical and free. A stored selection puts the panel
+    // in that state without driving a scan.
+    mount({ sim_meta: { uiControls: { controls: [], show: [], hide: ['#speed'] } } as never });
+    expect(screen.getByText(/Hides the controls you unchecked\. No AI, no cost\./i)).toBeTruthy();
+    const button = applyButton() as HTMLButtonElement;
+    expect(button.textContent).toContain('Apply');
+    expect(button.textContent).not.toContain('Generate with AI');
+    expect(button.disabled).toBe(false);
+  });
+
+  it('a prompt on top of the controls says BOTH things happen', () => {
+    mount({ sim_meta: { uiControls: { controls: [], show: [], hide: ['#speed'] } } as never });
+    fireEvent.change(promptBox(), { target: { value: 'Start it running' } });
+    expect(screen.getByText(/AI writes the script for this moment and hides the controls you unchecked/i)).toBeTruthy();
+  });
+
+  it('the switches that decide whether any of it applies are step 3, inside the same card', () => {
+    // They were the one fragment the redesign left loose: unnumbered furniture under numbered
+    // steps, and the only part of the card painted in a hardcoded light-only wash.
+    mount();
+    expect(screen.getByText(/3 · Apply them/)).toBeTruthy();
+    const simpleUi = screen.getByText('Simple UI').closest('button') as HTMLButtonElement;
+    expect(simpleUi.style.backgroundColor).not.toBe('rgb(255, 251, 235)');
+    expect(simpleUi.style.borderColor === '' || simpleUi.style.border.includes('hsl(var(--border))')).toBe(true);
+  });
+
   it('the two optional steps are numbered and the control picker shows how many are kept', () => {
     mount();
     expect(screen.getByText(/1 · Describe it/)).toBeTruthy();

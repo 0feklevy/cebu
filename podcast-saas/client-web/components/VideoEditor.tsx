@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { EDITOR_STEPS, toTourSteps } from '@/lib/tours/steps';
+import { upsertById } from '@/lib/simulationList';
 import { tourAnchor } from '@/lib/tours/anchors';
 import { useBannerSweep } from './useBannerSweep';
 import { SimSurface } from '../lib/sim/SimSurface';
@@ -1858,7 +1859,9 @@ export function VideoEditor({ projectId }: Props) {
             showAudioTrack={showAudioTrack}
             onBrollMarkComplete={setBrollMark}
             onAudioCutawayInserted={section => commitSections([...sections, section])}
-            onSimulationUpdate={sim => setSimulations(prev => prev.map(s => s.id === sim.id ? sim : s))}
+            // An UPSERT, not a replace — see `lib/simulationList.ts` for why the difference is
+            // load-bearing and why the rule is not spelled out inline here any more.
+            onSimulationUpdate={sim => setSimulations(prev => upsertById(prev, sim))}
             circlesMode={circlesPicking !== null}
             circleRanges={circlesPicking ?? []}
             onCircleRangesChange={setCirclesPicking}

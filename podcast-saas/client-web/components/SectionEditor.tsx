@@ -1165,7 +1165,10 @@ export function SectionEditor({
     setPresets(null);
     try {
       const r = await api.listBridgePresets();
-      setPresets(r.presets);
+      // The client contract in `shared/src/generated/client-v1.ts` is hand-maintained, so a
+      // backend that stops sending `presets` breaks nothing at build time and throws HERE, inside
+      // render, taking the whole editor down with it. An empty list is the honest fallback.
+      setPresets(Array.isArray(r?.presets) ? r.presets : []);
     } catch (e) {
       setPresetError((e as Error).message || 'Could not load your saved bridges');
       setPresets([]);
@@ -2530,7 +2533,9 @@ export function SectionEditor({
                       )}
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div style={{ marginTop: -4 }}>
+                      <label style={labelStyle}>3 · Apply them</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 6 }}>
                       {([
                         { key: 'simpleUi' as const,   label: 'Simple UI',   desc: 'Hides irrelevant controls', on: simpleUi,   set: setSimpleUi },
                         { key: 'autoScript' as const, label: 'Auto Script', desc: 'Animates demonstration',    on: autoScript, set: setAutoScript },
@@ -2541,14 +2546,17 @@ export function SectionEditor({
                           style={{
                             display: 'flex', alignItems: 'center', gap: 10,
                             padding: '10px 12px', borderRadius: 9,
-                            border: `1.5px solid ${on ? '#f59e0b' : '#e5e7eb'}`,
-                            backgroundColor: on ? '#fffbeb' : '#f9fafb',
+                            border: `1.5px solid ${on ? '#f59e0b' : 'hsl(var(--border))'}`,
+                            // A translucent wash rather than a hex one: it reads as the card's
+                            // amber over a light ground AND over a dark one.
+                            backgroundColor: on ? 'rgba(245,158,11,0.12)' : 'hsl(var(--muted))',
                             cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
                           }}
                         >
                           <span style={{
                             width: 36, height: 20, borderRadius: 10, flexShrink: 0,
-                            backgroundColor: on ? '#f59e0b' : '#d1d5db',
+                            backgroundColor: on ? '#f59e0b' : 'hsl(var(--muted-foreground))',
+                            opacity: on ? 1 : 0.35,
                             position: 'relative', display: 'inline-block', transition: 'background-color 0.15s',
                           }}>
                             <span style={{
@@ -2559,11 +2567,16 @@ export function SectionEditor({
                             }} />
                           </span>
                           <div>
-                            <p style={{ fontSize: 12, fontWeight: 600, color: on ? '#92400e' : '#374151', margin: 0 }}>{tLabel}</p>
-                            <p style={{ fontSize: 10, color: '#9ca3af', margin: 0 }}>{desc}</p>
+                            {/* The label keeps the theme's own foreground in BOTH states: the
+                                on-state amber is legible over a dark card and washed out over a
+                                light one, and the amber border, track and knob already say which
+                                state this is. */}
+                            <p style={{ fontSize: 12, fontWeight: on ? 700 : 600, color: 'hsl(var(--foreground))', margin: 0 }}>{tLabel}</p>
+                            <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', margin: 0 }}>{desc}</p>
                           </div>
                         </button>
                       ))}
+                      </div>
                     </div>
 
                     {simGenError && (
@@ -2686,14 +2699,27 @@ export function SectionEditor({
                       </button>
                     )}
 
-                    {/* ── Reuse: name this setup, or load one saved elsewhere ── */}
-                    <div style={{ borderTop: '1px solid hsl(var(--border))', paddingTop: 10, marginTop: 2 }}>
+                  </div>
+                )}
+
+                {/* ── Reuse: name this setup, or load one saved elsewhere ──
+                    Deliberately OUTSIDE the `simId` gate above. A saved setup carries its own
+                    simulation, so a section with nothing in it is exactly where loading one is
+                    worth the most — and while this row lived inside that gate the feature was
+                    unreachable in the only case it was built for. */}
+                <div style={{ ...cardStyle('#f59e0b'), gap: 8 }}>
                     <label style={labelStyle}>Reuse this setup</label>
                     <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '-2px 0 8px', lineHeight: 1.5 }}>
                       A saved setup is this section’s whole configuration — the prompt, the script, the
                       kept controls, Minimal UI and Auto-script — under a name you can load onto another
                       simulation, in this project or another one.
                     </p>
+                    {!simId && (
+                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '0 0 8px', lineHeight: 1.5, padding: '8px 10px', borderRadius: 8, border: '1px dashed hsl(var(--border))' }}>
+                        This section has no simulation yet. Loading a saved setup brings its
+                        simulation with it — nothing is stored twice.
+                      </p>
+                    )}
                     <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6 }}>
                       <button
                         onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
@@ -2726,7 +2752,6 @@ export function SectionEditor({
                       >
                         Load setup…
                       </button>
-                    </div>
                     </div>
                     {presetNotice && (
                       <div role="status" style={{ marginTop: 6, fontSize: 12, color: '#15803d' }}>{presetNotice}</div>
@@ -2772,8 +2797,7 @@ export function SectionEditor({
                         </div>
                       </div>
                     )}
-                  </div>
-                )}
+                </div>
 
                 {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) ── */}
                 {simId && (

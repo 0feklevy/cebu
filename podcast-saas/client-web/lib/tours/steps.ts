@@ -51,7 +51,7 @@ export const EDITOR_STEPS: readonly Step[] = [
   {
     anchor: 'share',
     title: 'Share: three addresses',
-    body: 'One project, three public pages: the video, its Library of materials, and the podcast — a hands-free audio version listeners talk to in the car, or press ✋ Raise your hand to ask in text. Press “Create podcast” once the video is public. Group public videos into a playlist from the home page.',
+    body: 'One project, three public pages: the video, its Library of materials, and the podcast — a hands-free audio version listeners interrupt out loud to ask a question and hear the answer spoken back. Press “Create podcast” once the video is public. Group public videos into a playlist.',
   },
   {
     anchor: 'export',

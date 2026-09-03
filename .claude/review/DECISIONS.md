@@ -1,12 +1,17 @@
 # Open decisions
 
-**State as of 2026-09-03 (morning).** Production runs **v0.3.0**, dispatched by the owner 2026-09-03 06:38Z
-(`refs/deployed/production` = `e74c58e`, the merge of #171) — the whole night run #165–#171 under the plan of
-record `NIGHT-RUN-2026-09-03.md` (indexed below, outcome in its §11). **v0.3.0 shipped a layout regression**
-(every `min-[…]:`/`max-[…]:` Tailwind variant disabled by a raw screen; the import gallery trapped inside the
-editor rail) — owner-reported, fixed in **#172**, which ships as **v0.3.1** by the owner's instruction. The share
-library's missing banners and slow first paint (owner-reported the same morning) are fixed in **#173**.
-The next phase — the owner's six priorities — is planned in `NEXT-PHASE-2026-09-03.md` and indexed below.
+**State as of 2026-09-03 (afternoon).** Production runs **v0.4.1**, dispatched by the owner 12:26Z
+(`refs/deployed/production` = `e623924`, the merge of #179) — the night run #165–#171 plus the whole next
+phase #172–#179. The owner then ran the storage reconciliation on production, DRY RUN, and rotated the
+Anam credential (see the OWNER REPORT section below for the numbers and the ruling on them).
+
+**Merged and NOT yet released:** #180 (the creator inbox removed, the Banners button removed, the import
+gallery a panel), #181 (Tap to ask, interactive) and #183 (the script panel redesigned; a saved setup
+carries its simulation between projects — migration 084, additive). One dispatch ships all three:
+`gh workflow run release.yml -f bump=minor -f deploy=true`.
+
+The two plans of record are `NIGHT-RUN-2026-09-03.md` (outcome in its §11) and `NEXT-PHASE-2026-09-03.md`
+(outcome in its §8); both are indexed below.
 
 **The previous version of this header said v0.2.11 "was dispatched on 2026-08-26 and never
 deployed".** True when written (a GitHub Actions outage cancelled that run) and false four days
@@ -200,6 +205,44 @@ The plan built from it is `NEXT-PHASE-2026-09-03.md` (indexed at the end of this
   previous rollback release; remove older local application image references safely after a successful
   deploy/health gate; never touch running images, persistent volumes, nginx/certbot data or environment backups.
   Add a low-disk warning/refusal before deploy so a >90% VM fails early.
+
+### Adversarial audit of the seven rulings (2026-09-03, before #183 merged)
+
+An audit agent re-checked all seven of the afternoon's UI/feature rulings against the code rather
+than against my account of it. Five were clean. It found four gaps, and chasing the first one down
+found a fifth that the audit had also passed:
+
+- 🟢 **A brought simulation never reached the picker.** `VideoEditor`'s `onSimulationUpdate` was
+  `prev.map(...)` — a REPLACE. Two of its three callers hand up a simulation the project has never
+  seen (the load dialog's Import button, and a setup bringing its own package), and a replace drops
+  those silently. Fixed by extracting the rule to `client-web/lib/simulationList.ts` (`upsertById`)
+  with its own tests, because both spellings compile and only one is right.
+- 🟢 **The whole feature was unreachable in its primary case.** Found while writing the test above:
+  the "Reuse this setup" row lived inside `{simId && (…)}`, so on a section with NO simulation the
+  Load button did not render at all — the one case the portable setup exists for. The row is now its
+  own card outside that gate, and says what Load will do when the section is empty. **The audit did
+  not catch this**: it verified the button's `disabled` prop no longer names `simId` and stopped
+  there. A prop check cannot see an enclosing gate; only rendering it can.
+- 🟢 **The two switches were the redesign's leftover fragment.** Simple UI / Auto Script sat
+  unnumbered under the numbered steps and were the only part of the card painted in a hardcoded
+  light-only amber wash, so they broke in dark mode. They are now step 3 · Apply them, on theme
+  tokens.
+- 🟢 **`askQuestion` was dead code the owner had asked to delete.** The typed-ask client function
+  survived the Questions removal with zero callers. Deleted with its tests; the tour step that still
+  advertised "✋ Raise your hand" is rewritten to describe the voice interruption, and the tour test
+  now asserts the removed phrase is ABSENT.
+- 🟢 **Two untested behaviours, now pinned.** The import dialog's backdrop-click (closes; refused
+  mid-import) and the script panel's third outcome state (controls, no prompt → "No AI, no cost").
+- 🟢 **`setPresets(r.presets)` had no guard.** The hand-maintained client contract means a backend
+  that stops sending `presets` throws inside render and takes the editor down. Now falls back to an
+  empty list.
+
+🔴 **Still open — the typed-question backend surface.** `POST /api/v1/public/audio/:slug/questions`
+and `GET /api/v1/projects/:id/questions` are still registered and now have no caller. The first is
+public, unauthenticated, and spends the project owner's LLM budget by design; leaving it live with
+no user is an attack surface with no benefit. `listener_questions` and `ListenerQuestionService`
+must STAY — the voice path writes through them. Removing two routes is a public-contract change and
+belongs in its own PR, not smuggled into one about saved setups.
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 

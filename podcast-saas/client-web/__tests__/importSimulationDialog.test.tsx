@@ -13,7 +13,7 @@
  * `SimSurface` is stubbed: a frame in jsdom loads nothing and the CSP would refuse the URL anyway.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { ImportSimulationDialog, runWithLimit } from '../components/ImportSimulationDialog';
 import type { ImportableSimulation } from 'shared/src/generated/client-v1';
@@ -75,6 +75,51 @@ function open() {
 
 const card = (name: string): HTMLElement => screen.getByText(name).closest('.import-sim-card') as HTMLElement;
 const checkboxIn = (name: string): HTMLInputElement => card(name).querySelector('input[type="checkbox"]') as HTMLInputElement;
+
+describe('the gallery is a bounded panel on a backdrop, and the backdrop is a way out', () => {
+  it('the panel is NOT the fixed surface — the overlay behind it is', async () => {
+    // v0.3.0 shipped the dialog as its own `position:fixed;inset:0` element, so it filled the
+    // screen and any ancestor transform could trap it. The overlay is the fixed layer now; the
+    // panel is a bounded box inside it (~90%), the way Video settings has always been.
+    open();
+    await screen.findByText('Kepler orbits');
+    const panel = screen.getByRole('dialog');
+    expect(panel.className).toContain('import-sim');
+    expect(panel.parentElement?.className).toBe('import-sim__overlay');
+  });
+
+  it('clicking the backdrop closes it; clicking inside the panel does not', async () => {
+    const { onClose } = open();
+    await screen.findByText('Kepler orbits');
+    const overlay = screen.getByRole('dialog').parentElement as HTMLElement;
+
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(overlay);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a click on the backdrop MID-IMPORT is ignored — closing would strand the copy in flight', async () => {
+    let release: (v: unknown) => void = () => {};
+    importSimulation.mockImplementation(() => new Promise(r => { release = r; }));
+    const { onClose } = open();
+    await screen.findByText('Kepler orbits');
+    fireEvent.click(checkboxIn('Kepler orbits'));
+    fireEvent.click(screen.getByRole('button', { name: /^import/i }));
+
+    const overlay = screen.getByRole('dialog').parentElement as HTMLElement;
+    await waitFor(() => expect(importSimulation).toHaveBeenCalled());
+    fireEvent.click(overlay);
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Escape is refused for the same reason.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    // Let the import finish inside act so the unmount does not race a state update.
+    await act(async () => { release({ id: 's1', name: 'imported-s1' }); });
+  });
+});
 
 describe('one request, every project', () => {
   it('lists every importable simulation from ONE request that excludes the destination', async () => {

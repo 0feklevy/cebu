@@ -10,3 +10,4 @@
 - [PR #168 help-coverage audit — CLOSED](project_flowvid-2026-09-03-help-coverage-audit.md) — all 3 gaps fixed by PR #171 (4c93336), re-verified by mutation 2026-09-03; also closes the §6/PR #169 poster-route-test and lint gaps
 - [NEXT-PHASE §4/§5/§6 audit (storage-reconcile, r2-readiness, playlist-course)](project_flowvid-2026-09-03-next-phase-4-5-6-audit.md) — §4/§5 clean; §6 missing the course slug-field UI the plan itself specified
 - [PRs #174/#175 deploy-retention + listener-inbox audit — CLOSED](project_flowvid-2026-09-03-deploy-retention-and-listener-inbox-audit.md) — both merged clean; one live CI-race fixed mid-audit (raiseHand.test.tsx vs new replies fetch)
+- [7 owner rulings audit (PRs #180/#181 main, #183 portable-setup)](project_flowvid-2026-09-03-owner-rulings-audit.md) — 6 clean; real bug: VideoEditor.tsx:1861 onSimulationUpdate can't append a new sim

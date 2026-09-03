@@ -7,10 +7,8 @@
  * replies and this parser, where before each side kept its own hand-written copy.
  */
 import {
-  AskQuestionResponseSchema,
   AudioEditionViewSchema,
   VoiceQuestionResponseSchema,
-  type AskQuestionResponse,
   type AudioChapter,
   type AudioEditionView,
   type VoiceQuestionResponse,
@@ -20,8 +18,8 @@ import {
 
 export {
   VoiceStreamEventSchema, type VoiceStreamEvent,
-  AskQuestionResponseSchema, AudioEditionViewSchema, VoiceQuestionResponseSchema,
-  type AskQuestionResponse, type AudioChapter, type AudioEditionView, type VoiceQuestionResponse,
+  AudioEditionViewSchema, VoiceQuestionResponseSchema,
+  type AudioChapter, type AudioEditionView, type VoiceQuestionResponse,
 };
 
 const BACKEND =
@@ -113,49 +111,6 @@ export function chapterIndexAt(chapters: readonly AudioChapter[], positionMs: nu
   return -1;
 }
 
-// ── Raise your hand (A2.4, client half) ───────────────────────────────────────────────────────
-
-/**
- * Ask a question at a moment in the audio.
- *
- * The client always requests `intent: 'answer'` — the full experience — and the SERVER decides
- * what the budget allows: it downgrades to `saved` (with the reason) or refuses outright. Spend
- * control belongs to the side that knows the budget; a client-side default of 'save' would just
- * mean nobody ever gets an answer, silently, which is the worse failure.
- *
- * Failures return `refused` with a human sentence rather than throwing: on a locked phone in a
- * car there is nobody to read a stack trace, and the ONE thing this function must never do is
- * leave the asker without any response at all.
- */
-export async function askQuestion(
-  slug: string,
-  input: { question: string; positionMs: number; language?: string | null },
-): Promise<AskQuestionResponse> {
-  try {
-    const res = await fetch(`${BACKEND}/api/v1/public/audio/${encodeURIComponent(slug)}/questions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question: input.question,
-        position_ms: Math.max(0, Math.round(input.positionMs)),
-        language: input.language ?? null,
-        intent: 'answer',
-      }),
-    });
-    const body: unknown = await res.json().catch(() => null);
-    if (!res.ok) {
-      const message = (body as { message?: string } | null)?.message
-        ?? (res.status === 429 ? 'Too many questions — please slow down.' : 'Could not send your question.');
-      return { status: 'refused', answer: null, message };
-    }
-    const parsed = AskQuestionResponseSchema.safeParse(body);
-    if (!parsed.success) return { status: 'refused', answer: null, message: 'Could not read the answer.' };
-    return parsed.data;
-  } catch {
-    return { status: 'refused', answer: null, message: 'You appear to be offline — your question was not sent.' };
-  }
-}
-
 // ── The spoken question (car mode) ────────────────────────────────────────────────────────────
 
 const refusedVoice = (message: string): VoiceQuestionResponse => ({
@@ -164,7 +119,7 @@ const refusedVoice = (message: string): VoiceQuestionResponse => ({
 
 /**
  * Ship one utterance — a 16 kHz mono WAV — and get the answer back, spoken (mp3, base64) and as
- * text. Same contract as `askQuestion`: this never throws, so the loop is never left waiting on
+ * text. Like every call on this page it never throws, so the loop is never left waiting on
  * a listener who cannot look at the screen.
  */
 export async function askVoiceQuestion(
