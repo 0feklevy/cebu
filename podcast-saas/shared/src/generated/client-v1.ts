@@ -1910,12 +1910,19 @@ export class ClientV1Api {
   }
 
   /** Create the course if needed, sync its lessons from the playlist, publish when `publish` is true. */
-  publishPlaylistCourse(playlistId: string, body: { publish: boolean; force?: boolean }): Promise<PlaylistCourseState> {
+  publishPlaylistCourse(playlistId: string, body: { publish: boolean; force?: boolean; slug?: string | null }): Promise<PlaylistCourseState> {
     return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'POST', body });
   }
 
   unpublishPlaylistCourse(playlistId: string): Promise<PlaylistCourseState> {
     return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'DELETE' });
+  }
+
+  /** Is this course address free? `normalized` is what the server would store. */
+  courseSlugAvailable(slug: string, excludeId?: string): Promise<{ available: boolean; normalized: string }> {
+    const q = new URLSearchParams({ slug });
+    if (excludeId) q.set('excludeId', excludeId);
+    return this.request(`/api/v1/courses/slug-available?${q.toString()}`);
   }
 
   // ── Permalinks (migration 043) ──────────────────────────────────────────

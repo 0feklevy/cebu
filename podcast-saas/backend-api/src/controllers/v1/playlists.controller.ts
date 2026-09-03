@@ -581,13 +581,16 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       return courseHandle(reply, () => PlaylistCourseService.state(courseUser, request.params.id));
     },
   );
-  app.post<{ Params: { id: string }; Body: { publish?: boolean; force?: boolean } }>(
+  app.post<{ Params: { id: string }; Body: { publish?: boolean; force?: boolean; slug?: string | null } }>(
     '/api/v1/playlists/:id/course',
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const courseUser = courseAuthUserOf(request.dbUser);
       if (!courseUser) return reply.code(400).send({ message: 'User has no organization' });
-      return courseHandle(reply, () => PlaylistCourseService.publish(courseUser, request.params.id, { publish: request.body?.publish !== false, force: request.body?.force === true }));
+      return courseHandle(reply, () => PlaylistCourseService.publish(courseUser, request.params.id, {
+        publish: request.body?.publish !== false, force: request.body?.force === true,
+        slug: typeof request.body?.slug === 'string' ? request.body.slug : null,
+      }));
     },
   );
   app.delete<{ Params: { id: string } }>(

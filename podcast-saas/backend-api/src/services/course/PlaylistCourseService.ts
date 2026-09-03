@@ -101,7 +101,7 @@ export const PlaylistCourseService = {
    * banner), sync the lessons, and publish when asked. The readiness refusal (422 with the thin
    * lessons) comes from the existing publish and is passed through untouched.
    */
-  async publish(user: AuthUser, playlistId: string, opts: { publish: boolean; force?: boolean }): Promise<PlaylistCourseState> {
+  async publish(user: AuthUser, playlistId: string, opts: { publish: boolean; force?: boolean; slug?: string | null }): Promise<PlaylistCourseState> {
     const playlist = await ownedPlaylist(playlistId, user);
     const itemIds = await orderedProjectIds(playlistId);
     if (itemIds.length === 0) throw new CourseAuthzError(422, 'Add at least one video to the playlist before publishing it as a course.');
@@ -110,11 +110,17 @@ export const PlaylistCourseService = {
     if (!course) {
       const created = await CoursePublishingService.createCourse(user, {
         title: playlist.title ?? 'Untitled course', description: playlist.description ?? null, kind: 'playlist',
+        slug: opts.slug?.trim() || null,
       });
       course = (await CourseRepository.update(created.id, { legacy_playlist_id: playlistId, cover_image_url: playlist.banner_url ?? null })) ?? created;
     } else if (course.cover_image_url !== (playlist.banner_url ?? null) || course.title !== (playlist.title ?? course.title)) {
       course = (await CourseRepository.update(course.id, { cover_image_url: playlist.banner_url ?? null, title: playlist.title ?? course.title })) ?? course;
     }
+
+    // A chosen address: on an existing course it is a rename (409 when taken, 400 when invalid —
+    // the course service's own answers, passed through).
+    const wantedSlug = opts.slug?.trim();
+    if (wantedSlug && wantedSlug !== course.slug) course = await CoursePublishingService.changeSlug(user, course.id, wantedSlug);
 
     const lessonCount = await syncLessonsFromPlaylist(user, course, playlistId);
     if (opts.publish) course = await CoursePublishingService.publish(user, course.id, { force: opts.force });

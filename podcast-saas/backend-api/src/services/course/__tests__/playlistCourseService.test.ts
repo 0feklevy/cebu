@@ -39,7 +39,8 @@ vi.mock('../CoursePublishingService.js', () => {
   return {
     CourseAuthzError,
     CoursePublishingService: {
-      createCourse: async (_u: unknown, input: { title?: string | null }) => { state.calls.push(`create:${input.title}`); state.course = { id: 'c1', slug: 'my-course', publish_state: 'draft', published_at: null, title: input.title, cover_image_url: null }; return state.course; },
+      createCourse: async (_u: unknown, input: { title?: string | null; slug?: string | null }) => { state.calls.push(`create:${input.title}${input.slug ? ':' + input.slug : ''}`); state.course = { id: 'c1', slug: input.slug ?? 'my-course', publish_state: 'draft', published_at: null, title: input.title, cover_image_url: null }; return state.course; },
+      changeSlug: async (_u: unknown, id: string, slug: string) => { state.calls.push(`slug:${id}:${slug}`); state.course = { ...state.course!, slug }; return state.course; },
       addLesson: async (_u: unknown, courseId: string, projectId: string, input: { title?: string | null }) => {
         state.calls.push(`add:${projectId}:${input.title}`);
         state.lessons.push({ id: `l-${projectId}`, project_id: projectId, slug: `l-${projectId}`, position: state.lessons.length + 1 });
@@ -97,6 +98,18 @@ describe('PlaylistCourseService.publish', () => {
     await expect(PlaylistCourseService.publish({ id: 'u2', orgId: 'other' }, 'pl-1', { publish: true })).rejects.toThrow(/Not authorized/);
     state.playlist = null;
     await expect(PlaylistCourseService.state(USER, 'pl-1')).rejects.toThrow(/Playlist not found/);
+  });
+
+  it('a chosen address is used on create, and renames an existing course only when it differs', async () => {
+    const s = await PlaylistCourseService.publish(USER, 'pl-1', { publish: false, slug: 'chaos-course' });
+    expect(state.calls[0]).toBe('create:Chaos, in five parts:chaos-course');
+    expect(s.course?.public_path).toBe('/c/chaos-course');
+    state.calls = [];
+    await PlaylistCourseService.publish(USER, 'pl-1', { publish: false, slug: 'chaos-course' });
+    expect(state.calls.some((c) => c.startsWith('slug:'))).toBe(false);
+    const renamed = await PlaylistCourseService.publish(USER, 'pl-1', { publish: false, slug: ' chaos-2 ' });
+    expect(state.calls).toContain('slug:c1:chaos-2');
+    expect(renamed.course?.slug).toBe('chaos-2');
   });
 
   it('publish: false creates and syncs a draft without publishing', async () => {

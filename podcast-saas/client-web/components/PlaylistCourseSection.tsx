@@ -21,11 +21,24 @@ export function PlaylistCourseSection({ playlistId, itemCount }: Props) {
   const [busy, setBusy] = useState<'publish' | 'update' | 'unpublish' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // The address: prefilled with the course's slug once it exists; empty means "from the title".
+  const [slug, setSlug] = useState('');
+  const [slugCheck, setSlugCheck] = useState<{ available: boolean; normalized: string } | null>(null);
 
   const load = useCallback(() => {
-    api.getPlaylistCourse(playlistId).then(setState).catch(() => setState(null));
+    api.getPlaylistCourse(playlistId).then((s) => { setState(s); if (s.course) setSlug(s.course.slug); }).catch(() => setState(null));
   }, [playlistId]);
   useEffect(() => { load(); }, [load]);
+
+  // Availability, a moment after typing stops; the current course's own slug is always available.
+  useEffect(() => {
+    const wanted = slug.trim();
+    if (!wanted || wanted === state?.course?.slug) { setSlugCheck(null); return; }
+    const t = window.setTimeout(() => {
+      api.courseSlugAvailable(wanted, state?.course?.id).then(setSlugCheck).catch(() => setSlugCheck(null));
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [slug, state?.course?.id, state?.course?.slug]);
 
   const run = useCallback(async (kind: 'publish' | 'update' | 'unpublish') => {
     setBusy(kind);
@@ -33,14 +46,15 @@ export function PlaylistCourseSection({ playlistId, itemCount }: Props) {
     try {
       const next = kind === 'unpublish'
         ? await api.unpublishPlaylistCourse(playlistId)
-        : await api.publishPlaylistCourse(playlistId, { publish: kind === 'publish' || state?.course?.publish_state === 'published' });
+        : await api.publishPlaylistCourse(playlistId, { publish: kind === 'publish' || state?.course?.publish_state === 'published', slug: slug.trim() || null });
       setState(next);
+      if (next.course) setSlug(next.course.slug);
     } catch (e) {
       setError((e as Error).message || 'Could not update the course.');
     } finally {
       setBusy(null);
     }
-  }, [playlistId, state?.course?.publish_state]);
+  }, [playlistId, slug, state?.course?.publish_state]);
 
   const course = state?.course ?? null;
   const published = course?.publish_state === 'published';
@@ -73,6 +87,22 @@ export function PlaylistCourseSection({ playlistId, itemCount }: Props) {
           </button>
         </div>
       )}
+      <div className="flex items-center gap-2">
+        <label htmlFor={`course-slug-${playlistId}`} className="shrink-0 text-[11px] text-muted-foreground">/c/</label>
+        <input
+          id={`course-slug-${playlistId}`}
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+          placeholder="from the title"
+          aria-label="Course address"
+          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-card px-2 text-xs text-foreground outline-none focus:border-primary/45 focus:ring-2 focus:ring-ring/20"
+        />
+        {slugCheck && (
+          <span role="status" className={`shrink-0 text-[11px] ${slugCheck.available ? 'text-emerald-600' : 'text-red-600'}`}>
+            {slugCheck.available ? `available as ${slugCheck.normalized}` : slugCheck.normalized ? `${slugCheck.normalized} is taken` : 'not a valid address'}
+          </span>
+        )}
+      </div>
       {thin.length > 0 && (
         <ul className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700" aria-label="Why it cannot publish yet">
           {thin.slice(0, 5).map((t) => <li key={t.lessonSlug}>{t.lessonSlug}: {t.reason}</li>)}
