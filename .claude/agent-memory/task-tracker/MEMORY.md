@@ -11,3 +11,4 @@
 - [NEXT-PHASE §4/§5/§6 audit (storage-reconcile, r2-readiness, playlist-course)](project_flowvid-2026-09-03-next-phase-4-5-6-audit.md) — §4/§5 clean; §6 missing the course slug-field UI the plan itself specified
 - [PRs #174/#175 deploy-retention + listener-inbox audit — CLOSED](project_flowvid-2026-09-03-deploy-retention-and-listener-inbox-audit.md) — both merged clean; one live CI-race fixed mid-audit (raiseHand.test.tsx vs new replies fetch)
 - [7 owner rulings audit (PRs #180/#181 main, #183 portable-setup)](project_flowvid-2026-09-03-owner-rulings-audit.md) — 6 clean; real bug: VideoEditor.tsx:1861 onSimulationUpdate can't append a new sim
+- [Layout regression + library banners + PR #185 panel followups audit](project_flowvid-2026-09-03-layout-regression-and-panel-followups-audit.md) — #172/#173 clean; PR #185's 5 claims hold, 2 narrow residual gaps (untested focus-restore, one Minimal-UI string survives in empty-scan state)

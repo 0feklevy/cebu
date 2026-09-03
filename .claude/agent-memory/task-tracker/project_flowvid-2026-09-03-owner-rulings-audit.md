@@ -99,3 +99,14 @@ end (`git worktree remove --force`). Re-verified at the very end: `origin/main` 
 `headRefOid` both unchanged from the SHAs audited; PR #183's `mergeStateStatus: UNSTABLE` is just
 "Release verification gate" still `pending` at report time (all other checks green), not a
 conflict — `mergeable: MERGEABLE`.
+
+**UPDATE, same day, later session.** The bug this memory found (`VideoEditor.tsx`'s
+`onSimulationUpdate` REPLACE) and the two staleness gaps (hardcoded amber toggle grid, stale tour
+copy) were all fixed by commit `18509e5` ("fix(setup): a brought simulation reached the section but
+never the picker") before this memory was even read back — the rule moved to
+`client-web/lib/simulationList.ts`'s `upsertById`, with a NEW mount-level test
+(`broughtSimulationReachesTheList.test.tsx`) that renders `SectionEditor` on a section with
+`simulation_id: null` and asserts the Load button is enabled and rendered — closing exactly the
+"a disabled prop cannot see an enclosing gate" hole this memory itself named. See
+[[flowvid-2026-09-03-layout-regression-and-panel-followups-audit]] for the full re-verification and
+what is still actually open (two narrower residual gaps, different from the ones this memory found).
