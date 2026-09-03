@@ -270,6 +270,10 @@ export function SectionEditor({
   const [presetError, setPresetError] = useState<string | null>(null);
   const [presetBusy, setPresetBusy] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
+  // Where the keyboard was before a setup dialog opened. Both dialogs are portaled to <body>, so
+  // closing one otherwise drops focus onto <body> and the next Tab restarts at the top of the
+  // page — a long way back to the button that was just pressed.
+  const setupDialogReturnFocus = useRef<HTMLElement | null>(null);
   const [presets, setPresets] = useState<BridgePreset[] | null>(null);
   const [selectedPreset, setSelectedPreset] = useState<BridgePreset | null>(null);
   // The server-composed sentence for the selected preset — which path a load would take and why.
@@ -639,11 +643,36 @@ export function SectionEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [genJob?.id, genJob?.status]);
 
+  // Escape closes the TOPMOST thing, not the whole editor. Both setup dialogs are portaled to
+  // <body>, so a listener on window still hears their keystrokes: before this, pressing Escape to
+  // back out of "name this setup" shut the entire section editor instead, losing the panel the
+  // author was working in.
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (presetSaveOpen) { setPresetSaveOpen(false); return; }
+      if (loadOpen) { setLoadOpen(false); return; }
+      onClose();
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, [onClose, presetSaveOpen, loadOpen]);
+
+  // Remember where the keyboard was, and put it back when the dialog closes — by Escape, by
+  // Cancel, by the backdrop, or by a save that succeeded. Without this the caret lands on <body>
+  // and the next Tab starts again at the top of the page.
+  const setupDialogOpen = presetSaveOpen || loadOpen;
+  useEffect(() => {
+    if (setupDialogOpen) {
+      const active = document.activeElement;
+      setupDialogReturnFocus.current = active instanceof HTMLElement ? active : null;
+      return;
+    }
+    const back = setupDialogReturnFocus.current;
+    setupDialogReturnFocus.current = null;
+    // Only if it is still on the page: the button can be gone if the section re-rendered around it.
+    if (back && back.isConnected) back.focus();
+  }, [setupDialogOpen]);
 
   // Close SSE stream / abort the in-flight generation on unmount
   useEffect(() => {
@@ -2439,8 +2468,8 @@ export function SectionEditor({
                                       <span style={{
                                         fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
                                         flexShrink: 0, minWidth: 46, textAlign: 'center',
-                                        backgroundColor: keep ? 'rgba(22,163,74,0.12)' : 'rgba(220,38,38,0.12)',
-                                        color: keep ? '#15803d' : '#b91c1c',
+                                        backgroundColor: keep ? 'hsl(var(--success) / 0.14)' : 'hsl(var(--destructive) / 0.14)',
+                                        color: keep ? 'hsl(var(--success))' : 'hsl(var(--destructive))',
                                       }}>
                                         {keep ? '✓ Keep' : '✕ Hide'}
                                       </span>
@@ -2473,7 +2502,7 @@ export function SectionEditor({
                                         <span style={{
                                           flexShrink: 0, fontSize: 8.5, fontWeight: 700,
                                           padding: '1px 5px', borderRadius: 4,
-                                          border: '1px solid #e5e7eb', backgroundColor: '#f3f4f6', color: '#9ca3af',
+                                          border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--muted))', color: 'hsl(var(--muted-foreground))',
                                         }}>
                                           hidden
                                         </span>
@@ -2526,7 +2555,7 @@ export function SectionEditor({
 
                           {!simpleUi && (
                             <p style={{ fontSize: 10, color: '#b45309', margin: 0, flexShrink: 0 }}>
-                              Minimal UI is off — your picks are saved and apply when it&rsquo;s on.
+                              Simple UI is off — your picks are saved and apply when it&rsquo;s on.
                             </p>
                           )}
                         </div>
@@ -2534,7 +2563,10 @@ export function SectionEditor({
                     </div>
 
                     <div style={{ marginTop: -4 }}>
-                      <label style={labelStyle}>3 · Apply them</label>
+                      {/* NOT "Apply them": the apply is the button below, and numbering a
+                          setting as the final step told the reader they were finished one
+                          control early. Three numbered inputs, then the action. */}
+                      <label style={labelStyle}>3 · How it behaves</label>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 6 }}>
                       {([
                         { key: 'simpleUi' as const,   label: 'Simple UI',   desc: 'Hides irrelevant controls', on: simpleUi,   set: setSimpleUi },
@@ -2542,6 +2574,9 @@ export function SectionEditor({
                       ] as const).map(({ key, label: tLabel, desc, on, set }) => (
                         <button
                           key={key}
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
                           onClick={() => set((v: boolean) => !v)}
                           style={{
                             display: 'flex', alignItems: 'center', gap: 10,
@@ -2580,20 +2615,20 @@ export function SectionEditor({
                     </div>
 
                     {simGenError && (
-                      <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 12px' }}>
-                        <p style={{ fontSize: 11, color: '#dc2626', margin: 0 }}>{simGenError}</p>
+                      <div style={{ backgroundColor: 'hsl(var(--destructive) / 0.12)', border: '1px solid hsl(var(--destructive) / 0.4)', borderRadius: 8, padding: '8px 12px' }}>
+                        <p style={{ fontSize: 11, color: 'hsl(var(--destructive))', margin: 0 }}>{simGenError}</p>
                       </div>
                     )}
 
                     {simMeta && !generating && (
-                      <div style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderLeft: '3px solid #10b981', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
+                      <div style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderLeft: '3px solid hsl(var(--success))', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: '#166534' }}>Last generation</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'hsl(var(--success))' }}>Last generation</span>
                           {simMeta.confidence != null && (
                             <span style={{
                               fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 5,
-                              backgroundColor: simMeta.confidence >= 0.8 ? '#dcfce7' : simMeta.confidence >= 0.5 ? '#fef9c3' : '#fee2e2',
-                              color: simMeta.confidence >= 0.8 ? '#166534' : simMeta.confidence >= 0.5 ? '#713f12' : '#991b1b',
+                              backgroundColor: simMeta.confidence >= 0.8 ? 'hsl(var(--success) / 0.16)' : simMeta.confidence >= 0.5 ? 'hsl(var(--warning) / 0.16)' : 'hsl(var(--destructive) / 0.16)',
+                              color: simMeta.confidence >= 0.8 ? 'hsl(var(--success))' : simMeta.confidence >= 0.5 ? 'hsl(var(--warning))' : 'hsl(var(--destructive))',
                             }}>
                               {Math.round(simMeta.confidence * 100)}% confidence
                             </span>
@@ -2639,9 +2674,9 @@ export function SectionEditor({
                           );
                         })()}
                         {simMeta.confidence != null && simMeta.confidence < 0.45 && (
-                          <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px' }}>
-                            <p style={{ fontSize: 10, color: '#dc2626', margin: 0 }}>
-                              ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — verify the bridge runs correctly before recording
+                          <div style={{ backgroundColor: 'hsl(var(--destructive) / 0.12)', border: '1px solid hsl(var(--destructive) / 0.4)', borderRadius: 6, padding: '5px 8px' }}>
+                            <p style={{ fontSize: 10, color: 'hsl(var(--destructive))', margin: 0 }}>
+                              ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — check the script runs correctly before recording
                             </p>
                           </div>
                         )}
@@ -2657,7 +2692,7 @@ export function SectionEditor({
                         {!canGenerate
                           ? 'Describe the moment, or pick the controls to keep — then apply.'
                           : simPrompt.trim()
-                            ? `AI writes the script for this moment${hasGenSelection ? ' and hides the controls you unchecked' : ''}.`
+                            ? `Uses AI, and counts against your generation limit${hasGenSelection ? '. Also hides the controls you unchecked' : ''}.`
                             : 'Hides the controls you unchecked. No AI, no cost.'}
                       </p>
                       <button
@@ -2707,11 +2742,14 @@ export function SectionEditor({
                     simulation, so a section with nothing in it is exactly where loading one is
                     worth the most — and while this row lived inside that gate the feature was
                     unreachable in the only case it was built for. */}
-                <div style={{ ...cardStyle('#f59e0b'), gap: 8 }}>
+                {/* A different accent from "This moment" above it. Two cards with the same
+                    amber top border read as one card continuing, and these are different
+                    features: one writes this section, the other moves it between projects. */}
+                <div style={{ ...cardStyle('#0891b2'), gap: 8 }}>
                     <label style={{ ...labelStyle, marginBottom: 0 }}>Reuse this setup</label>
                     <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
                       A saved setup is this section’s whole configuration — the prompt, the script, the
-                      kept controls, Minimal UI and Auto-script — under a name you can load onto another
+                      kept controls, Simple UI and Auto Script — under a name you can load onto another
                       simulation, in this project or another one.
                     </p>
                     {!simId && (
@@ -2754,19 +2792,19 @@ export function SectionEditor({
                       </button>
                     </div>
                     {presetNotice && (
-                      <div role="status" style={{ marginTop: 6, fontSize: 12, color: '#15803d' }}>{presetNotice}</div>
+                      <div role="status" style={{ marginTop: 6, fontSize: 12, color: 'hsl(var(--success))' }}>{presetNotice}</div>
                     )}
                     {pendingRecipeRegen && (
                       <div
                         role="group"
-                        aria-label="Regenerate this bridge's script for this simulation"
+                        aria-label="Regenerate this setup's script for this simulation"
                         style={{
                           marginTop: 8, padding: 10, borderRadius: 8,
-                          border: '1.5px solid #fcd34d', background: '#fffbeb',
+                          border: '1.5px solid #f59e0b', background: 'rgba(245,158,11,0.12)',
                         }}
                       >
-                        <div style={{ fontSize: 12, color: '#92400e', marginBottom: 8, lineHeight: 1.4 }}>
-                          This bridge’s script was written for a different simulation, so it was not
+                        <div style={{ fontSize: 12, color: 'hsl(var(--foreground))', marginBottom: 8, lineHeight: 1.4 }}>
+                          This setup’s script was written for a different simulation, so it was not
                           applied — the current simulation is unchanged. Regenerate it for this one?
                         </div>
                         <div style={{ display: 'flex', gap: 8 }}>

@@ -6,8 +6,9 @@ phase #172–#179. The owner then ran the storage reconciliation on production, 
 Anam credential (see the OWNER REPORT section below for the numbers and the ruling on them).
 
 **Merged and NOT yet released:** #180 (the creator inbox removed, the Banners button removed, the import
-gallery a panel), #181 (Tap to ask, interactive) and #183 (the script panel redesigned; a saved setup
-carries its simulation between projects — migration 084, additive). One dispatch ships all three:
+gallery a panel), #181 (Tap to ask, interactive), #183 (the script panel redesigned; a saved setup
+carries its simulation between projects — migration 084, additive), #184 (the typed-question routes
+removed) and #185 (the UX review's findings on the panel). One dispatch ships all five:
 `gh workflow run release.yml -f bump=minor -f deploy=true`.
 
 The two plans of record are `NIGHT-RUN-2026-09-03.md` (outcome in its §11) and `NEXT-PHASE-2026-09-03.md`
@@ -237,12 +238,46 @@ found a fifth that the audit had also passed:
   that stops sending `presets` throws inside render and takes the editor down. Now falls back to an
   empty list.
 
-🔴 **Still open — the typed-question backend surface.** `POST /api/v1/public/audio/:slug/questions`
-and `GET /api/v1/projects/:id/questions` are still registered and now have no caller. The first is
-public, unauthenticated, and spends the project owner's LLM budget by design; leaving it live with
-no user is an attack surface with no benefit. `listener_questions` and `ListenerQuestionService`
-must STAY — the voice path writes through them. Removing two routes is a public-contract change and
-belongs in its own PR, not smuggled into one about saved setups.
+### A UX review of the redesigned panel, after #183 merged (#185)
+
+I asked the ui-ux reviewer to read the panel as a first-time creator would, against the owner's
+own words ("really unclear, messy and problematic"). It found things the tests could not:
+
+- 🟢 **Escape closed the whole section editor while a setup dialog was open.** Both dialogs are
+  portaled to `<body>`, so the editor's window-level listener heard their keystrokes: backing out
+  of "name this setup" shut the panel behind it. Escape now closes the topmost thing, and focus
+  returns to the button that opened the dialog.
+- 🟢 **The numbering told a lie — mine.** I labelled the two switches "3 · Apply them", but the
+  apply is the button BELOW them, which carries no number. A reader following 1-2-3 thought they
+  were finished one control early. It reads "3 · How it behaves" now: three numbered inputs, then
+  the action.
+- 🟢 **One setting, two names.** "Simple UI" on the toggle and "Minimal UI" in the note four lines
+  above it. A test asserts "Minimal UI" appears nowhere in the card.
+- 🟢 **"bridge" was still leaking into what the author reads** — an aria-label and the regenerate
+  sentence, beside dialogs already renamed to "setup".
+- 🟢 **Two identical amber cards read as one card continuing.** "Reuse this setup" takes its own
+  accent.
+- 🟢 **The status surfaces were light-only.** The error box, the low-confidence warning, the
+  confidence badge, the keep/hide badges and the regenerate offer were hardcoded pastels — pale
+  blocks stamped into a dark editor, worst exactly where a reader most needs to trust the text.
+  `--success` and `--warning` join `--destructive` in `globals.css`, all three with dark values,
+  and these surfaces use them with translucent washes.
+- 🟢 **The switches said nothing to a screen reader** — now `role="switch"` with `aria-checked`.
+- 🟢 **The outcome line repeated the button.** "AI writes the script" above "✦ Generate with AI"
+  spent a line on nothing; it now says what the button cannot — that it uses AI and counts against
+  the generation limit — which mirrors "No AI, no cost" on the other branch.
+
+Not done, recorded rather than lost: the setup dialogs still have no focus TRAP (Tab reaches the
+editor behind them), and the file's remaining hardcoded colours outside these two cards are
+untouched.
+
+✅ **CLOSED by #184 — the typed-question backend surface.**
+`POST /api/v1/public/audio/:slug/questions` and `GET /api/v1/projects/:id/questions` are removed.
+The first was public, unauthenticated and spent the project owner's LLM budget by design; with no
+caller left it protected nothing. `listener_questions` and `ListenerQuestionService` STAY — the
+voice path writes every spoken question through them, and migration 083's columns are kept for the
+same reason. Three assertions replace the removed suite: each path is no longer registered, and the
+voice route through the same service still answers.
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 

@@ -74,7 +74,9 @@ describe('the script panel says what will happen', () => {
   it('with a prompt: it says AI will write the script, and the button agrees', () => {
     mount();
     fireEvent.change(promptBox(), { target: { value: 'Show the slider and start it running' } });
-    expect(screen.getByText(/AI writes the script for this moment/i)).toBeTruthy();
+    // The line says what the BUTTON cannot: what pressing it costs. Repeating "AI writes the
+    // script" directly above a button reading "Generate with AI" spent a line on nothing.
+    expect(screen.getByText(/Uses AI, and counts against your generation limit/i)).toBeTruthy();
     const button = applyButton() as HTMLButtonElement;
     expect(button.textContent).toContain('Generate with AI');
     expect(button.disabled).toBe(false);
@@ -95,14 +97,14 @@ describe('the script panel says what will happen', () => {
   it('a prompt on top of the controls says BOTH things happen', () => {
     mount({ sim_meta: { uiControls: { controls: [], show: [], hide: ['#speed'] } } as never });
     fireEvent.change(promptBox(), { target: { value: 'Start it running' } });
-    expect(screen.getByText(/AI writes the script for this moment and hides the controls you unchecked/i)).toBeTruthy();
+    expect(screen.getByText(/Uses AI, and counts against your generation limit\. Also hides the controls you unchecked/i)).toBeTruthy();
   });
 
   it('the switches that decide whether any of it applies are step 3, inside the same card', () => {
     // They were the one fragment the redesign left loose: unnumbered furniture under numbered
     // steps, and the only part of the card painted in a hardcoded light-only wash.
     mount();
-    expect(screen.getByText(/3 · Apply them/)).toBeTruthy();
+    expect(screen.getByText(/3 · How it behaves/)).toBeTruthy();
     const simpleUi = screen.getByText('Simple UI').closest('button') as HTMLButtonElement;
     expect(simpleUi.style.backgroundColor).not.toBe('rgb(255, 251, 235)');
     expect(simpleUi.style.borderColor === '' || simpleUi.style.border.includes('hsl(var(--border))')).toBe(true);
@@ -119,6 +121,39 @@ describe('the script panel says what will happen', () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain('which controls the viewer keeps');
+  });
+
+  it('Escape closes the open setup dialog, NOT the whole section editor', () => {
+    // Both dialogs are portaled to <body>, so the editor's window-level Escape listener hears
+    // their keystrokes too. Backing out of "name this setup" used to shut the editor behind it.
+    const onClose = vi.fn();
+    render(
+      <SectionEditor
+        section={section({ sim_meta: { planVersion: '7', prompt: 'x' } as never })}
+        projectId="proj-1" simulations={[SIM]} videos={[]} videoUrls={{}}
+        onUpdate={vi.fn()} onDelete={vi.fn()} onClose={onClose}
+      />,
+    );
+    fireEvent.click(screen.getByText('Save setup…'));
+    expect(screen.getByRole('dialog', { name: /save setup/i })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // A second Escape, with nothing open, closes the editor as it always did.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('the two switches announce their state, and the setting has ONE name', () => {
+    mount();
+    const simpleUi = screen.getByText('Simple UI').closest('button') as HTMLButtonElement;
+    expect(simpleUi.getAttribute('role')).toBe('switch');
+    expect(simpleUi.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(simpleUi);
+    expect(simpleUi.getAttribute('aria-checked')).toBe('true');
+    // "Minimal UI" and "Simple UI" named the same toggle four lines apart in this card.
+    expect(screen.queryByText(/Minimal UI/i)).toBeNull();
   });
 
   it('the reuse row is named for what it does, and there is no banner button', () => {
