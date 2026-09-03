@@ -14,9 +14,12 @@ import {
   type AudioChapter,
   type AudioEditionView,
   type VoiceQuestionResponse,
+  VoiceStreamEventSchema,
+  type VoiceStreamEvent,
 } from 'shared/src/audio/listener';
 
 export {
+  VoiceStreamEventSchema, type VoiceStreamEvent,
   AskQuestionResponseSchema, AudioEditionViewSchema, VoiceQuestionResponseSchema,
   type AskQuestionResponse, type AudioChapter, type AudioEditionView, type VoiceQuestionResponse,
 };
@@ -186,5 +189,67 @@ export async function askVoiceQuestion(
     return parsed.success ? parsed.data : refusedVoice('Could not read the answer.');
   } catch {
     return refusedVoice('You appear to be offline — your question was not sent.');
+  }
+}
+
+// ── The interactive answer (owner ruling 2026-09-03: Tap to ask like NotebookLM) ────────────
+
+/**
+ * Ask by voice and receive the answer as it is made: `heard`, then an `audio` chunk per
+ * sentence while the model is still writing, then `done`. Events are handed over in order as
+ * they arrive; the promise resolves when the stream closes. A transport failure is delivered as
+ * an `error` event, never thrown — the listener is driving.
+ */
+export async function askVoiceQuestionStream(
+  slug: string,
+  input: { wav: Blob; positionMs: number; language?: string | null },
+  onEvent: (event: VoiceStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const form = new FormData();
+  form.append('position_ms', String(Math.max(0, Math.round(input.positionMs))));
+  if (input.language) form.append('language', input.language);
+  form.append('audio', input.wav, 'question.wav');
+  let res: Response;
+  try {
+    res = await fetch(`${BACKEND}/api/v1/public/audio/${encodeURIComponent(slug)}/voice-question/stream`, { method: 'POST', body: form, signal });
+  } catch (e) {
+    if ((e as Error)?.name === 'AbortError') return;
+    onEvent({ type: 'error', message: 'You appear to be offline — your question was not sent.' });
+    return;
+  }
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => null) as { message?: string } | null;
+    onEvent({ type: 'error', message: body?.message ?? (res.status === 429 ? 'Too many questions — please slow down.' : 'Could not send your question.') });
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        for (const event of parseSseFrame(frame)) onEvent(event);
+      }
+    }
+  } catch (e) {
+    if ((e as Error)?.name !== 'AbortError') onEvent({ type: 'error', message: 'The connection dropped mid-answer.' });
+  }
+}
+
+/** One SSE frame → the validated events it carries (a comment or an unknown shape is nothing). */
+export function parseSseFrame(frame: string): VoiceStreamEvent[] {
+  const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n');
+  if (!data) return [];
+  try {
+    const parsed = VoiceStreamEventSchema.safeParse(JSON.parse(data));
+    return parsed.success ? [parsed.data] : [];
+  } catch {
+    return [];
   }
 }

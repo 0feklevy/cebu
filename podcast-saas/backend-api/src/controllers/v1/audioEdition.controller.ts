@@ -39,7 +39,7 @@ import { listener_questions } from '../../db/schema.js';
 import { desc } from 'drizzle-orm';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { logger } from '../../lib/logger.js';
-import { answerVoiceQuestion } from '../../services/audio/VoiceQuestionService.js';
+import { answerVoiceQuestion, answerVoiceQuestionStream } from '../../services/audio/VoiceQuestionService.js';
 import { withBoundedTempFile } from '../../services/security/uploadLimits.js';
 import { VOICE_QUESTION_MAX_BYTES } from 'shared';
 
@@ -293,6 +293,70 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
         return reply.code(status).send({
           message: status === 413 ? 'That recording is too long.' : 'Could not answer right now — playback is unaffected.',
         });
+      }
+    },
+  );
+
+  /**
+   * POST /api/v1/public/audio/:slug/voice-question/stream — the interactive answer, as SSE.
+   *
+   * The same multipart, the same three guards and the same size ceiling as the one-shot route
+   * above; the difference is the reply: `heard`, then one `audio` event per sentence as the
+   * model writes and the voice reads, then `done`. The listener hears the first sentence a couple
+   * of seconds after they stop talking instead of after the whole answer exists. A closed socket
+   * aborts the model call; keep-alive comments every ten seconds hold the connection through a
+   * slow sentence.
+   */
+  app.post<{ Params: { slug: string } }>(
+    '/api/v1/public/audio/:slug/voice-question/stream',
+    { preHandler: [firebaseAuthOptionalMiddleware] },
+    async (request, reply: FastifyReply) => {
+      if (!rateLimit(`askv:${request.ip}`, 6, 60_000)) {
+        return reply.code(429).send({ message: 'Too many questions — please slow down.' });
+      }
+      const project = await db.query.projects.findFirst({ where: eq(projects.slug, request.params.slug) });
+      if (!project || project.visibility !== 'public') return reply.code(404).send({ message: 'Not found' });
+
+      const data = await request.file().catch(() => null);
+      if (!data) return reply.code(400).send({ message: 'No audio uploaded' });
+      const field = (name: string): string => {
+        const f = (data.fields as Record<string, { value?: unknown } | undefined>)[name];
+        return typeof f?.value === 'string' ? f.value : '';
+      };
+      const positionMs = Math.max(0, Math.round(Number(field('position_ms')) || 0));
+      const language = field('language').trim() || null;
+
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Accel-Buffering', 'no');
+      reply.hijack();
+      reply.raw.flushHeaders?.();
+      const send = (event: { type: string } & Record<string, unknown>) => {
+        try { reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } catch { /* socket closed */ }
+      };
+      const controller = new AbortController();
+      request.raw.on('close', () => controller.abort());
+      const keepAlive = setInterval(() => { try { reply.raw.write(': keep-alive\n\n'); } catch { /* closed */ } }, 10_000);
+
+      try {
+        await withBoundedTempFile(
+          data.file,
+          { limitBytes: VOICE_QUESTION_MAX_BYTES, what: 'Spoken question', suffix: '.wav' },
+          ({ path }) => answerVoiceQuestionStream(
+            { projectId: project.id, language, positionMs, audioPath: path, userId: request.dbUser?.id ?? null },
+            send,
+            undefined,
+            controller.signal,
+          ),
+        );
+      } catch (err) {
+        const tooLong = (err as { statusCode?: number }).statusCode === 413;
+        logger.warn({ err, projectId: project.id }, '[voice-question/stream] failed');
+        send({ type: 'error', message: tooLong ? 'That recording is too long.' : 'Could not answer right now — playback is unaffected.' });
+      } finally {
+        clearInterval(keepAlive);
+        try { reply.raw.end(); } catch { /* closed */ }
       }
     },
   );

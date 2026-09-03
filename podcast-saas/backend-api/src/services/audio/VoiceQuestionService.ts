@@ -24,6 +24,8 @@ import { VOICE_QUESTION_MAX_SECONDS } from 'shared';
 import { reportedDurationSec } from '../usage/sttCost.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from './GuidanceTTSService.js';
 import { askListenerQuestion, type AskResult } from './ListenerQuestionService.js';
+import { SentenceSplitter } from './sentenceStream.js';
+import type { VoiceStreamEvent } from 'shared';
 
 export interface VoiceQuestionInput {
   projectId: string;
@@ -175,4 +177,92 @@ export async function answerVoiceQuestion(
   }
 
   return { status: 'answered', question: heard.text, answer: asked.answer, message: null, audio, audioMime };
+}
+
+/**
+ * The interactive answer (owner ruling 2026-09-03 — Tap to ask like NotebookLM's interrupt):
+ * hear → answer → speak, but the speaking starts on the FIRST SENTENCE while the model is still
+ * writing. Every event goes to `onEvent` in order; the caller streams them to the listener.
+ *
+ * Same guards and the same ledger as the one-shot path: the STT spend on the vendor's duration,
+ * the noise and length refusals, the typed path's record-before-answer and daily cap (through
+ * deps.ask), the ElevenLabs ceiling before the first synthesis, one TTS spend for the whole
+ * answer. Synthesis runs one sentence behind the model, in order, on a promise chain; a synthesis
+ * failure drops that sentence's audio (the client's device voice reads the final text when no
+ * chunk had audio) and never the answer.
+ */
+export async function answerVoiceQuestionStream(
+  input: VoiceQuestionInput,
+  onEvent: (event: VoiceStreamEvent) => void,
+  deps: VoiceQuestionDeps = defaultVoiceQuestionDeps,
+  signal?: AbortSignal,
+): Promise<void> {
+  const language = input.language?.trim() || null;
+
+  const heard = await deps.transcribe(input.audioPath, language);
+  void deps.recordStt({
+    userId: input.userId ?? null, projectId: input.projectId,
+    task: 'listener_voice_question', durationSec: heard.durationSec, model: heard.model,
+  });
+  if (isNoiseTranscript(heard.text)) {
+    onEvent({ type: 'done', status: 'nothing_heard', question: null, answer: null, message: null, audio_chunks: 0 });
+    return;
+  }
+  if (heard.durationSec !== null && heard.durationSec > VOICE_QUESTION_MAX_SECONDS) {
+    onEvent({ type: 'done', status: 'refused', question: heard.text, answer: null, message: `That was longer than a question — keep it under ${VOICE_QUESTION_MAX_SECONDS} seconds.`, audio_chunks: 0 });
+    return;
+  }
+  onEvent({ type: 'heard', question: heard.text });
+
+  // The ceiling is asked ONCE, before the first sentence; a refusal means text only.
+  let speak = true;
+  try {
+    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
+    if (ceiling.refuse) { speak = false; logger.warn({ reason: ceiling.reason, projectId: input.projectId }, '[voice-question] ceiling reached — text only'); }
+  } catch (err) {
+    speak = false;
+    logger.warn({ err, projectId: input.projectId }, '[voice-question] ceiling check failed — text only');
+  }
+
+  const splitter = new SentenceSplitter();
+  let seq = 0;
+  let spokenChars = 0;
+  let model: string | null = null;
+  let chain: Promise<void> = Promise.resolve();
+  const speakSentence = (text: string) => {
+    if (!speak || signal?.aborted) return;
+    const mine = seq++;
+    chain = chain.then(async () => {
+      if (signal?.aborted) return;
+      try {
+        const spoken = await deps.synthesize(text, language ?? 'en');
+        model = spoken.model;
+        spokenChars += text.length;
+        onEvent({ type: 'audio', seq: mine, audio_base64: spoken.audio.toString('base64'), audio_mime: 'audio/mpeg', text });
+      } catch (err) {
+        logger.warn({ err, projectId: input.projectId, seq: mine }, '[voice-question] sentence synthesis failed — skipped');
+      }
+    });
+  };
+
+  const asked = await deps.ask({
+    projectId: input.projectId, language, positionMs: input.positionMs,
+    question: heard.text, intent: 'answer', userId: input.userId ?? null,
+    onTokenChunk: (chunk) => { for (const sentence of splitter.push(chunk)) speakSentence(sentence); },
+    abortSignal: signal,
+  });
+  for (const sentence of splitter.flush()) speakSentence(sentence);
+  await chain;
+
+  if (asked.status !== 'answered' || !asked.answer) {
+    onEvent({ type: 'done', status: asked.status, question: heard.text, answer: null, message: asked.reason ?? null, audio_chunks: 0 });
+    return;
+  }
+  if (spokenChars > 0) {
+    void deps.recordTts({
+      userId: input.userId ?? null, projectId: input.projectId,
+      task: 'listener_voice_answer', characters: spokenChars, model: model ?? 'unknown',
+    });
+  }
+  onEvent({ type: 'done', status: 'answered', question: heard.text, answer: asked.answer, message: null, audio_chunks: seq });
 }

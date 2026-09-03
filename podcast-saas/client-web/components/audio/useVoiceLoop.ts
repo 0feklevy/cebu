@@ -22,7 +22,7 @@
  * few hundred milliseconds of pause and nothing else: the VAD is on-device and free.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { VoiceQuestionResponse } from 'shared/src/audio/listener';
+import type { VoiceQuestionResponse, VoiceStreamEvent } from 'shared/src/audio/listener';
 import { VOICE_QUESTION_MAX_SECONDS } from 'shared/src/audio/listener';
 import {
   INITIAL_VOICE_STATE, reduceVoice,
@@ -45,6 +45,12 @@ export interface VoiceLoopOptions {
   voice: React.RefObject<HTMLAudioElement | null>;
   /** Ships one utterance; never throws — a failure is a response with a message. */
   submit: (wav: Blob, durationSec: number) => Promise<VoiceQuestionResponse>;
+  /**
+   * The interactive path (owner ruling 2026-09-03: like NotebookLM's interrupt): the answer
+   * arrives as events — a sentence's audio at a time while the model is still writing. When
+   * given, it is used instead of `submit`.
+   */
+  submitStream?: (wav: Blob, durationSec: number, onEvent: (event: VoiceStreamEvent) => void, signal: AbortSignal) => Promise<void>;
 }
 
 export interface VoiceLoop {
@@ -83,6 +89,13 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
   const answerUrl = useRef<string | null>(null);
   const lastResponse = useRef<VoiceQuestionResponse | null>(null);
   const dispatchRef = useRef<(e: VoiceEvent) => void>(() => {});
+  // The streaming answer: sentence chunks queued as they arrive, played back to back.
+  const streamAbort = useRef<AbortController | null>(null);
+  const chunkQueue = useRef<Array<{ b64: string; mime: string }>>([]);
+  const chunkPlaying = useRef(false);
+  const streamDone = useRef(false);
+  const submitStreamRef = useRef(opts.submitStream);
+  submitStreamRef.current = opts.submitStream;
 
   const supported =
     typeof window !== 'undefined' &&
@@ -150,6 +163,10 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
   }, []);
 
   const stopVoice = useCallback(() => {
+    streamAbort.current?.abort();
+    streamAbort.current = null;
+    chunkQueue.current = [];
+    chunkPlaying.current = false;
     const el = opts.voice.current;
     if (el) { el.onended = null; el.onerror = null; el.pause(); }
     if (answerUrl.current) { URL.revokeObjectURL(answerUrl.current); answerUrl.current = null; }
@@ -182,8 +199,13 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
         });
         return;
       case 'END_CAPTURE':
-        // With hands-free off the mic is released after every capture; on, it keeps listening
-        // for a barge-in or a follow-up. `pause()` submits any speech in flight (submitUserSpeechOnPause).
+        // The capture is over but the MICROPHONE STAYS OPEN through thinking, the answer and the
+        // silence window: that is what lets the listener barge in on the answer or ask a follow-up
+        // by voice after one tap (the interactive mode). RELEASE_MIC closes it, on the way back
+        // to OFF; with hands-free on it never closes at all.
+        return;
+      case 'RELEASE_MIC':
+        // `pause()` submits any speech in flight (submitUserSpeechOnPause); the reducer ignores it in OFF.
         if (!handsFreeRef.current) vadRef.current?.pause();
         return;
       case 'SUBMIT': {
@@ -191,6 +213,10 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
         const audio = fx.audio.length > max ? fx.audio.subarray(0, max) : fx.audio;
         const wav = encodeWav(audio, 16000);
         setHeard(null);
+        if (submitStreamRef.current) {
+          submitStreaming(wav, pcmDurationSec(audio, 16000));
+          return;
+        }
         submitRef.current(wav, pcmDurationSec(audio, 16000)).then((res) => {
           lastResponse.current = res;
           if (res.question) setHeard(res.question);
@@ -205,6 +231,7 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
         return;
       }
       case 'PLAY_ANSWER': {
+        if (chunkQueue.current.length > 0 || (streamAbort.current && !streamDone.current)) { playNextChunk(); return; }
         const res = lastResponse.current;
         if (!res) { dispatchRef.current({ type: 'SPEAKING_ENDED' }); return; }
         if (res.answer) setNote(res.answer);
@@ -242,7 +269,86 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
         setNote(fx.text);
         return;
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ensureVad, opts.episode, opts.voice, speakWithDevice, stopVoice]);
+
+  /** The next queued sentence onto the voice element; the stream's end ends the answer. */
+  function playNextChunk(): void {
+    const el = opts.voice.current;
+    const next = chunkQueue.current.shift();
+    if (!next) {
+      chunkPlaying.current = false;
+      if (streamDone.current) dispatchRef.current({ type: 'SPEAKING_ENDED' });
+      return;   // a sentence is still on its way; its `audio` event will play it
+    }
+    if (!el) { chunkQueue.current = []; streamAbort.current?.abort(); dispatchRef.current({ type: 'SPEAKING_ENDED' }); return; }
+    chunkPlaying.current = true;
+    try {
+      const bytes = Uint8Array.from(atob(next.b64), (c) => c.charCodeAt(0));
+      if (answerUrl.current) URL.revokeObjectURL(answerUrl.current);
+      answerUrl.current = URL.createObjectURL(new Blob([bytes], { type: next.mime }));
+      el.onended = () => playNextChunk();
+      el.onerror = () => playNextChunk();
+      el.src = answerUrl.current;
+      void el.play().catch(() => playNextChunk());
+    } catch {
+      playNextChunk();
+    }
+  }
+
+  /** Ship the utterance to the streaming route and drive the reducer from its events. */
+  function submitStreaming(wav: Blob, durationSec: number): void {
+    const controller = new AbortController();
+    streamAbort.current?.abort();
+    streamAbort.current = controller;
+    chunkQueue.current = [];
+    chunkPlaying.current = false;
+    streamDone.current = false;
+    void submitStreamRef.current!(wav, durationSec, (event) => {
+      if (controller.signal.aborted) return;
+      switch (event.type) {
+        case 'heard':
+          setHeard(event.question);
+          return;
+        case 'audio':
+          chunkQueue.current.push({ b64: event.audio_base64, mime: event.audio_mime });
+          if (stateRef.current.kind === 'thinking') {
+            dispatchRef.current({ type: 'ANSWER', text: null, hasAudio: true, note: null });   // → speaking → PLAY_ANSWER
+          } else if (stateRef.current.kind === 'speaking' && !chunkPlaying.current) {
+            playNextChunk();
+          }
+          return;
+        case 'done': {
+          streamDone.current = true;
+          if (event.answer) setNote(event.answer);
+          if (stateRef.current.kind === 'thinking') {
+            // No audio ever arrived: the device voice reads the answer, or the note is shown.
+            const note =
+              event.status === 'nothing_heard' ? 'Didn’t catch that.'
+              : event.status === 'answered' ? null
+              : (event.message ?? (event.status === 'saved' ? 'Saved for the creator.' : 'Could not answer that.'));
+            lastResponse.current = { status: event.status, question: event.question, answer: event.answer, message: event.message, audio_base64: null, audio_mime: null };
+            streamAbort.current = null;   // PLAY_ANSWER takes the one-shot (device-voice) path
+            dispatchRef.current({ type: 'ANSWER', text: event.answer, hasAudio: false, note });
+          } else if (stateRef.current.kind === 'speaking' && !chunkPlaying.current && chunkQueue.current.length === 0) {
+            dispatchRef.current({ type: 'SPEAKING_ENDED' });
+          }
+          return;
+        }
+        case 'error':
+          streamDone.current = true;
+          if (stateRef.current.kind === 'thinking') dispatchRef.current({ type: 'ANSWER_FAILED', note: event.message });
+          else if (stateRef.current.kind === 'speaking' && !chunkPlaying.current) dispatchRef.current({ type: 'SPEAKING_ENDED' });
+          return;
+      }
+    }, controller.signal).then(() => {
+      // The stream closed without `done` (a cut connection): finish whatever state we are in.
+      if (controller.signal.aborted || streamDone.current) return;
+      streamDone.current = true;
+      if (stateRef.current.kind === 'thinking') dispatchRef.current({ type: 'ANSWER_FAILED', note: 'The connection dropped mid-answer.' });
+      else if (stateRef.current.kind === 'speaking' && !chunkPlaying.current) dispatchRef.current({ type: 'SPEAKING_ENDED' });
+    });
+  }
 
   const dispatch = useCallback((event: VoiceEvent) => {
     const t = reduceVoice(stateRef.current, event);

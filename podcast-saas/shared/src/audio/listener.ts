@@ -52,6 +52,27 @@ export const VoiceQuestionResponseSchema = z.object({
 });
 export type VoiceQuestionResponse = z.infer<typeof VoiceQuestionResponseSchema>;
 
+/**
+ * The interactive answer, as the streaming route sends it (SSE). `heard` arrives after the
+ * transcript; `audio` chunks are the answer one SENTENCE at a time, in order, each an mp3 —
+ * the listener hears the first while the model writes the rest; `done` closes with the whole
+ * text (the device voice's fallback when no chunk had audio) and the final status.
+ */
+export const VoiceStreamEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('heard'), question: z.string() }),
+  z.object({ type: z.literal('audio'), seq: z.number().int().nonnegative(), audio_base64: z.string(), audio_mime: z.string(), text: z.string() }),
+  z.object({
+    type: z.literal('done'),
+    status: z.enum(['answered', 'saved', 'refused', 'nothing_heard']),
+    question: z.string().nullable(),
+    answer: z.string().nullable(),
+    message: z.string().nullable(),
+    audio_chunks: z.number().int().nonnegative(),
+  }),
+  z.object({ type: z.literal('error'), message: z.string() }),
+]);
+export type VoiceStreamEvent = z.infer<typeof VoiceStreamEventSchema>;
+
 /** Upload ceiling for one spoken question: 30 s of 16 kHz 16-bit mono is 960 KB; 2 MB leaves room. */
 export const VOICE_QUESTION_MAX_BYTES = 2 * 1024 * 1024;
 /** The longest utterance the loop will send. Longer than this and the listener is dictating, not asking. */

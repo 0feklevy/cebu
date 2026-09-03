@@ -58,10 +58,14 @@ const { askListenerQuestion, DEFAULT_DAILY_ANSWER_CAP } = await import('../Liste
 
 /** A stand-in LLM that records what it was asked and can be made to fail. */
 const fakeLlm = {
-  sendStructured: async (opts: Record<string, unknown>) => {
+  sendText: async (opts: Record<string, unknown> & { onTokenChunk?: (c: string) => void }) => {
     state.llmCalls.push(opts);
     if (state.llmThrows) throw new Error(state.llmThrows);
-    return { data: { answer: state.llmAnswer }, usage: { cost_cents: 3 } };
+    // Streams the answer in two pieces, the way a real provider hands tokens over.
+    const half = Math.ceil(state.llmAnswer.length / 2);
+    opts.onTokenChunk?.(state.llmAnswer.slice(0, half));
+    opts.onTokenChunk?.(state.llmAnswer.slice(half));
+    return { text: state.llmAnswer, usage: { cost_cents: 3 }, provider: 'fake', model: 'fake' };
   },
 };
 
