@@ -209,6 +209,18 @@ Rollback **re-launches retained images** — no rebuild, so it's fast. It restor
 not schema; migrations are written to be additive/idempotent, so a forward-only DB is the
 assumption. A destructive schema change needs a manual down-migration.
 
+### Retention: current + one rollback
+
+After every healthy deploy the scripts keep exactly two app releases on the VM — the one just
+deployed and the one before it (`PREVIOUS_VERSION`, the rollback target) — and remove every older
+`podcast-saas/{backend,client-web,admin-web}:<tag>` (`retain_app_images` in `_lib.sh`). Nothing
+outside that namespace is touched: not nginx, not certbot, not volumes, not `.env` or
+`.deploy-state`; an image a container still uses refuses removal, which is correct. By hand, any
+time: `./deploy/scripts/retain-images.sh`. Before pulling anything, a deploy also refuses when
+`/var/lib/docker` has under **8 GB** free (`DEPLOY_MIN_FREE_GB` to change the floor,
+`DEPLOY_ALLOW_LOW_DISK=1` to override once). Why: on 2026-09-03 the VM was found at 94% with every
+historical release still on disk, and was cleaned by hand.
+
 ---
 
 ## 7. Health checks
