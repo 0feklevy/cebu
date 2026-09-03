@@ -72,9 +72,13 @@ describe('the editor tour — most important first', () => {
     expect(mentions(/replace/i), 'video replace').toBe(true);
   });
 
-  it('mentions the features the first audit found uncovered — branching, raise your hand, playlists', () => {
+  it('mentions the features the first audit found uncovered — branching, asking out loud, playlists', () => {
     expect(mentions(/branch/i), 'branching on viewer choices').toBe(true);
-    expect(mentions(/raise your hand/i), 'the podcast’s typed question').toBe(true);
+    // The typed hand was removed on 2026-09-03; the podcast is voice-only now, and the tour has
+    // to describe THAT. A tour that still offered a button nobody can find is the failure this
+    // assertion exists to catch.
+    expect(mentions(/interrupt/i), 'interrupting the narration to ask out loud').toBe(true);
+    expect(mentions(/raise your hand/i), 'the removed typed question must not be advertised').toBe(false);
     expect(mentions(/playlist/i), 'playlists').toBe(true);
   });
 

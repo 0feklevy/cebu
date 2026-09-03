@@ -28,6 +28,8 @@ import { editableProject } from '../../services/collabAccess.js';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { SavedBridgeService } from '../../services/simulation/SavedBridgeService.js';
 import { SimulationService } from '../../services/simulation/SimulationService.js';
+import { SimulationImportService } from '../../services/simulation/SimulationImportService.js';
+import { describeSetupTarget, resolveSetupTarget, type SetupTarget } from '../../services/simulation/portableSetup.js';
 import { LLMService } from '../../services/llm/LLMService.js';
 import { ApiKeyService } from '../../services/secrets/ApiKeyService.js';
 import { UsageTrackingService } from '../../services/usage/UsageTrackingService.js';
@@ -94,6 +96,41 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
     },
   );
 
+  /**
+   * Where this setup would land on this section — the same question for /fit and /apply, so the
+   * sentence the dialog shows and the decision the apply takes cannot come apart.
+   */
+  async function setupTarget(
+    userId: string,
+    presetId: string,
+    projectId: string,
+    sectionSimulationId: string | null,
+    bring: boolean,
+  ): Promise<{ target: SetupTarget; sourceName: string | null } | null> {
+    const preset = await svc().presetForApply(userId, presetId);
+    if (!preset) return null;
+    const sourceId = preset.source_simulation_id;
+    const source = sourceId
+      ? await db.query.simulations.findFirst({ where: eq(simulations.id, sourceId), columns: { id: true, name: true, project_id: true } })
+      : null;
+    const existingImport = sourceId && !sectionSimulationId
+      ? await db.query.simulations.findFirst({
+          where: and(eq(simulations.project_id, projectId), eq(simulations.imported_from_simulation_id, sourceId)),
+          columns: { id: true },
+        })
+      : null;
+    const target = resolveSetupTarget(
+      { sourceSimulationId: sourceId, sourceSimulationName: source?.name ?? null, sourceExists: !!source },
+      {
+        sectionSimulationId,
+        sourceIsInThisProject: !!source && source.project_id === projectId,
+        existingImportId: existingImport?.id ?? null,
+      },
+      bring,
+    );
+    return { target, sourceName: source?.name ?? null };
+  }
+
   // ── Fit: which path WOULD a load take. Read-only — the Load button's tooltip ───────────────
   app.get<{ Params: { id: string; sectionId: string; presetId: string } }>(
     '/api/v1/projects/:id/sections/:sectionId/bridge-presets/:presetId/fit',
@@ -106,7 +143,24 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
       const section = await db.query.timeline_sections.findFirst({
         where: and(eq(timeline_sections.id, request.params.sectionId), eq(timeline_sections.project_id, project.id)),
       });
-      if (!section?.simulation_id) return reply.code(400).send({ message: 'This section has no simulation to load onto' });
+      if (!section) return reply.code(404).send({ message: 'Section not found' });
+
+      // A section with NO simulation used to be a 400 here, which made the Load button dead on a
+      // fresh section — the one case a saved setup is most wanted in (owner ruling 2026-09-03).
+      // It is answered now: where the setup would land, and whether its package can come along.
+      const resolved = await setupTarget(user.id, request.params.presetId, project.id, section.simulation_id ?? null, true);
+      if (!resolved) return reply.code(404).send({ message: 'Preset not found' });
+      const bring = {
+        needed: resolved.target.use !== 'section',
+        possible: resolved.target.use !== 'refuse',
+        source_name: resolved.sourceName,
+        description: describeSetupTarget(resolved.target, resolved.sourceName),
+      };
+
+      if (!section.simulation_id) {
+        // Nothing to verify a script against yet; the load will bring the package and then judge.
+        return reply.send({ path: 'recipe', description: bring.description, verdict: { path: 'recipe', why: 'no-target-simulation', missing: [] }, bring });
+      }
 
       const fit = await svc().judgeFit({
         userId: user.id,
@@ -114,12 +168,12 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
         simulationId: section.simulation_id,
       });
       if (!fit) return reply.code(404).send({ message: 'Preset not found' });
-      return reply.send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict });
+      return reply.send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict, bring });
     },
   );
 
   // ── Apply: the ARTIFACT path, and only when re-verification proves it ──────────────────────
-  app.post<{ Params: { id: string; sectionId: string; presetId: string } }>(
+  app.post<{ Params: { id: string; sectionId: string; presetId: string }; Body: { bring_simulation?: boolean } }>(
     '/api/v1/projects/:id/sections/:sectionId/bridge-presets/:presetId/apply',
     { preHandler: [firebaseAuthMiddleware] },
     async (request, reply) => {
@@ -130,7 +184,45 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
       const section = await db.query.timeline_sections.findFirst({
         where: and(eq(timeline_sections.id, request.params.sectionId), eq(timeline_sections.project_id, project.id)),
       });
-      if (!section?.simulation_id) return reply.code(400).send({ message: 'This section has no simulation to load onto' });
+      if (!section) return reply.code(404).send({ message: 'Section not found' });
+
+      // ── The setup brings its simulation (owner ruling 2026-09-03) ────────────────────────────
+      // A fresh section in another project has nothing to load onto. With `bring_simulation`, the
+      // setup's own package comes with it: already here → attach it; already imported once →
+      // attach that copy (migration 084 remembers which); otherwise import it, which copies rows
+      // and no bytes (the blob store dedups). A section that ALREADY has a simulation is never
+      // swapped — the creator is looking at it.
+      let targetSimulationId = section.simulation_id ?? null;
+      let brought: { simulation: typeof simulations.$inferSelect; imported: boolean } | null = null;
+      if (!targetSimulationId) {
+        const bring = request.body?.bring_simulation === true;
+        const resolved = await setupTarget(user.id, request.params.presetId, project.id, null, bring);
+        if (!resolved) return reply.code(404).send({ message: 'Preset not found' });
+        const t = resolved.target;
+        if (t.use === 'refuse') return reply.code(400).send({ message: t.reason });
+
+        if (t.use === 'import') {
+          const importer = new SimulationImportService(getStorageAdapter());
+          const result = await importer.importSimulation({
+            destProjectId: project.id,
+            sourceSimulationId: t.sourceSimulationId,
+            who: { uid: user.id, shareToken: null },
+            user,
+          });
+          if (!result.ok) return reply.code(result.status).send({ message: result.message });
+          targetSimulationId = result.simulation.id;
+          brought = { simulation: result.simulation, imported: true };
+        } else {
+          targetSimulationId = t.simulationId;
+          const row = await db.query.simulations.findFirst({ where: eq(simulations.id, targetSimulationId) });
+          brought = row ? { simulation: row, imported: false } : null;
+        }
+
+        // Attach it before the paste: everything below reads the section's simulation.
+        await db.update(timeline_sections)
+          .set({ simulation_id: targetSimulationId })
+          .where(eq(timeline_sections.id, section.id));
+      }
 
       // Judged HERE, not trusted from the client's earlier /fit call: a replace can activate a new
       // revision between the two requests, and a stale yes pasted anyway is the silently-dead
@@ -138,17 +230,19 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
       const fit = await svc().judgeFit({
         userId: user.id,
         presetId: request.params.presetId,
-        simulationId: section.simulation_id,
+        simulationId: targetSimulationId,
       });
       if (!fit) return reply.code(404).send({ message: 'Preset not found' });
       if (fit.verdict.path !== 'artifact') {
         // Not an error — an instruction. The client falls back to the generate endpoint with the
         // preset's recipe (returned by /bridge-presets), which still skips the authoring work.
-        return reply.code(409).send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict });
+        // `brought` travels with the refusal: the package IS in the project now and attached to
+        // the section, and the client has to know that before it regenerates against it.
+        return reply.code(409).send({ path: fit.verdict.path, description: fit.description, verdict: fit.verdict, brought });
       }
 
       const simRow = await db.query.simulations.findFirst({
-        where: and(eq(simulations.id, section.simulation_id), eq(simulations.project_id, project.id)),
+        where: and(eq(simulations.id, targetSimulationId), eq(simulations.project_id, project.id)),
       });
       if (!simRow) return reply.code(404).send({ message: 'Simulation not found in this project' });
 
@@ -196,7 +290,9 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
 
       logger.info({ evt: 'bridge_preset_applied', presetId: full.id, sectionId: section.id, bridgeHash },
         '[BridgePreset] artifact applied');
-      return reply.send({ section: updated, sectionUrl, path: 'artifact' });
+      // `brought` tells the client a simulation arrived with the setup, so its list and its
+      // preview pick it up without a reload.
+      return reply.send({ section: updated, sectionUrl, path: 'artifact', brought });
     },
   );
 }

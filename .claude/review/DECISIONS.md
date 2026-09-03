@@ -1,12 +1,17 @@
 # Open decisions
 
-**State as of 2026-09-03 (morning).** Production runs **v0.3.0**, dispatched by the owner 2026-09-03 06:38Z
-(`refs/deployed/production` = `e74c58e`, the merge of #171) — the whole night run #165–#171 under the plan of
-record `NIGHT-RUN-2026-09-03.md` (indexed below, outcome in its §11). **v0.3.0 shipped a layout regression**
-(every `min-[…]:`/`max-[…]:` Tailwind variant disabled by a raw screen; the import gallery trapped inside the
-editor rail) — owner-reported, fixed in **#172**, which ships as **v0.3.1** by the owner's instruction. The share
-library's missing banners and slow first paint (owner-reported the same morning) are fixed in **#173**.
-The next phase — the owner's six priorities — is planned in `NEXT-PHASE-2026-09-03.md` and indexed below.
+**State as of 2026-09-03 (afternoon).** Production runs **v0.4.1**, dispatched by the owner 12:26Z
+(`refs/deployed/production` = `e623924`, the merge of #179) — the night run #165–#171 plus the whole next
+phase #172–#179. The owner then ran the storage reconciliation on production, DRY RUN, and rotated the
+Anam credential (see the OWNER REPORT section below for the numbers and the ruling on them).
+
+**Merged and NOT yet released:** #180 (the creator inbox removed, the Banners button removed, the import
+gallery a panel), #181 (Tap to ask, interactive) and #183 (the script panel redesigned; a saved setup
+carries its simulation between projects — migration 084, additive). One dispatch ships all three:
+`gh workflow run release.yml -f bump=minor -f deploy=true`.
+
+The two plans of record are `NIGHT-RUN-2026-09-03.md` (outcome in its §11) and `NEXT-PHASE-2026-09-03.md`
+(outcome in its §8); both are indexed below.
 
 **The previous version of this header said v0.2.11 "was dispatched on 2026-08-26 and never
 deployed".** True when written (a GitHub Actions outage cancelled that run) and false four days
@@ -96,6 +101,8 @@ Each takes the recommendation already recorded unless a measurement contradicted
 - #175 feat — **the listener-question creator inbox** (owner priority 3; plan §3). Migration 083 (additive: `source`, `creator_reply`, `creator_replied_at`, `seen_at`, a partial index for the public read); the spoken path stores `source: 'voice'`; routes: the creator list with a status filter, a cursor, and the chapter the listener was in; a summary for the badge; PATCH reply (empty clears; 2000 chars); POST seen; and `GET /public/audio/:slug/replies` — only rows WITH a reply, public projects, per-IP limited, a minute cacheable — so an anonymous listener gets the reply where they asked. Client: `ListenerInboxDialog` (unanswered/all, the moment, the chapter, typed/spoken, the language, the model's answer folded, one reply box), a "Questions" button with the unanswered count in the project header (a failed summary read never breaks the header), and in the car-mode player a marker per reply on the progress bar plus a "Replies" sheet. Tests: 13 route cases, the dialog, the player's replies, the contract check. Closes plan §11's "creator-facing list of listener questions" deferral.
 - #176 ops — **storage reconciliation (dry-run), the abandoned-multipart sweep, the delete-GC gaps** (owner priority 4; plan §4). `StorageService.listMultipartUploads` on both S3 adapters + `lastModified` on heads; `services/storage/reconcile.ts` (pure classification, a rule per family, never-delete list); `pnpm storage:reconcile` dry-run by default, deletes only with `--apply --delete --older-than=` through the chokepoint; `multipartSweeper` daily, a week's grace; project delete sweeps `dubs/{videoId}` and `editions/{projectId}`. Owner: run `--family=multipart` then `--family=all --json` on the VM before any apply.
 - #177 feat — **R2 readiness** (owner priority 5; plan §5; stacked on #176). `pnpm storage:probe -- --backend=r2|supabase` (the capability matrix of a NAMED provider); `MigratingStorageAdapter` (`STORAGE_BACKEND=migrating`, primary/secondary, refuses a half window); `R2_PUBLIC_BASE_URL`; `pnpm storage:rewrite-urls` (dry-run; only where the object exists at the destination). Owner: the R2 token with write/list/multipart, run the probe, paste the matrix; then the §5 runbook.
+- #183 feat — **a saved setup travels between projects** (owner: save the whole minimal-UI / auto-script / bridge configuration under a name, and on load take the original simulation and attach its files too — "like duplicate but between projects"). The pieces existed and the path did not: Load setup was DISABLED on a section with no simulation, `/fit` answered 400 there, and the "Bring the simulation too" button lived inside a dialog that section could never open — so a fresh project needed the import gallery, by name, first. Now: `/fit` answers for a section with no simulation and says whether the package can come along and what that would do; `/apply` takes `bring_simulation` and imports → attaches → applies in ONE request; the 409 (script does not fit) still leaves the package attached and says so, so the recipe path regenerates against it. Migration 084 records `simulations.imported_from_simulation_id`, so a second load reuses the first copy instead of minting another row — and the bytes were already deduplicated by the blob store (migration 080), which is what makes "nothing is stored twice" a fact. A section that already has a simulation is NEVER swapped. Decision logic is a pure module (`portableSetup.ts`) with its own tests; the routes have theirs.
+- #182 fix — **the section script panel, redesigned** (owner: it is unclear and messy). The card was a light-only amber island in a themed editor, its title was jargon ("AI Script Generation · Extended Thinking"), the Minimal-UI picker hid behind a grey 11px "Advanced" link, and ONE button meant two different things — write a script with AI, or mechanically hide controls — decided silently by whether the prompt was empty. Now: theme tokens throughout (both cards, via one `cardStyle`), a title that says what the card is for, two NUMBERED optional steps (describe it · choose the controls) with the picker promoted to a full-width row carrying "N of M kept" and a label that does not rename itself on click, and a line above the button that states the outcome before it is pressed, with the button words matching. The reuse row is named "Reuse this setup" and its buttons and dialogs read Save setup… / Load setup…. **Refresh banner is gone** (owner ruling): the capture still happens from the preview, silently.
 - #181 feat — **Tap to ask, interactive** (owner ruling: like NotebookLM's interrupt). The answer is STREAMED: the model writes plain text, a sentence splitter cuts it at real boundaries (never inside "e.g.", a decimal, or before a lowercase continuation), each finished sentence is synthesised and sent as its own SSE `audio` event, and the client plays them back to back — the listener hears the first sentence while the model is still writing the third. The microphone now stays OPEN through thinking, the answer and the silence window (`RELEASE_MIC` fires only on the way back to OFF), so speaking over the answer interrupts it and a follow-up needs no second tap. Same guards and the same ledger as the one-shot path: per-IP limit, public-only, the 30 s and 2 MB ceilings, record-before-answer, the daily cap, the ElevenLabs ceiling asked once, one TTS spend for the whole answer. A closed socket aborts the model call. Text-only (a ceiling refusal or a vendor outage) still speaks, through the device voice.
 - #180 chore — **UI cleanups by the owner's rulings**: the creator inbox (#175) reverted wholesale — routes, client methods, dialog, header button, car-mode replies — with migration 083 and its four columns kept (applied on production; unused, nullable); the Banners button and status removed (the sweep runs silently); the import gallery a ~92vw × 90vh panel with a dimmed backdrop, full-screen only on phones.
 - #178 feat — **playlist → publish as course** (owner priority 6; plan §6). `PlaylistCourseService` on the dormant schema and API: created once, linked by `courses.legacy_playlist_id` (now the live link), lessons follow the playlist's items in order, the existing readiness-gated publish; routes on the playlists controller; `PlaylistCourseSection` in the playlist editor. Closes the 🟡 below.
@@ -198,6 +205,44 @@ The plan built from it is `NEXT-PHASE-2026-09-03.md` (indexed at the end of this
   previous rollback release; remove older local application image references safely after a successful
   deploy/health gate; never touch running images, persistent volumes, nginx/certbot data or environment backups.
   Add a low-disk warning/refusal before deploy so a >90% VM fails early.
+
+### Adversarial audit of the seven rulings (2026-09-03, before #183 merged)
+
+An audit agent re-checked all seven of the afternoon's UI/feature rulings against the code rather
+than against my account of it. Five were clean. It found four gaps, and chasing the first one down
+found a fifth that the audit had also passed:
+
+- 🟢 **A brought simulation never reached the picker.** `VideoEditor`'s `onSimulationUpdate` was
+  `prev.map(...)` — a REPLACE. Two of its three callers hand up a simulation the project has never
+  seen (the load dialog's Import button, and a setup bringing its own package), and a replace drops
+  those silently. Fixed by extracting the rule to `client-web/lib/simulationList.ts` (`upsertById`)
+  with its own tests, because both spellings compile and only one is right.
+- 🟢 **The whole feature was unreachable in its primary case.** Found while writing the test above:
+  the "Reuse this setup" row lived inside `{simId && (…)}`, so on a section with NO simulation the
+  Load button did not render at all — the one case the portable setup exists for. The row is now its
+  own card outside that gate, and says what Load will do when the section is empty. **The audit did
+  not catch this**: it verified the button's `disabled` prop no longer names `simId` and stopped
+  there. A prop check cannot see an enclosing gate; only rendering it can.
+- 🟢 **The two switches were the redesign's leftover fragment.** Simple UI / Auto Script sat
+  unnumbered under the numbered steps and were the only part of the card painted in a hardcoded
+  light-only amber wash, so they broke in dark mode. They are now step 3 · Apply them, on theme
+  tokens.
+- 🟢 **`askQuestion` was dead code the owner had asked to delete.** The typed-ask client function
+  survived the Questions removal with zero callers. Deleted with its tests; the tour step that still
+  advertised "✋ Raise your hand" is rewritten to describe the voice interruption, and the tour test
+  now asserts the removed phrase is ABSENT.
+- 🟢 **Two untested behaviours, now pinned.** The import dialog's backdrop-click (closes; refused
+  mid-import) and the script panel's third outcome state (controls, no prompt → "No AI, no cost").
+- 🟢 **`setPresets(r.presets)` had no guard.** The hand-maintained client contract means a backend
+  that stops sending `presets` throws inside render and takes the editor down. Now falls back to an
+  empty list.
+
+🔴 **Still open — the typed-question backend surface.** `POST /api/v1/public/audio/:slug/questions`
+and `GET /api/v1/projects/:id/questions` are still registered and now have no caller. The first is
+public, unauthenticated, and spends the project owner's LLM budget by design; leaving it live with
+no user is an attack surface with no benefit. `listener_questions` and `ListenerQuestionService`
+must STAY — the voice path writes through them. Removing two routes is a public-contract change and
+belongs in its own PR, not smuggled into one about saved setups.
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 

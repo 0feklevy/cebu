@@ -1,7 +1,7 @@
 /**
  * The preset dialogs must actually APPEAR when their buttons are clicked.
  *
- * ── THE BUG THIS PINS (owner-reported: "Save bridge… / Load bridge… do nothing") ──────────────
+ * ── THE BUG THIS PINS (owner-reported: "Save setup… / Load setup… do nothing") ──────────────
  * The overlays were rendered inline inside the editor modal's DOM tree at zIndex 70, while the
  * modal itself sits at zIndex 800/801. The click WORKED — state flipped, the dialog mounted — and
  * it opened BEHIND the modal, invisible. Every existing test passed, because every existing test
@@ -74,20 +74,20 @@ const dialogFacts = (label: string) => {
 describe('the preset dialogs are actually visible when opened', () => {
   afterEach(() => cleanup());
 
-  it('Save bridge… opens ABOVE the editor modal, portaled to body', () => {
+  it('Save setup… opens ABOVE the editor modal, portaled to body', () => {
     renderEditor();
-    fireEvent.click(screen.getByText('Save bridge…'));
+    fireEvent.click(screen.getByText('Save setup…'));
 
-    const { portaled, z } = dialogFacts('Save bridge');
+    const { portaled, z } = dialogFacts('Save setup');
     expect(portaled, 'the dialog renders inside the modal tree — it opens BEHIND the modal').toBe(true);
     expect(z, `z-index ${z} does not clear the editor modal at ${EDITOR_MODAL_Z}`).toBeGreaterThan(EDITOR_MODAL_Z);
   });
 
-  it('Load bridge… opens ABOVE the editor modal, portaled to body', async () => {
+  it('Load setup… opens ABOVE the editor modal, portaled to body', async () => {
     renderEditor();
-    fireEvent.click(screen.getByText('Load bridge…'));
+    fireEvent.click(screen.getByText('Load setup…'));
 
-    const { portaled, z } = dialogFacts('Load bridge');
+    const { portaled, z } = dialogFacts('Load setup');
     expect(portaled, 'the dialog renders inside the modal tree — it opens BEHIND the modal').toBe(true);
     expect(z).toBeGreaterThan(EDITOR_MODAL_Z);
   });
@@ -96,7 +96,7 @@ describe('the preset dialogs are actually visible when opened', () => {
     // The second half of the report: if sim_meta were missing the button is disabled by design —
     // this fixture has it, so a dead-looking button here is a real regression, not the guard.
     renderEditor();
-    const btn = screen.getByText('Save bridge…').closest('button') as HTMLButtonElement;
+    const btn = screen.getByText('Save setup…').closest('button') as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });
 });

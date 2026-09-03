@@ -262,7 +262,7 @@ export function SectionEditor({
   /** Toggle history for Undo (ADR D10). LIFO of the selectors whose mark changed. */
   const [uiUndoStack, setUiUndoStack] = useState<string[]>([]);
 
-  // ── Saved bridges ("save bridge" / "load bridge", 079) ──────────────────────────────────────
+  // ── Saved setups ("save setup" / "load setup", migration 079 calls them saved_bridges) ───────
   // Transient UI state only — the presets themselves live server-side, user-scoped.
   const [presetSaveOpen, setPresetSaveOpen] = useState(false);
   const [presetLabel, setPresetLabel] = useState('');
@@ -809,7 +809,10 @@ export function SectionEditor({
   // The poster for this section's simulation is captured HERE, in the creator's browser, from the
   // preview that is already drawing (usePosterCapture.ts). Once per document per session; the
   // "Refresh banner" button forces a new one.
-  const posterCapture = usePosterCapture({
+  // The banner is captured from the preview automatically — there is no button for it any
+  // more (owner ruling 2026-09-03): the editor sweep and this hook keep every simulation
+  // picture current without anyone asking for it.
+  usePosterCapture({
     projectId,
     sectionId: section.id,
     simulationUrl: simPreviewUrl,
@@ -1162,7 +1165,10 @@ export function SectionEditor({
     setPresets(null);
     try {
       const r = await api.listBridgePresets();
-      setPresets(r.presets);
+      // The client contract in `shared/src/generated/client-v1.ts` is hand-maintained, so a
+      // backend that stops sending `presets` breaks nothing at build time and throws HERE, inside
+      // render, taking the whole editor down with it. An empty list is the honest fallback.
+      setPresets(Array.isArray(r?.presets) ? r.presets : []);
     } catch (e) {
       setPresetError((e as Error).message || 'Could not load your saved bridges');
       setPresets([]);
@@ -1221,9 +1227,20 @@ export function SectionEditor({
     setPresetBusy(true);
     setPresetError(null);
     try {
-      if (presetFit?.path === 'artifact') {
+      // A section with NO simulation gets the setup's own package in the same request: the load
+      // IS the import (owner ruling 2026-09-03 — a setup travels between projects). The server
+      // attaches a copy this project already has rather than making another.
+      const bringIt = !simId && presetFit?.bring?.needed === true && presetFit.bring.possible;
+      const adoptBrought = (brought: { simulation: Simulation } | null | undefined) => {
+        if (!brought) return;
+        onSimulationUpdate?.(brought.simulation);
+        setSimId(brought.simulation.id);
+      };
+
+      if (presetFit?.path === 'artifact' || bringIt) {
         try {
-          const r = await api.applyBridgePreset(projectId, section.id, p.id);
+          const r = await api.applyBridgePreset(projectId, section.id, p.id, bringIt);
+          adoptBrought(r.brought);
           applyPersistedSection(r.section);
           setPendingRecipeRegen(null);
           setLoadOpen(false);
@@ -1235,6 +1252,10 @@ export function SectionEditor({
           // else — auth, network, 5xx — is a real failure and must not quietly become an LLM
           // spend the user did not ask for.
           if ((e as { status?: number }).status !== 409) throw e;
+          // A 409 means the script did not fit — but if the package came along, it is in this
+          // project and on this section NOW, and the recipe path below must regenerate against
+          // IT, not against the nothing that was here before.
+          adoptBrought((e as { body?: { brought?: { simulation: Simulation } | null } }).body?.brought);
         }
       }
       // ── The RECIPE path: a load that does NOT fit as an artifact ────────────────────────────
@@ -1773,10 +1794,27 @@ export function SectionEditor({
   };
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 11, fontWeight: 600, color: '#6b7280',
+    fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))',
     textTransform: 'uppercase', letterSpacing: '0.06em',
     display: 'block', marginBottom: 6,
   };
+
+  /**
+   * A card in this editor: the app surface, with a coloured top edge that names it. The colours
+   * used to be baked into every card (amber text on an amber wash), which read as a separate,
+   * light-only product inside a dark editor.
+   */
+  const cardStyle = (accent: string): React.CSSProperties => ({
+    backgroundColor: 'hsl(var(--card))',
+    border: '1px solid hsl(var(--border))',
+    borderTop: `3px solid ${accent}`,
+    borderRadius: 12,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)',
+    padding: '16px 18px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+  });
 
   // Per-type walkthrough (lib/tours/steps.ts): each section kind gets the steps that exist in
   // the current UI state.
@@ -2213,39 +2251,44 @@ export function SectionEditor({
                 </div>
 
                 {simId && (
-                  <div style={{
-                    backgroundColor: 'hsl(var(--card))', border: '1px solid #f1f5f9', borderTop: '3px solid #f59e0b',
-                    borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 14 }}>✦</span>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: '#92400e' }}>AI Script Generation</span>
-                      <span style={{ fontSize: 10, color: '#b45309', backgroundColor: '#fef3c7', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>Extended Thinking</span>
+                  <div style={cardStyle('#f59e0b')}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span aria-hidden style={{ fontSize: 14 }}>✦</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>This moment</span>
+                      </div>
+                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0', lineHeight: 1.5 }}>
+                        What the viewer sees and can touch while this section plays. Describe it, or just
+                        choose which controls stay — or both.
+                      </p>
                     </div>
 
+                    {/* ① Describe it */}
                     <div {...tourAnchor('sec-sim-prompt')}>
-                      <label style={{ ...labelStyle, color: '#b45309' }}>Prompt</label>
+                      <label style={labelStyle} htmlFor={`sim-prompt-${section.id}`}>1 · Describe it <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, opacity: 0.75 }}>— optional</span></label>
                       <textarea
+                        id={`sim-prompt-${section.id}`}
                         value={simPrompt}
                         onChange={e => setSimPrompt(e.target.value)}
-                        placeholder="Describe exactly what to show in this section…&#10;e.g. Show the lattice size slider and auto-click the start button"
-                        rows={4}
+                        placeholder="e.g. Show the lattice-size slider and start the simulation running"
+                        rows={3}
                         maxLength={1000}
                         style={{
                           width: '100%', padding: '10px 12px', borderRadius: 8,
-                          border: '1.5px solid #fcd34d', backgroundColor: 'hsl(var(--card))',
+                          border: '1.5px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))',
                           fontSize: 13, color: 'hsl(var(--foreground))', outline: 'none',
                           resize: 'vertical', boxSizing: 'border-box',
                           fontFamily: 'system-ui, -apple-system, sans-serif', lineHeight: 1.5,
                         }}
                         onFocus={e => { e.currentTarget.style.borderColor = '#f59e0b'; }}
-                        onBlur={e => { e.currentTarget.style.borderColor = '#fcd34d'; }}
+                        onBlur={e => { e.currentTarget.style.borderColor = 'hsl(var(--border))'; }}
                       />
-                      <p style={{ fontSize: 10, color: '#b45309', textAlign: 'right', margin: '3px 0 0', opacity: 0.7 }}>{simPrompt.length}/1000</p>
+                      <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', textAlign: 'right', margin: '3px 0 0' }}>{simPrompt.length}/1000</p>
                     </div>
 
-                    {/* ── Advanced · UI controls (Minimal-UI control picker) ── */}
-                    <div style={{ marginTop: -6 }} {...tourAnchor('sec-sim-controls')}>
+                    {/* ② Choose the controls (the Minimal-UI picker) */}
+                    <div style={{ marginTop: -4 }} {...tourAnchor('sec-sim-controls')}>
+                      <label style={labelStyle}>2 · Choose the controls <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, opacity: 0.75 }}>— optional</span></label>
                       <button
                         type="button"
                         onClick={() => setUiPanelOpen(v => {
@@ -2257,20 +2300,27 @@ export function SectionEditor({
                         })}
                         aria-expanded={uiPanelOpen}
                         style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 5,
-                          background: 'none', border: 'none', padding: '2px 0',
-                          cursor: 'pointer', color: '#9ca3af', fontSize: 11, fontWeight: 600,
+                          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                          height: 34, padding: '0 10px', borderRadius: 8,
+                          border: '1.5px solid hsl(var(--border))', background: 'hsl(var(--background))',
+                          cursor: 'pointer', color: 'hsl(var(--foreground))', fontSize: 12, fontWeight: 600,
                         }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#6b7280'; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
                       >
                         <ChevronDown
-                          size={13}
+                          size={14}
                           strokeWidth={2}
                           aria-hidden
                           style={{ transform: uiPanelOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
                         />
-                        Advanced · UI controls
+                        {/* The label does NOT change on click: a control that renames itself when
+                            pressed makes the reader re-read it to find out what just happened. The
+                            chevron and aria-expanded carry the state. */}
+                        <span>Pick which controls the viewer keeps</span>
+                        <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))' }}>
+                          {uiControls.length === 0
+                            ? 'not scanned'
+                            : `${uiControls.length - uiUnchecked.size} of ${uiControls.length} kept`}
+                        </span>
                       </button>
 
                       {uiPanelOpen && (
@@ -2483,7 +2533,9 @@ export function SectionEditor({
                       )}
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div style={{ marginTop: -4 }}>
+                      <label style={labelStyle}>3 · Apply them</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 6 }}>
                       {([
                         { key: 'simpleUi' as const,   label: 'Simple UI',   desc: 'Hides irrelevant controls', on: simpleUi,   set: setSimpleUi },
                         { key: 'autoScript' as const, label: 'Auto Script', desc: 'Animates demonstration',    on: autoScript, set: setAutoScript },
@@ -2494,14 +2546,17 @@ export function SectionEditor({
                           style={{
                             display: 'flex', alignItems: 'center', gap: 10,
                             padding: '10px 12px', borderRadius: 9,
-                            border: `1.5px solid ${on ? '#f59e0b' : '#e5e7eb'}`,
-                            backgroundColor: on ? '#fffbeb' : '#f9fafb',
+                            border: `1.5px solid ${on ? '#f59e0b' : 'hsl(var(--border))'}`,
+                            // A translucent wash rather than a hex one: it reads as the card's
+                            // amber over a light ground AND over a dark one.
+                            backgroundColor: on ? 'rgba(245,158,11,0.12)' : 'hsl(var(--muted))',
                             cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
                           }}
                         >
                           <span style={{
                             width: 36, height: 20, borderRadius: 10, flexShrink: 0,
-                            backgroundColor: on ? '#f59e0b' : '#d1d5db',
+                            backgroundColor: on ? '#f59e0b' : 'hsl(var(--muted-foreground))',
+                            opacity: on ? 1 : 0.35,
                             position: 'relative', display: 'inline-block', transition: 'background-color 0.15s',
                           }}>
                             <span style={{
@@ -2512,11 +2567,16 @@ export function SectionEditor({
                             }} />
                           </span>
                           <div>
-                            <p style={{ fontSize: 12, fontWeight: 600, color: on ? '#92400e' : '#374151', margin: 0 }}>{tLabel}</p>
-                            <p style={{ fontSize: 10, color: '#9ca3af', margin: 0 }}>{desc}</p>
+                            {/* The label keeps the theme's own foreground in BOTH states: the
+                                on-state amber is legible over a dark card and washed out over a
+                                light one, and the amber border, track and knob already say which
+                                state this is. */}
+                            <p style={{ fontSize: 12, fontWeight: on ? 700 : 600, color: 'hsl(var(--foreground))', margin: 0 }}>{tLabel}</p>
+                            <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', margin: 0 }}>{desc}</p>
                           </div>
                         </button>
                       ))}
+                      </div>
                     </div>
 
                     {simGenError && (
@@ -2588,29 +2648,43 @@ export function SectionEditor({
                       </div>
                     )}
 
-                    <button
-                      {...tourAnchor('sec-sim-generate')}
-                      onClick={() => handleGenerateScript()}
-                      disabled={generating || !canGenerate}
-                      title={!canGenerate ? 'Enter a prompt, or pick controls in Advanced to just minimize the UI' : undefined}
-                      style={{
-                        width: '100%', height: 42, borderRadius: 10, border: 'none',
-                        background: generating || !canGenerate ? 'linear-gradient(135deg,#fde68a,#fcd34d)' : 'linear-gradient(135deg,#f59e0b,#d97706)',
-                        color: '#78350f', fontSize: 13, fontWeight: 700,
-                        cursor: generating || !canGenerate ? 'not-allowed' : 'pointer',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        transition: 'background-color 0.12s',
-                      }}
-                      onMouseEnter={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
-                      onMouseLeave={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
-                    >
-                      {generating ? (
-                        <>
-                          <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #92400e44', borderTopColor: '#92400e', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
-                          {generationStatus ?? 'Generating…'}
-                        </>
-                      ) : (simPrompt.trim() ? '✦ Generate with AI' : '✦ Apply minimal UI (no AI)')}
-                    </button>
+                    <div>
+                      {/* WHAT THE BUTTON WILL DO, before it is pressed. The same control used to
+                          mean two different things — write a script with AI, or mechanically hide
+                          controls — and which one you got depended on whether the prompt happened
+                          to be empty. It still does; now it says so. */}
+                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '0 0 6px', lineHeight: 1.5 }}>
+                        {!canGenerate
+                          ? 'Describe the moment, or pick the controls to keep — then apply.'
+                          : simPrompt.trim()
+                            ? `AI writes the script for this moment${hasGenSelection ? ' and hides the controls you unchecked' : ''}.`
+                            : 'Hides the controls you unchecked. No AI, no cost.'}
+                      </p>
+                      <button
+                        {...tourAnchor('sec-sim-generate')}
+                        onClick={() => handleGenerateScript()}
+                        disabled={generating || !canGenerate}
+                        style={{
+                          width: '100%', height: 42, borderRadius: 10, border: 'none',
+                          background: generating || !canGenerate ? 'hsl(var(--muted))' : 'linear-gradient(135deg,#f59e0b,#d97706)',
+                          color: generating || !canGenerate ? 'hsl(var(--muted-foreground))' : '#fff', fontSize: 13, fontWeight: 700,
+                          cursor: generating || !canGenerate ? 'not-allowed' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          transition: 'opacity 0.12s',
+                        }}
+                        onMouseEnter={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+                        onMouseLeave={e => { if (!generating && canGenerate) (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                      >
+                        {generating ? (
+                          <>
+                            <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #ffffff55', borderTopColor: '#fff', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
+                            {generationStatus ?? 'Working…'}
+                          </>
+                        ) : !canGenerate ? 'Nothing to apply yet'
+                          : simPrompt.trim() ? '✦ Generate with AI'
+                          : 'Apply'}
+                      </button>
+                    </div>
                     {generating && (
                       <button
                         onClick={handleCancelGeneration}
@@ -2625,14 +2699,34 @@ export function SectionEditor({
                       </button>
                     )}
 
-                    {/* ── SAVED BRIDGES: name this setup; load one saved elsewhere ── */}
-                    <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  </div>
+                )}
+
+                {/* ── Reuse: name this setup, or load one saved elsewhere ──
+                    Deliberately OUTSIDE the `simId` gate above. A saved setup carries its own
+                    simulation, so a section with nothing in it is exactly where loading one is
+                    worth the most — and while this row lived inside that gate the feature was
+                    unreachable in the only case it was built for. */}
+                <div style={{ ...cardStyle('#f59e0b'), gap: 8 }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>Reuse this setup</label>
+                    <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
+                      A saved setup is this section’s whole configuration — the prompt, the script, the
+                      kept controls, Minimal UI and Auto-script — under a name you can load onto another
+                      simulation, in this project or another one.
+                    </p>
+                    {!simId && (
+                      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5, padding: '8px 10px', borderRadius: 8, border: '1px dashed hsl(var(--border))' }}>
+                        This section has no simulation yet. Loading a saved setup brings its
+                        simulation with it — nothing is stored twice.
+                      </p>
+                    )}
+                    <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6 }}>
                       <button
                         onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
                         // A bridge worth saving exists once the section HAS a generated setup —
                         // the sim_meta the save snapshots. Before that there is nothing to name.
                         disabled={presetBusy || !simId || !section.sim_meta}
-                        title={!section.sim_meta ? 'Generate (or apply minimal UI) first — then the setup can be saved' : 'Save this bridge setup under a name'}
+                        title={!section.sim_meta ? 'Apply something first — then this setup can be saved' : 'Save this setup under a name'}
                         style={{
                           flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
                           backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
@@ -2641,36 +2735,22 @@ export function SectionEditor({
                           opacity: !simId || !section.sim_meta ? 0.55 : 1,
                         }}
                       >
-                        Save bridge…
-                      </button>
-                      <button
-                        type="button"
-                        onClick={posterCapture.refresh}
-                        disabled={!simId || !previewLoaded || posterCapture.state === 'capturing'}
-                        title="Capture the preview as this simulation's banner — the picture the library, the import gallery and the viewer's cold poster show"
-                        aria-label="Refresh banner"
-                        style={{
-                          flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
-                          backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
-                          fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                          opacity: !simId || !previewLoaded ? 0.55 : 1,
-                        }}
-                      >
-                        {posterCapture.state === 'capturing' ? 'Capturing…' : posterCapture.state === 'stored' ? 'Banner saved' : 'Refresh banner'}
+                        Save setup…
                       </button>
                       <button
                         onClick={openLoadPicker}
-                        disabled={presetBusy || generating || !simId}
-                        title="Load a bridge setup you saved — instantly when it fits, regenerated when it does not"
+                        // A section with NO simulation is exactly where a saved setup is most
+                        // useful: it brings its own package with it (owner ruling 2026-09-03).
+                        disabled={presetBusy || generating}
+                        title="Load a setup you saved — with its simulation, if this section has none"
                         style={{
                           flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
                           backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
                           fontSize: 12, fontWeight: 600,
-                          cursor: presetBusy || generating || !simId ? 'not-allowed' : 'pointer',
-                          opacity: !simId ? 0.55 : 1,
+                          cursor: presetBusy || generating ? 'not-allowed' : 'pointer',
                         }}
                       >
-                        Load bridge…
+                        Load setup…
                       </button>
                     </div>
                     {presetNotice && (
@@ -2717,19 +2797,14 @@ export function SectionEditor({
                         </div>
                       </div>
                     )}
-                  </div>
-                )}
+                </div>
 
                 {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) ── */}
                 {simId && (
-                  <div style={{
-                    backgroundColor: 'hsl(var(--card))', border: '1px solid #eef2ff', borderTop: '3px solid #6366f1',
-                    borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.03)',
-                    padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12,
-                  }}>
+                  <div style={{ ...cardStyle('#6366f1'), gap: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 14 }}>🎙</span>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>Guided Simulation</span>
+                      <span aria-hidden style={{ fontSize: 14 }}>🎙</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>Guided Simulation</span>
                       <span style={{ fontSize: 10, color: '#4f46e5', backgroundColor: '#eef2ff', borderRadius: 6, padding: '2px 8px', fontWeight: 600 }}>Whole simulation</span>
                       {guidanceStatus !== 'none' && (
                         <span style={{
@@ -2740,7 +2815,7 @@ export function SectionEditor({
                       )}
                     </div>
 
-                    <p style={{ fontSize: 10.5, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
+                    <p style={{ fontSize: 10.5, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
                       Analyzes the whole simulation, writes a 1–2 sentence voice cue per feature and interesting
                       configuration, and plays each once when a viewer first reaches it. Separate from Simple UI / Auto Script.
                     </p>
@@ -3677,7 +3752,7 @@ export function SectionEditor({
           sees it. That was the owner-reported "Save bridge does nothing" bug. */}
       {presetSaveOpen && createPortal(
         <div
-          role="dialog" aria-modal="true" aria-label="Save bridge"
+          role="dialog" aria-modal="true" aria-label="Save setup"
           style={{ position: 'fixed', inset: 0, zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
           onClick={() => !presetBusy && setPresetSaveOpen(false)}
         >
@@ -3686,7 +3761,7 @@ export function SectionEditor({
             onSubmit={e => { e.preventDefault(); handleSavePreset(); }}
             style={{ width: 380, borderRadius: 12, padding: 18, backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))' }}
           >
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Save bridge</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Save setup</div>
             <p style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', margin: '0 0 10px' }}>
               Names this section&apos;s script, toggles and minimal-UI selection so you can load them
               onto another video without setting them up again.
@@ -3718,7 +3793,7 @@ export function SectionEditor({
       {/* ── LOAD BRIDGE: pick a saved setup; the server says which path the load takes ────── */}
       {loadOpen && createPortal(
         <div
-          role="dialog" aria-modal="true" aria-label="Load bridge"
+          role="dialog" aria-modal="true" aria-label="Load setup"
           style={{ position: 'fixed', inset: 0, zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
           onClick={() => !presetBusy && setLoadOpen(false)}
         >
@@ -3726,13 +3801,13 @@ export function SectionEditor({
             onClick={e => e.stopPropagation()}
             style={{ width: 460, maxHeight: '70vh', display: 'flex', flexDirection: 'column', borderRadius: 12, padding: 18, backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))' }}
           >
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Load bridge</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Load setup</div>
             <div style={{ flex: 1, overflowY: 'auto', minHeight: 80 }}>
               {presets === null ? (
                 <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Loading your saved bridges…</div>
               ) : presets.length === 0 ? (
                 <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>
-                  Nothing saved yet. Set up a bridge on any section and press &ldquo;Save bridge&rdquo;.
+                  Nothing saved yet. Set up any section the way you want it and press &ldquo;Save setup&rdquo;.
                 </div>
               ) : presets.map(p => (
                 <button
@@ -3766,6 +3841,7 @@ export function SectionEditor({
                 migration 080 that costs no storage: the bytes already exist and the import writes
                 only rows. */}
             {selectedPreset?.source_importable
+              && !!simId
               && !simulations.some(sim => sim.id === selectedPreset.source_simulation_id) && (
               <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: '1px solid hsl(var(--border))' }}>
                 <div style={{ fontSize: 12, marginBottom: 6 }}>
@@ -3790,6 +3866,12 @@ export function SectionEditor({
               </div>
             )}
 
+            {selectedPreset && !simId && presetFit?.bring?.needed && (
+              <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: '1px solid hsl(var(--border))', fontSize: 12, lineHeight: 1.5 }}>
+                This section has no simulation yet. {presetFit.bring.description}
+              </div>
+            )}
+
             {selectedPreset && (
               <div role="status" style={{ marginTop: 10, fontSize: 12, color: 'hsl(var(--muted-foreground))', minHeight: 18 }}>
                 {fitLoading
@@ -3811,6 +3893,8 @@ export function SectionEditor({
                 style={{ height: 32, padding: '0 14px', borderRadius: 8, border: 'none', backgroundColor: '#d97706', color: '#fff', fontSize: 12, fontWeight: 700, cursor: presetBusy || !selectedPreset || fitLoading ? 'not-allowed' : 'pointer' }}
               >
                 {presetBusy ? 'Loading…'
+                  : !simId && presetFit?.bring?.needed && presetFit.bring.possible
+                    ? `Bring ${presetFit.bring.source_name ? `“${presetFit.bring.source_name}”` : 'the simulation'} and load`
                   : presetFit?.path === 'artifact' ? 'Apply instantly'
                   : 'Load settings'}
               </button>

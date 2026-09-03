@@ -640,10 +640,23 @@ export interface BridgePreset {
 export interface BridgePresetMissingAnchor { kind: string; token: string; atom?: string }
 
 /** The load-path verdict for (preset, section): paste instantly, or regenerate from the recipe. */
+/** A simulation that arrived with a setup: attached from this project, or imported into it. */
+export interface BroughtSimulation {
+  /** The whole row, so the editor's list gains it without another request. */
+  simulation: Simulation;
+  /** True when it was copied in; false when this project already had it and it was attached. */
+  imported: boolean;
+}
+
 export interface BridgePresetFit {
   path: 'artifact' | 'recipe';
   /** The sentence to show beside the Load button — server-composed, never assembled client-side. */
   description: string;
+  /**
+   * Whether loading this setup here needs its simulation brought along, and whether it can be
+   * (owner ruling 2026-09-03: a setup travels between projects). Absent from an older backend.
+   */
+  bring?: { needed: boolean; possible: boolean; source_name: string | null; description: string };
   verdict: {
     path: 'artifact' | 'recipe';
     sameContent?: boolean;
@@ -1828,8 +1841,12 @@ export class ClientV1Api {
    * The ARTIFACT apply. A 409 is an instruction, not an error: the paste is not proven safe for
    * this simulation, and the caller falls back to the generate endpoint with the preset's recipe.
    */
-  applyBridgePreset(projectId: string, sectionId: string, presetId: string): Promise<{ section: TimelineSection; sectionUrl: string; path: 'artifact' }> {
-    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets/${presetId}/apply`, { method: 'POST' });
+  /**
+   * Load a saved setup onto a section. `bringSimulation` lets the setup carry its own package
+   * into this project when the section has none — the copy costs rows, not bytes.
+   */
+  applyBridgePreset(projectId: string, sectionId: string, presetId: string, bringSimulation = false): Promise<{ section: TimelineSection; sectionUrl: string; path: 'artifact'; brought: BroughtSimulation | null }> {
+    return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/bridge-presets/${presetId}/apply`, { method: 'POST', body: { bring_simulation: bringSimulation } });
   }
 
   deleteSimulation(projectId: string, simId: string): Promise<void> {
