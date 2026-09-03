@@ -106,3 +106,53 @@ wait_healthy() {
     sleep 5
   done
 }
+
+# ── Release retention + disk guard ────────────────────────────────────────────────────────────
+# Owner incident 2026-09-03: the VM reached 94% because every historical release image was kept
+# (`docker image prune -f` removes only dangling layers, never a tagged release). The policy is
+# now in the deploy itself: keep the release just deployed and the one before it (the rollback
+# target), remove the rest of the app namespace, and refuse to deploy onto a nearly-full disk.
+
+APP_IMAGE_NAMES=(backend client-web admin-web)
+
+# retain_app_images KEEP_A [KEEP_B ...]
+#   Removes every podcast-saas/{backend,client-web,admin-web}:<tag> whose tag is not in the keep
+#   set. `docker image rm` WITHOUT -f: an image a container still uses refuses, and that refusal
+#   is correct. Other namespaces (nginx, certbot), volumes, .env and .deploy-state are never
+#   touched; untagged (<none>) layers are left to `docker image prune`.
+retain_app_images() {
+  local keep=("$@") removed=0 kept=0 ref tag
+  while IFS= read -r ref; do
+    [ -n "${ref}" ] || continue
+    tag="${ref##*:}"
+    case " ${keep[*]} " in *" ${tag} "*) kept=$((kept + 1)); continue ;; esac
+    if docker image rm "${ref}" >/dev/null 2>&1; then
+      log "retention: removed ${ref}"
+      removed=$((removed + 1))
+    else
+      warn "retention: kept ${ref} (in use, or already gone)"
+    fi
+  done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' 'podcast-saas/*' 2>/dev/null \
+             | grep -E '^podcast-saas/(backend|client-web|admin-web):' | grep -v ':<none>$' || true)
+  log "retention: kept ${kept} tag(s) for {${keep[*]}}, removed ${removed}."
+}
+
+# require_free_disk_gb PATH MIN_GB
+#   Refuses (die) when the filesystem holding PATH has fewer than MIN_GB free. df is the only
+#   source. DEPLOY_ALLOW_LOW_DISK=1 turns the refusal into a warning for one emergency the
+#   operator has looked at. An unreadable df is a warning, never a refusal.
+require_free_disk_gb() {
+  local path="$1" min="$2" free
+  free="$(df -PBG "${path}" 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}' || true)"
+  case "${free}" in
+    ''|*[!0-9]*) warn "disk guard: could not read free space for ${path}; continuing."; return 0 ;;
+  esac
+  if [ "${free}" -lt "${min}" ]; then
+    if [ "${DEPLOY_ALLOW_LOW_DISK:-0}" = "1" ]; then
+      warn "disk guard: only ${free}G free on ${path} (minimum ${min}G) — continuing because DEPLOY_ALLOW_LOW_DISK=1."
+      return 0
+    fi
+    die "disk guard: only ${free}G free on ${path}; ${min}G is the minimum to deploy. Free space (docker image ls 'podcast-saas/*'; ./deploy/scripts/retain-images.sh) or set DEPLOY_ALLOW_LOW_DISK=1 to override once."
+  fi
+  log "disk guard: ${free}G free on ${path} (minimum ${min}G)."
+}

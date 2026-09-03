@@ -166,6 +166,8 @@ jobs:
               exit 1
             fi
           done
+      - name: Deploy script library — release retention and the disk guard (shimmed docker/df)
+        run: bash deploy/scripts/__tests__/lib.test.sh
       # Vitest EXECUTES TypeScript without checking it, so a test can be type-nonsense and still
       # pass. `tsconfig.test.json` was added to close that gap and nothing has ever invoked it —
       # not this workflow, not `release-verify.sh` — while the ledger recorded the finding as
