@@ -5,7 +5,7 @@
  * part that is new: the reply is hijacked into an SSE stream, every service event is written as
  * one frame, a closed socket aborts the model call, and the stream is always ended.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Readable } from 'node:stream';
 
 const state = vi.hoisted(() => ({
@@ -107,7 +107,7 @@ function part(bytes: Buffer = Buffer.from('RIFF....WAVE'), fields: Record<string
   };
 }
 
-async function post(opts: { file?: ReturnType<typeof part> | null; onClose?: (fire: () => void) => void } = {}) {
+async function post(opts: { file?: ReturnType<typeof part> | null; onClose?: (fire: () => void) => void; origin?: string } = {}) {
   const routes: Array<{ method: string; path: string; handler: Handler }> = [];
   const record = (m: string) => (p: string, a: unknown, b?: unknown) =>
     routes.push({ method: m, path: p, handler: (typeof a === 'function' ? a : b) as Handler });
@@ -121,6 +121,7 @@ async function post(opts: { file?: ReturnType<typeof part> | null; onClose?: (fi
     params: { slug: 'my-lesson' },
     ip: '1.2.3.4',
     dbUser: null,
+    headers: { origin: opts.origin },
     raw: { on: (event: string, fn: () => void) => { if (event === 'close') closeHandlers.push(fn); } },
     file: async () => { if (opts.file === null) throw new Error('no multipart'); return opts.file ?? part(); },
   };
@@ -187,5 +188,45 @@ describe('POST /api/v1/public/audio/:slug/voice-question/stream', () => {
     const r = await post({ onClose: (fire) => setTimeout(fire, 5) });
     expect(state.sawAbort).toBe(true);
     expect(r.ended).toBe(true);
+  });
+
+  // `reply.hijack()` takes this response out of Fastify's own pipeline — the one thing that would
+  // otherwise have written the CORS header the global @fastify/cors plugin computed for it. This
+  // is the ONE route in the app that hijacks, and on 2026-09-03 it shipped with exactly this gap:
+  // every other assertion above passed, the stream itself was perfect, and a real browser refused
+  // to hand any of it to the page because `Access-Control-Allow-Origin` was simply never sent.
+  describe('the hijacked reply still carries CORS — the gap that broke this in production', () => {
+    const ENV = { ...process.env };
+    afterEach(() => { process.env = { ...ENV }; });
+
+    it('reflects an allowed browser origin, the way @fastify/cors would have', async () => {
+      process.env.NODE_ENV = 'development'; // browserOrigins() includes the dev localhost origins
+      const r = await post({ origin: 'http://localhost:3000' });
+      expect(r.headers['Access-Control-Allow-Origin']).toBe('http://localhost:3000');
+      expect(r.headers['Vary']).toBe('Origin');
+    });
+
+    it('does not reflect an origin that is not ours', async () => {
+      process.env.NODE_ENV = 'development';
+      const r = await post({ origin: 'https://evil.example.com' });
+      expect(r.headers['Access-Control-Allow-Origin']).toBeUndefined();
+      // Vary: Origin still stands — the decision depended on the Origin header either way, and a
+      // shared cache must not serve this (headerless) response back for an allowed origin's request.
+      expect(r.headers['Vary']).toBe('Origin');
+    });
+
+    it('reflects the real production app origin in production, not a wildcard', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.BACKEND_API_URL = 'https://api.flowvidco.com';
+      process.env.NEXT_PUBLIC_APP_URL = 'https://flowvidco.com';
+      const r = await post({ origin: 'https://flowvidco.com' });
+      expect(r.headers['Access-Control-Allow-Origin']).toBe('https://flowvidco.com');
+    });
+
+    it('with no Origin header (a same-origin or non-browser caller) sends none, and still ends cleanly', async () => {
+      const r = await post({ origin: undefined });
+      expect(r.headers['Access-Control-Allow-Origin']).toBeUndefined();
+      expect(r.ended).toBe(true);
+    });
   });
 });

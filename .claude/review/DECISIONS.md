@@ -1,15 +1,15 @@
 # Open decisions
 
-**State as of 2026-09-03 (afternoon).** Production runs **v0.4.1**, dispatched by the owner 12:26Z
-(`refs/deployed/production` = `e623924`, the merge of #179) — the night run #165–#171 plus the whole next
-phase #172–#179. The owner then ran the storage reconciliation on production, DRY RUN, and rotated the
-Anam credential (see the OWNER REPORT section below for the numbers and the ruling on them).
+**State as of 2026-09-03 (evening).** Production runs **v0.5.0**, dispatched by the owner 17:49Z
+(`refs/deployed/production` = `5b7d933`) — every PR through #185: the night run, the next phase,
+the v0.3.0 layout fix, the Questions removal, Tap to ask interactive, the portable-setup panel, and
+its own UX follow-ups. Release dispatch changed hands the same evening — see the standing
+constraints below.
 
-**Merged and NOT yet released:** #180 (the creator inbox removed, the Banners button removed, the import
-gallery a panel), #181 (Tap to ask, interactive), #183 (the script panel redesigned; a saved setup
-carries its simulation between projects — migration 084, additive), #184 (the typed-question routes
-removed) and #185 (the UX review's findings on the panel). One dispatch ships all five:
-`gh workflow run release.yml -f bump=minor -f deploy=true`.
+Within minutes of v0.5.0 going live the owner reported Tap to ask broken in production with a
+browser console CORS error. Root-caused, fixed and in flight as **#187** — see the incident entry
+immediately below. **v0.5.0 currently ships with this bug live**; do not treat "the release
+deployed clean" as "the release deployed correct" until #187 is confirmed on production.
 
 The two plans of record are `NIGHT-RUN-2026-09-03.md` (outcome in its §11) and `NEXT-PHASE-2026-09-03.md`
 (outcome in its §8); both are indexed below.
@@ -52,6 +52,47 @@ closed rounds belong rather than in an ever-growing archive file. The verificati
 Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit closed its findings.
 
 ---
+
+## 🔴→🟡 INCIDENT — Tap to ask is CORS-blocked in production, v0.5.0 (found 2026-09-03, fixed same evening in #187)
+
+**Reported by the owner from their own browser**, minutes after v0.5.0 deployed: a full console
+dump showing VAD working, speech detected, then
+```
+Access to fetch at '.../voice-question/stream' from origin 'https://flowvidco.com' has been
+blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+```
+Tap to ask — the flagship feature of today's release — does not work at all for any listener.
+
+**Root cause.** `POST /api/v1/public/audio/:slug/voice-question/stream` (added in #181) is the
+only route in the entire backend that calls `reply.hijack()`. `@fastify/cors` sets
+`Access-Control-Allow-Origin` via `reply.header()` in an `onRequest` hook — Fastify's own
+abstraction, which only ever reaches the wire through Fastify's own send pipeline. `hijack()`
+exists specifically to skip that pipeline, so the header the plugin computed was never silently
+wrong — it was computed correctly and then never sent. Every other SSE route in the app
+(`src/lib/sse.ts`'s `initSSE`, used by the script-generation and guidance streams) writes its own
+`Access-Control-Allow-Origin` directly because it never routes through `reply.header()` either; this
+route did neither — it set the SSE headers on `reply.raw` by hand but never added the CORS one.
+
+**Why nothing caught it before shipping.** `audioEdition.voiceStream.test.ts` (written same day as
+#181) exercises the route with a hand-built `reply` object whose `raw.setHeader` just records
+whatever the handler calls — it could not have caught a header the handler never calls, because it
+never modeled `@fastify/cors` at all. Seven Playwright/vitest suites and a release gate all passed,
+because none of them run a real browser against a real cross-origin request; the loopback e2e
+suite's "real app" is same-origin.
+
+**Fix (#187).** `hijackedReplyCorsHeaders(origin)` in `config/publicOrigins.ts`, beside
+`browserOrigins()` (the single source of truth `@fastify/cors` itself reads): reflects the request
+Origin when it's in `browserOrigins()`, adds `Vary: Origin`, set on `reply.raw` before `hijack()`.
+Verified three ways, because a mocked test agreeing with itself is exactly the failure mode that
+shipped this bug: a real-Fastify-plus-real-`@fastify/cors` integration test
+(`hijackedReplyCors.realFastify.test.ts`) reproduces the incident with the fix removed and confirms
+it resolves with the fix present; a controller-level test drives the actual route handler through
+four origin scenarios; a unit test pins the helper against the plugin's own allow/deny logic. Also
+removed two imports (`askListenerQuestion`, `listener_questions`) this file no longer needed since
+#184 — dead since that PR, not since this one.
+
+**Not yet closed as of this entry:** #187 needs to merge and deploy before Tap to ask actually works
+for a real listener. Flip this entry to ✅ once verified live, with the verification method named.
 
 ## 📋 NIGHT RUN 2026-09-03 — plan of record, rulings, and PR index
 

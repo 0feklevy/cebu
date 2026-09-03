@@ -6,6 +6,7 @@ import {
   browserOrigins,
   isNonPublicUrl,
   assertPublicOriginsForProd,
+  hijackedReplyCorsHeaders,
 } from '../publicOrigins.js';
 
 const SAVED = { ...process.env };
@@ -100,5 +101,41 @@ describe('assertPublicOriginsForProd', () => {
   it('is a no-op outside production', () => {
     setEnv({ NODE_ENV: 'development', BACKEND_API_URL: undefined, NEXT_PUBLIC_APP_URL: undefined });
     expect(() => assertPublicOriginsForProd()).not.toThrow();
+  });
+});
+
+
+describe('hijackedReplyCorsHeaders — the header @fastify/cors never gets to send', () => {
+  // reply.hijack() (the voice-question SSE stream, the one route in the app that calls it) skips
+  // Fastify's own send pipeline, which is also the pipeline that would have written the header
+  // the cors plugin computed in its onRequest hook. This is the hand-written substitute, and it
+  // has to agree with the plugin's own policy exactly, or the substitute is just a different bug.
+  const ENV = { ...process.env };
+  afterEach(() => { process.env = { ...ENV }; });
+
+  it('reflects the origin when it is in browserOrigins()', () => {
+    setEnv({ NODE_ENV: 'production', BACKEND_API_URL: 'https://api.flowvidco.com', NEXT_PUBLIC_APP_URL: 'https://flowvidco.com', ADMIN_ORIGIN: undefined });
+    expect(browserOrigins()).toContain('https://flowvidco.com');
+    expect(hijackedReplyCorsHeaders('https://flowvidco.com')).toEqual({
+      'Access-Control-Allow-Origin': 'https://flowvidco.com',
+      Vary: 'Origin',
+    });
+  });
+
+  it('omits Allow-Origin for a caller that is not one of ours, but still varies on Origin', () => {
+    setEnv({ NODE_ENV: 'production', BACKEND_API_URL: 'https://api.flowvidco.com', NEXT_PUBLIC_APP_URL: 'https://flowvidco.com', ADMIN_ORIGIN: undefined });
+    expect(hijackedReplyCorsHeaders('https://evil.example.com')).toEqual({ Vary: 'Origin' });
+  });
+
+  it('never reflects an origin with no Origin header at all', () => {
+    expect(hijackedReplyCorsHeaders(undefined)).toEqual({ Vary: 'Origin' });
+  });
+
+  it('covers the admin origin too, when one is configured', () => {
+    setEnv({ NODE_ENV: 'production', BACKEND_API_URL: 'https://api.flowvidco.com', NEXT_PUBLIC_APP_URL: 'https://flowvidco.com', ADMIN_ORIGIN: 'https://admin.flowvidco.com' });
+    expect(hijackedReplyCorsHeaders('https://admin.flowvidco.com')).toEqual({
+      'Access-Control-Allow-Origin': 'https://admin.flowvidco.com',
+      Vary: 'Origin',
+    });
   });
 });

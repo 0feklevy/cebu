@@ -23,6 +23,7 @@
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
+import { hijackedReplyCorsHeaders } from '../../config/publicOrigins.js';
 import { db } from '../../db/index.js';
 import { project_audio_editions, projects } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
@@ -34,9 +35,6 @@ import { enqueueJob } from '../../queue/index.js';
 import { editionRefusalReason } from '../../services/audio/audioEdition.js';
 import { editionWireStatus } from 'shared';
 import { loadEditionSegments } from '../../services/audio/editionSegments.js';
-import { askListenerQuestion } from '../../services/audio/ListenerQuestionService.js';
-import { listener_questions } from '../../db/schema.js';
-import { desc } from 'drizzle-orm';
 import { rateLimit } from '../../lib/rateLimit.js';
 import { logger } from '../../lib/logger.js';
 import { answerVoiceQuestion, answerVoiceQuestionStream } from '../../services/audio/VoiceQuestionService.js';
@@ -326,10 +324,18 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
       const positionMs = Math.max(0, Math.round(Number(field('position_ms')) || 0));
       const language = field('language').trim() || null;
 
+      // `reply.hijack()` takes this response out of Fastify's own send pipeline, which is also
+      // the pipeline that would have written the `Access-Control-Allow-Origin` header the global
+      // `@fastify/cors` plugin computed for this request in its `onRequest` hook — that header
+      // exists in Fastify's internal state and is simply never flushed to the socket. Set it here,
+      // by hand, on the raw response, mirroring the same origin allowlist. Without this a browser
+      // sees a perfectly good SSE stream and refuses to expose a byte of it to the page.
+      const corsHeaders = hijackedReplyCorsHeaders(request.headers.origin);
       reply.raw.setHeader('Content-Type', 'text/event-stream');
       reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
       reply.raw.setHeader('Connection', 'keep-alive');
       reply.raw.setHeader('X-Accel-Buffering', 'no');
+      for (const [key, value] of Object.entries(corsHeaders)) reply.raw.setHeader(key, value);
       reply.hijack();
       reply.raw.flushHeaders?.();
       const send = (event: { type: string } & Record<string, unknown>) => {
