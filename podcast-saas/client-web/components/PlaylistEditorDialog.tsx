@@ -11,6 +11,7 @@ import { failureMessage } from './failureSurface';
 import { LockPriceControl } from './LockPriceControl';
 import { PermalinkEditor } from './PermalinkEditor';
 import { CollaboratorsSection } from './CollaboratorsSection';
+import { PlaylistCourseSection } from './PlaylistCourseSection';
 import type { Project } from 'shared/src/generated/client-v1';
 
 interface Props {
@@ -546,6 +547,9 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                     <LockPriceControl contentType="playlist" contentId={playlistId} bordered={false} />
                   </section>
                 )}
+
+                {/* Course (owner ruling 2026-09-03: publish a playlist as a course, nothing more) */}
+                {playlistId && !loading && <PlaylistCourseSection playlistId={playlistId} itemCount={items.length} />}
 
                 {/* Collaboration */}
                 {playlistId && (

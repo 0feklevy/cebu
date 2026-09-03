@@ -783,6 +783,22 @@ export interface GuidanceMeta {
 
 export type GuidanceStatus = 'none' | 'analyzing' | 'draft' | 'publishing' | 'ready' | 'error';
 
+// ── Playlist → course (owner ruling 2026-09-03) ───────────────────────────────────────────────
+
+export interface PlaylistCourseState {
+  course: {
+    id: string;
+    slug: string;
+    publish_state: string;
+    published_at: string | null;
+    lesson_count: number;
+    /** `/c/<slug>` — the page renders only while published. */
+    public_path: string;
+  } | null;
+  item_count: number;
+  readiness: { ready: boolean; thinLessons: Array<{ lessonSlug: string; reason: string }> } | null;
+}
+
 export interface Simulation {
   id:               string;
   project_id:       string;
@@ -1885,6 +1901,21 @@ export class ClientV1Api {
       method: 'PUT',
       body: { items: projectIds.map((project_id) => ({ project_id })) },
     });
+  }
+
+  // ── Playlist → course (owner ruling 2026-09-03) ──
+
+  getPlaylistCourse(playlistId: string): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`);
+  }
+
+  /** Create the course if needed, sync its lessons from the playlist, publish when `publish` is true. */
+  publishPlaylistCourse(playlistId: string, body: { publish: boolean; force?: boolean }): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'POST', body });
+  }
+
+  unpublishPlaylistCourse(playlistId: string): Promise<PlaylistCourseState> {
+    return this.request(`/api/v1/playlists/${playlistId}/course`, { method: 'DELETE' });
   }
 
   // ── Permalinks (migration 043) ──────────────────────────────────────────
