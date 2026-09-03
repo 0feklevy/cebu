@@ -344,10 +344,11 @@ with #174. The next-phase's own outcome table is appended here as §8 when the s
 | 5 | #177 | merged | `storage:probe` per named provider, the migrating adapter, `R2_PUBLIC_BASE_URL`, `storage:rewrite-urls` (dry-run) |
 | 6 | #178 | merged | playlist → publish as course, with the address field and availability check |
 
-**What the owner does next (in order):** rotate the Anam key; dispatch the releases (one `bump=patch`
-after #172/#173 if not yet done, then `bump=minor` once #174–#178 are in); on the VM run
-`storage:reconcile --family=multipart` then `--family=all --json`; with the R2 token run
-`storage:probe -- --backend=r2`; decide the R2 window from the probe; set the three smoke variables.
+**What the owner did next.** All of it, on the afternoon of 2026-09-03: the Anam credential
+rotated; v0.4.1 dispatched and deployed; the backfill run (4 written, 1 unresolved); the Docker disk
+emergency resolved; the DB and bucket censuses taken; `storage:reconcile` run as a DRY RUN across
+every family. The results, the rulings on them and what remains are in the ledger's OWNER REPORT
+section — that is the current list, not this paragraph.
 
 **Audits.** Every PR was audited by the task-tracker against this plan before merge; the one gap it
 found (§6's slug field) was built before the PR opened. Deviations from the text are recorded
