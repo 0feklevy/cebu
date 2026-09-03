@@ -56,12 +56,24 @@ export type VoiceEffect =
   | { type: 'STOP_ANSWER' }
   | { type: 'START_RESUME_TIMER'; ms: number }
   | { type: 'CANCEL_RESUME_TIMER' }
+  /** The exchange is over and hands-free is off: the microphone can be released. */
+  | { type: 'RELEASE_MIC' }
   | { type: 'NOTE'; text: string };
 
 /** How long the silence after an answer lasts before the episode continues. */
 export const RESUME_AFTER_MS = 3000;
 
 export interface Transition { state: VoiceState; effects: VoiceEffect[] }
+
+/**
+ * Back to where the exchange started. Going home to OFF releases the microphone — until then it
+ * stays open through thinking, the answer and the silence window, so the listener can barge in
+ * or ask a follow-up by voice after ONE tap (the interactive mode the owner ruled on 2026-09-03:
+ * like NotebookLM's interrupt). Going home to IDLE keeps it open: hands-free is on.
+ */
+function goHome(home: Home, effects: VoiceEffect[]): Transition {
+  return { state: { kind: home }, effects: home === 'off' ? [...effects, { type: 'RELEASE_MIC' }] : effects };
+}
 
 export const INITIAL_VOICE_STATE: VoiceState = { kind: 'off' };
 
@@ -85,6 +97,7 @@ export function reduceVoice(state: VoiceState, event: VoiceEvent): Transition {
         effects.push({ type: 'RESUME_PLAYBACK' });
       }
       if (event.type === 'STOP' && state.kind === 'idle') effects.push({ type: 'PAUSE_PLAYBACK' });
+      effects.push({ type: 'RELEASE_MIC' });
       return { state: { kind: 'off' }, effects };
     }
 
@@ -123,14 +136,11 @@ export function reduceVoice(state: VoiceState, event: VoiceEvent): Transition {
       // Not speech after all (a door, the road). Straight back to the episode, no answer window.
       // A MANUAL capture that ended with nothing says so — the listener pressed the button.
       if (state.kind !== 'listening') return same;
-      return {
-        state: { kind: state.home },
-        effects: [
-          { type: 'END_CAPTURE' },
-          ...(state.manual ? [{ type: 'NOTE', text: 'Didn’t catch that.' } as const] : []),
-          ...(state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' } as const] : []),
-        ],
-      };
+      return goHome(state.home, [
+        { type: 'END_CAPTURE' },
+        ...(state.manual ? [{ type: 'NOTE', text: 'Didn’t catch that.' } as const] : []),
+        ...(state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' } as const] : []),
+      ]);
 
     case 'ASK_TAP': {
       switch (state.kind) {
@@ -153,10 +163,7 @@ export function reduceVoice(state: VoiceState, event: VoiceEvent): Transition {
           };
         case 'resuming':
           // Tapping during the silence window means "continue now".
-          return {
-            state: { kind: state.home },
-            effects: [{ type: 'CANCEL_RESUME_TIMER' }, ...(state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' } as const] : [])],
-          };
+          return goHome(state.home, [{ type: 'CANCEL_RESUME_TIMER' }, ...(state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' } as const] : [])]);
         default:
           return same;   // thinking: nothing to interrupt yet
       }
@@ -193,10 +200,7 @@ export function reduceVoice(state: VoiceState, event: VoiceEvent): Transition {
 
     case 'RESUME_TIMER_DONE':
       if (state.kind !== 'resuming') return same;
-      return {
-        state: { kind: state.home },
-        effects: state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' }] : [],
-      };
+      return goHome(state.home, state.wasPlaying ? [{ type: 'RESUME_PLAYBACK' }] : []);
 
     default:
       return same;
@@ -208,9 +212,9 @@ export function voiceStatusLabel(state: VoiceState): string {
   switch (state.kind) {
     case 'off': return 'Tap to ask';
     case 'idle': return 'Listening';
-    case 'listening': return 'Go ahead';
-    case 'thinking': return 'Thinking';
-    case 'speaking': return 'Answering';
-    case 'resuming': return 'Resuming';
+    case 'listening': return 'Go ahead — tap when done';
+    case 'thinking': return 'Thinking…';
+    case 'speaking': return 'Answering — speak to interrupt';
+    case 'resuming': return 'Ask more, or the episode continues';
   }
 }

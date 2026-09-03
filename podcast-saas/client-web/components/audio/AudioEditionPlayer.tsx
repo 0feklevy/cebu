@@ -27,13 +27,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  askQuestion,
   askVoiceQuestion,
+  askVoiceQuestionStream,
   chapterIndexAt,
   formatClock,
-  type AskQuestionResponse,
   type AudioChapter,
   type AudioEditionView,
+  type VoiceStreamEvent,
 } from '@/lib/audioEditionApi';
 import { formatBytes, releaseOffline, saveForOffline, type OfflineState } from '@/lib/offlineAudio';
 import { voiceStatusLabel } from '@/lib/voiceLoop';
@@ -68,15 +68,9 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [offline, setOffline] = useState<OfflineState>({ status: 'idle' });
-  const [sheet, setSheet] = useState<'closed' | 'chapters' | 'ask'>('closed');
+  const [sheet, setSheet] = useState<'closed' | 'chapters'>('closed');
   const [handsFree, setHandsFree] = useState(false);
 
-  // ── Raise your hand, typed (A2.4) — inside the sheet ────────────────────────────────────────
-  const [question, setQuestion] = useState('');
-  const [asking, setAsking] = useState(false);
-  const [askResult, setAskResult] = useState<AskQuestionResponse | null>(null);
-  // The moment the hand went UP — not the moment typing finished.
-  const handRaisedAtMs = useRef(0);
 
   useEffect(() => { setHandsFree(readHandsFree()); }, []);
 
@@ -169,11 +163,17 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
     (wav: Blob) => askVoiceQuestion(slug ?? '', { wav, positionMs: positionRef.current, language: view.language ?? null }),
     [slug, view.language],
   );
+  const submitVoiceStream = useCallback(
+    (wav: Blob, _durationSec: number, onEvent: (event: VoiceStreamEvent) => void, signal: AbortSignal) =>
+      askVoiceQuestionStream(slug ?? '', { wav, positionMs: positionRef.current, language: view.language ?? null }, onEvent, signal),
+    [slug, view.language],
+  );
   const voice = useVoiceLoop({
     handsFree: Boolean(slug) && handsFree,
     episode: audioRef,
     voice: voiceRef,
     submit: submitVoice,
+    submitStream: submitVoiceStream,
   });
 
   const setHandsFreeAndRemember = useCallback((on: boolean) => {
@@ -201,25 +201,6 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
     if (holdTimer.current !== null) { window.clearTimeout(holdTimer.current); holdTimer.current = null; }
   }, []);
 
-  // ── Typed question (kept for anyone not driving) ────────────────────────────────────────────
-  const raiseHand = useCallback(() => {
-    handRaisedAtMs.current = positionMs;
-    setAskResult(null);
-    setSheet('ask');
-  }, [positionMs]);
-
-  const submitQuestion = useCallback(async () => {
-    const q = question.trim();
-    if (!q || asking || !slug) return;
-    setAsking(true);
-    try {
-      const res = await askQuestion(slug, { question: q, positionMs: handRaisedAtMs.current, language: view.language ?? null });
-      setAskResult(res);
-      if (res.status !== 'refused') setQuestion('');
-    } finally {
-      setAsking(false);
-    }
-  }, [question, asking, slug, view.language]);
 
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
   const remaining = Math.max(0, durationMs - positionMs);
@@ -334,6 +315,9 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
                   🎤
                 </button>
                 <span className="text-sm text-white/70">{voice.error ?? voiceStatusLabel(voice.state)}</span>
+                {voice.heard && voice.state.kind !== 'off' && voice.state.kind !== 'idle' && (
+                  <span className="max-w-[70vw] truncate text-xs text-white/50">“{voice.heard}”</span>
+                )}
               </div>
               <div className="flex flex-col items-center gap-2">
                 <button
@@ -358,11 +342,6 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
                 Chapters
               </button>
             )}
-            {slug && (
-              <button type="button" onClick={raiseHand} className="min-h-[44px] px-2">
-                ✋ Raise your hand
-              </button>
-            )}
             <button type="button" onClick={() => void save()} disabled={offline.status !== 'idle'} className="min-h-[44px] px-2 disabled:opacity-60">
               {offline.status === 'idle' && 'Save for the drive'}
               {offline.status === 'saving' && (offline.progress > 0 ? `Saving… ${Math.round(offline.progress * 100)}%` : 'Saving…')}
@@ -375,10 +354,10 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
 
       {/* ── The sheet: chapters, or the typed question ── */}
       {sheet !== 'closed' && (
-        <div className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-y-auto rounded-t-3xl bg-neutral-900 p-4 shadow-2xl" role="dialog" aria-label={sheet === 'chapters' ? 'Chapters' : 'Ask a question'}>
+        <div className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-y-auto rounded-t-3xl bg-neutral-900 p-4 shadow-2xl" role="dialog" aria-label="Chapters">
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm font-medium text-white/70">{sheet === 'chapters' ? 'Chapters' : `Asking about ${formatClock(handRaisedAtMs.current)}`}</span>
-            <button type="button" onClick={() => { setSheet('closed'); setAskResult(null); }} className="min-h-[44px] px-3 text-sm text-white/70">
+            <span className="text-sm font-medium text-white/70">Chapters</span>
+            <button type="button" onClick={() => setSheet('closed')} className="min-h-[44px] px-3 text-sm text-white/70">
               Close
             </button>
           </div>
@@ -401,43 +380,6 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
             </ol>
           )}
 
-          {sheet === 'ask' && slug && (
-            <div>
-              {voice.heard && <p className="mb-2 text-xs text-white/50">Last heard: “{voice.heard}”</p>}
-              <textarea
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                rows={3}
-                autoFocus
-                placeholder="What would you like to ask?"
-                className="w-full rounded-xl border border-white/15 bg-black/40 p-3 text-base text-white"
-              />
-              {askResult && (
-                <div role="status" aria-live="polite" className="mt-2 text-sm">
-                  {askResult.status === 'answered' && askResult.answer ? (
-                    <p className="rounded-xl bg-white/10 p-3 whitespace-pre-wrap">{askResult.answer}</p>
-                  ) : askResult.status === 'saved' ? (
-                    <p className="text-white/70">
-                      Saved — the creator will see your question at {formatClock(handRaisedAtMs.current)}.
-                      {askResult.message ? ` (${askResult.message})` : ''}
-                    </p>
-                  ) : (
-                    <p className="text-red-300">{askResult.message ?? 'Could not send your question.'}</p>
-                  )}
-                </div>
-              )}
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={submitQuestion}
-                  disabled={asking || !question.trim()}
-                  className="min-h-[44px] rounded-xl bg-white px-5 text-base font-medium text-black disabled:opacity-50"
-                >
-                  {asking ? 'Asking…' : 'Ask'}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       )}
 

@@ -40,6 +40,9 @@ export interface AskInput {
   intent: QuestionIntent;
   /** Null for an anonymous listener — the common case on a public page. */
   userId?: string | null;
+  /** The interactive voice path: every token as the model writes it, so speech can start on the first sentence. */
+  onTokenChunk?: (chunk: string) => void;
+  abortSignal?: AbortSignal;
 }
 
 export interface AskResult {
@@ -128,20 +131,24 @@ export async function askListenerQuestion(input: AskInput, llm = new LLMService(
   }
 
   try {
-    const res = await llm.sendStructured<{ answer: string }>({
+    // Plain text, streamed: the voice path speaks the first sentence while the model writes the
+    // next (owner ruling 2026-09-03 — Tap to ask like NotebookLM's interrupt). The register is
+    // the prompt's job; there is no JSON to unwrap, so nothing waits for a closing brace.
+    const res = await llm.sendText({
       task: 'listener_question',
       systemPrompt:
         'You answer a listener\'s question about the passage of a lesson they are currently hearing. ' +
         'Answer ONLY from the passage. If the passage does not contain the answer, say so plainly in ' +
         'one sentence rather than guessing — the listener is driving and cannot check. Two or three ' +
-        'sentences, spoken register, no preamble.\n\nPASSAGE:\n' + context,
+        'sentences, spoken register, no preamble, no lists, no markdown — it will be read aloud.\n\nPASSAGE:\n' + context,
       userPrompt: input.question.trim(),
-      schema: { parse: (v: unknown) => v } as never,
       userId: input.userId ?? null,
       projectId: input.projectId,
-    } as never);
+      onTokenChunk: input.onTokenChunk,
+      abortSignal: input.abortSignal ?? new AbortController().signal,
+    });
 
-    const answer = String((res.data as { answer?: string })?.answer ?? '').trim();
+    const answer = String(res.text ?? '').trim();
     if (!answer) throw new Error('the model returned no answer text');
 
     await db.update(listener_questions)
