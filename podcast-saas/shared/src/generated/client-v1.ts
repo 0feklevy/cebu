@@ -799,6 +799,28 @@ export interface PlaylistCourseState {
   readiness: { ready: boolean; thinLessons: Array<{ lessonSlug: string; reason: string }> } | null;
 }
 
+// ── Listener questions, the creator's view (migration 083) ────────────────────────────────────
+
+export interface ListenerQuestion {
+  id: string;
+  position_ms: number;
+  question: string;
+  /** The MODEL's answer, if one was given; the creator's reply is separate. */
+  answer: string | null;
+  status: 'saved' | 'answered' | 'failed';
+  language: string | null;
+  source: 'text' | 'voice';
+  creator_reply: string | null;
+  creator_replied_at: string | null;
+  seen_at: string | null;
+  /** The chapter the listener was in, when the edition has chapters. */
+  chapter: string | null;
+  created_at: string;
+}
+export interface ListenerQuestionPage { questions: ListenerQuestion[]; next_before: string | null }
+export interface ListenerQuestionSummary { total: number; unanswered: number; unseen: number }
+export interface ListenerQuestionReplyResult { id: string; creator_reply: string | null; creator_replied_at: string | null }
+
 export interface Simulation {
   id:               string;
   project_id:       string;
@@ -1757,6 +1779,30 @@ export class ClientV1Api {
    */
   uploadSectionPoster(projectId: string, sectionId: string, body: SectionPosterUpload): Promise<SectionPosterResult> {
     return this.request(`/api/v1/projects/${projectId}/sections/${sectionId}/poster`, { method: 'POST', body });
+  }
+
+  // ── The creator's listener-question inbox (owner ruling 2026-09-03) ──
+
+  listListenerQuestions(projectId: string, opts: { status?: 'unanswered' | 'answered' | 'all'; limit?: number; before?: string } = {}): Promise<ListenerQuestionPage> {
+    const q = new URLSearchParams();
+    if (opts.status) q.set('status', opts.status);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    if (opts.before) q.set('before', opts.before);
+    // A literal path with the query appended, the shape the route-contract test parses.
+    return this.request(`/api/v1/projects/${projectId}/questions?${q.toString()}`);
+  }
+
+  getListenerQuestionSummary(projectId: string): Promise<ListenerQuestionSummary> {
+    return this.request(`/api/v1/projects/${projectId}/questions/summary`);
+  }
+
+  markListenerQuestionsSeen(projectId: string): Promise<{ ok: true }> {
+    return this.request(`/api/v1/projects/${projectId}/questions/seen`, { method: 'POST', body: {} });
+  }
+
+  /** The creator's reply; an empty string clears it. */
+  replyListenerQuestion(projectId: string, questionId: string, creatorReply: string): Promise<ListenerQuestionReplyResult> {
+    return this.request(`/api/v1/projects/${projectId}/questions/${questionId}`, { method: 'PATCH', body: { creator_reply: creatorReply } });
   }
 
   /** A poster for the simulation itself (the library's banner), from the editor's banner sweep. */

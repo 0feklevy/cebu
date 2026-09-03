@@ -57,7 +57,7 @@ vi.mock('../../../db/index.js', () => ({
   db: {
     query: {
       projects: { findFirst: async () => state.project },
-      project_audio_editions: { findFirst: async () => state.edition },
+      project_audio_editions: { findFirst: async () => state.edition, findMany: async () => (state.edition ? [state.edition] : []) },
       listener_questions: { findMany: async () => state.questions },
       video_files: {
         findMany: async (args: { where?: unknown }) => {
@@ -133,7 +133,7 @@ async function call(
   // reads like a routing bug rather than a fake that cannot see half the routes.
   const record = (method: string) => (p: string, a: unknown, b?: unknown) =>
     routes.push({ method, path: p, handler: (typeof a === 'function' ? a : b) as Handler });
-  const app = { get: record('GET'), post: record('POST') };
+  const app = { get: record('GET'), post: record('POST'), patch: record('PATCH') };
   await registerAudioEditionRoutes(app as never);
 
   const route = routes.find((r) => r.method === method && r.path === path);

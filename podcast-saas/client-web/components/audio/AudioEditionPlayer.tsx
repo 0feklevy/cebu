@@ -34,7 +34,7 @@ import {
   type AskQuestionResponse,
   type AudioChapter,
   type AudioEditionView,
-} from '@/lib/audioEditionApi';
+  listCreatorReplies, type CreatorReply } from '@/lib/audioEditionApi';
 import { formatBytes, releaseOffline, saveForOffline, type OfflineState } from '@/lib/offlineAudio';
 import { voiceStatusLabel } from '@/lib/voiceLoop';
 import { useVoiceLoop } from './useVoiceLoop';
@@ -68,7 +68,17 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [offline, setOffline] = useState<OfflineState>({ status: 'idle' });
-  const [sheet, setSheet] = useState<'closed' | 'chapters' | 'ask'>('closed');
+  const [sheet, setSheet] = useState<'closed' | 'chapters' | 'ask' | 'replies'>('closed');
+
+  // ── The creator's replies (migration 083): markers on the bar, a sheet to read them ─────────
+  // Loaded once per episode; a failure is an empty list — the episode plays regardless.
+  const [replies, setReplies] = useState<CreatorReply[]>([]);
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    listCreatorReplies(slug, view.language).then((r) => { if (!cancelled) setReplies(r); });
+    return () => { cancelled = true; };
+  }, [slug, view.language]);
   const [handsFree, setHandsFree] = useState(false);
 
   // ── Raise your hand, typed (A2.4) — inside the sheet ────────────────────────────────────────
@@ -283,7 +293,18 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
 
         <div className="flex w-full max-w-sm flex-col items-center gap-5 [@media(orientation:landscape)_and_(max-height:560px)]:w-[44vw] [@media(orientation:landscape)_and_(max-height:560px)]:max-w-md">
           {/* Progress bar — a real range input so a thumb drag and a steering-wheel seek agree. */}
-          <div className="w-full">
+          <div className="relative w-full">
+            {/* Where the creator replied: a dot per reply, tap opens the sheet at that moment. */}
+            {durationMs > 0 && replies.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                aria-label={`Creator replied at ${formatClock(r.position_ms)}`}
+                onClick={() => { seekTo(r.position_ms); setSheet('replies'); }}
+                className="absolute -top-2 z-10 h-4 w-4 -translate-x-1/2 rounded-full border-2 border-neutral-950 bg-amber-300"
+                style={{ left: `${Math.min(100, Math.max(0, (r.position_ms / durationMs) * 100))}%` }}
+              />
+            ))}
             <input
               type="range"
               min={0}
@@ -358,6 +379,11 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
                 Chapters
               </button>
             )}
+            {replies.length > 0 && (
+              <button type="button" onClick={() => setSheet(sheet === 'replies' ? 'closed' : 'replies')} className="min-h-[44px] px-2">
+                Replies ({replies.length})
+              </button>
+            )}
             {slug && (
               <button type="button" onClick={raiseHand} className="min-h-[44px] px-2">
                 ✋ Raise your hand
@@ -375,9 +401,9 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
 
       {/* ── The sheet: chapters, or the typed question ── */}
       {sheet !== 'closed' && (
-        <div className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-y-auto rounded-t-3xl bg-neutral-900 p-4 shadow-2xl" role="dialog" aria-label={sheet === 'chapters' ? 'Chapters' : 'Ask a question'}>
+        <div className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-y-auto rounded-t-3xl bg-neutral-900 p-4 shadow-2xl" role="dialog" aria-label={sheet === 'chapters' ? 'Chapters' : sheet === 'replies' ? 'Creator replies' : 'Ask a question'}>
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm font-medium text-white/70">{sheet === 'chapters' ? 'Chapters' : `Asking about ${formatClock(handRaisedAtMs.current)}`}</span>
+            <span className="text-sm font-medium text-white/70">{sheet === 'chapters' ? 'Chapters' : sheet === 'replies' ? 'The creator replied' : `Asking about ${formatClock(handRaisedAtMs.current)}`}</span>
             <button type="button" onClick={() => { setSheet('closed'); setAskResult(null); }} className="min-h-[44px] px-3 text-sm text-white/70">
               Close
             </button>
@@ -396,6 +422,20 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
                     <span className="tabular-nums text-xs text-white/50">{formatClock(c.startMs)}</span>
                     <span className="flex-1">{c.title}</span>
                   </button>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {sheet === 'replies' && (
+            <ol className="divide-y divide-white/10">
+              {replies.map((r) => (
+                <li key={r.id} className="py-3">
+                  <button type="button" onClick={() => { seekTo(r.position_ms); setSheet('closed'); }} className="mb-1 min-h-[32px] text-left text-xs tabular-nums text-amber-300">
+                    {formatClock(r.position_ms)}
+                  </button>
+                  <p className="text-sm text-white/60">“{r.question}”</p>
+                  <p className="mt-1 whitespace-pre-wrap text-base text-white">{r.reply}</p>
                 </li>
               ))}
             </ol>
