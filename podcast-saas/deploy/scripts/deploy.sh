@@ -128,11 +128,10 @@ fi
 export NODE_BUILD_MEMORY
 log "next build heap ceiling: ${NODE_BUILD_MEMORY}MB"
 
-# Warn (don't block) if the Docker data disk is tight — retained rollback images + build
-# cache can exhaust a small root volume (ENOSPC mid-build).
-DOCKER_FREE_GB="$(df -PBG /var/lib/docker 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}' || true)"
-[ -n "${DOCKER_FREE_GB:-}" ] && [ "${DOCKER_FREE_GB}" -lt 5 ] && \
-  warn "Only ${DOCKER_FREE_GB}G free for Docker — build may fail with 'no space left'. Use a >=30G root volume."
+# Refuse (not warn) when the Docker data disk is tight — retained rollback images + build cache
+# exhaust a small root volume mid-build (ENOSPC), and the 2026-09-03 incident was found at 94%.
+# DEPLOY_MIN_FREE_GB overrides the floor; DEPLOY_ALLOW_LOW_DISK=1 overrides once.
+require_free_disk_gb /var/lib/docker "${DEPLOY_MIN_FREE_GB:-8}"
 
 # Build SERIALLY by default so only one heavy pnpm-install / next-build runs at a time.
 # Set BUILD_PARALLEL=1 on a large host to build all three concurrently via bake.
@@ -169,6 +168,8 @@ compose exec -T nginx nginx -s reload 2>/dev/null || true
 
 if wait_healthy "${HEALTH_TIMEOUT}" backend client-web admin-web nginx; then
   ok "Deployment ${NEW_VERSION} is healthy."
+  # Retention: this build and the previous one; older app images go (see _lib.sh).
+  retain_app_images "${NEW_VERSION}" "${OLD_VERSION}"
   # Free disk from dangling layers of prior builds (keeps tagged prev images).
   docker image prune -f >/dev/null 2>&1 || true
   log "Previous version ${OLD_VERSION} images retained for rollback."

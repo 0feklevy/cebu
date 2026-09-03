@@ -42,6 +42,9 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 docker info >/dev/null 2>&1 || die "Cannot reach the Docker daemon."
 command -v python3 >/dev/null || die "python3 is required to parse the deployment envelope."
+# Refuse before pulling a single layer: a deploy onto a nearly-full disk fails half-way and
+# leaves the operator cleaning up by hand (2026-09-03). DEPLOY_MIN_FREE_GB overrides the floor.
+require_free_disk_gb /var/lib/docker "${DEPLOY_MIN_FREE_GB:-8}"
 
 # --- 1. Read + validate the envelope (stdin only) -----------------------------
 ENVELOPE="$(cat)"
@@ -158,6 +161,9 @@ compose exec -T nginx nginx -s reload 2>/dev/null || true
 
 if wait_healthy "${HEALTH_TIMEOUT}" backend client-web admin-web nginx; then
   ok "Deployment ${VERSION} is healthy."
+  # Retention: the release just deployed and the one before it (the rollback target). Every
+  # older tag in the app namespace goes; nginx, certbot, volumes and env are untouched.
+  retain_app_images "${VERSION}" "${OLD_VERSION}"
   docker image prune -f >/dev/null 2>&1 || true
   log "Previous version ${OLD_VERSION} images retained for rollback."
   compose ps
