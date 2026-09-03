@@ -526,6 +526,12 @@ export const simulations = pgTable('simulations', {
   // package-scoped — see migration 049 for why the per-section `?v=` parameter is not.
   bridge_hash:      text('bridge_hash'),
   package_class:    text('package_class'),                          // SimPackageClass | null
+  /**
+   * The simulation this one was COPIED from, when it arrived by import (migration 084). Null for
+   * an upload. It is what lets a project answer "do I already have that package?" — so loading a
+   * saved setup twice reuses the first copy instead of minting another row.
+   */
+  imported_from_simulation_id: uuid('imported_from_simulation_id'),
   canary_report:    jsonb('canary_report'),                         // CanaryReport | null
   canary_at:        timestamp('canary_at', { withTimezone: true }),
   // ── Immutable package revisions (migration 050) ─────────────────────────────

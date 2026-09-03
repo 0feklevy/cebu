@@ -171,6 +171,9 @@ export class SimulationImportService {
       package_class: null,
       // Guidance deliberately not carried — see the header.
       guidance_status: 'none',
+      // Where it came from (migration 084), so a second import of the same package into the same
+      // project can be answered with the first copy instead of another row.
+      imported_from_simulation_id: input.sourceSimulationId,
     }).returning();
 
     // The mapping is what makes the blobs findable. Written AFTER the simulation row so the FK

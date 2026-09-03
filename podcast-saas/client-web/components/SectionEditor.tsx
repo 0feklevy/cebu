@@ -1224,9 +1224,20 @@ export function SectionEditor({
     setPresetBusy(true);
     setPresetError(null);
     try {
-      if (presetFit?.path === 'artifact') {
+      // A section with NO simulation gets the setup's own package in the same request: the load
+      // IS the import (owner ruling 2026-09-03 — a setup travels between projects). The server
+      // attaches a copy this project already has rather than making another.
+      const bringIt = !simId && presetFit?.bring?.needed === true && presetFit.bring.possible;
+      const adoptBrought = (brought: { simulation: Simulation } | null | undefined) => {
+        if (!brought) return;
+        onSimulationUpdate?.(brought.simulation);
+        setSimId(brought.simulation.id);
+      };
+
+      if (presetFit?.path === 'artifact' || bringIt) {
         try {
-          const r = await api.applyBridgePreset(projectId, section.id, p.id);
+          const r = await api.applyBridgePreset(projectId, section.id, p.id, bringIt);
+          adoptBrought(r.brought);
           applyPersistedSection(r.section);
           setPendingRecipeRegen(null);
           setLoadOpen(false);
@@ -1238,6 +1249,10 @@ export function SectionEditor({
           // else — auth, network, 5xx — is a real failure and must not quietly become an LLM
           // spend the user did not ask for.
           if ((e as { status?: number }).status !== 409) throw e;
+          // A 409 means the script did not fit — but if the package came along, it is in this
+          // project and on this section NOW, and the recipe path below must regenerate against
+          // IT, not against the nothing that was here before.
+          adoptBrought((e as { body?: { brought?: { simulation: Simulation } | null } }).body?.brought);
         }
       }
       // ── The RECIPE path: a load that does NOT fit as an artifact ────────────────────────────
@@ -2698,14 +2713,15 @@ export function SectionEditor({
                       </button>
                       <button
                         onClick={openLoadPicker}
-                        disabled={presetBusy || generating || !simId}
-                        title="Load a setup you saved — instantly when it fits, regenerated when it does not"
+                        // A section with NO simulation is exactly where a saved setup is most
+                        // useful: it brings its own package with it (owner ruling 2026-09-03).
+                        disabled={presetBusy || generating}
+                        title="Load a setup you saved — with its simulation, if this section has none"
                         style={{
                           flex: 1, height: 30, borderRadius: 8, border: '1.5px solid hsl(var(--border))',
                           backgroundColor: 'transparent', color: 'hsl(var(--foreground))',
                           fontSize: 12, fontWeight: 600,
-                          cursor: presetBusy || generating || !simId ? 'not-allowed' : 'pointer',
-                          opacity: !simId ? 0.55 : 1,
+                          cursor: presetBusy || generating ? 'not-allowed' : 'pointer',
                         }}
                       >
                         Load setup…
@@ -3801,6 +3817,7 @@ export function SectionEditor({
                 migration 080 that costs no storage: the bytes already exist and the import writes
                 only rows. */}
             {selectedPreset?.source_importable
+              && !!simId
               && !simulations.some(sim => sim.id === selectedPreset.source_simulation_id) && (
               <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: '1px solid hsl(var(--border))' }}>
                 <div style={{ fontSize: 12, marginBottom: 6 }}>
@@ -3825,6 +3842,12 @@ export function SectionEditor({
               </div>
             )}
 
+            {selectedPreset && !simId && presetFit?.bring?.needed && (
+              <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: '1px solid hsl(var(--border))', fontSize: 12, lineHeight: 1.5 }}>
+                This section has no simulation yet. {presetFit.bring.description}
+              </div>
+            )}
+
             {selectedPreset && (
               <div role="status" style={{ marginTop: 10, fontSize: 12, color: 'hsl(var(--muted-foreground))', minHeight: 18 }}>
                 {fitLoading
@@ -3846,6 +3869,8 @@ export function SectionEditor({
                 style={{ height: 32, padding: '0 14px', borderRadius: 8, border: 'none', backgroundColor: '#d97706', color: '#fff', fontSize: 12, fontWeight: 700, cursor: presetBusy || !selectedPreset || fitLoading ? 'not-allowed' : 'pointer' }}
               >
                 {presetBusy ? 'Loading…'
+                  : !simId && presetFit?.bring?.needed && presetFit.bring.possible
+                    ? `Bring ${presetFit.bring.source_name ? `“${presetFit.bring.source_name}”` : 'the simulation'} and load`
                   : presetFit?.path === 'artifact' ? 'Apply instantly'
                   : 'Load settings'}
               </button>
