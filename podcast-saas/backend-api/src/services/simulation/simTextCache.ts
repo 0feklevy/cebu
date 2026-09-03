@@ -67,6 +67,16 @@ export class SimTextCache {
     this.totalBytes -= slot.bytes.length;
   }
 
+  /** Drop every entry under a storage prefix — the writer that rewrites a legacy package in place calls this. */
+  evictPrefix(prefix: string): number {
+    const p = prefix.endsWith('/') ? prefix : prefix + '/';
+    let n = 0;
+    for (const key of [...this.slots.keys()]) {
+      if (key.startsWith(p)) { this.evict(key); n++; }
+    }
+    return n;
+  }
+
   get size(): number { return this.slots.size; }
   get bytes(): number { return this.totalBytes; }
   clear(): void { this.slots.clear(); this.totalBytes = 0; }
@@ -79,3 +89,15 @@ export function strongEtag(bytes: Buffer): string {
 
 /** The process-wide instance `/sim-public/*` reads through. */
 export const simTextCache = new SimTextCache();
+
+/**
+ * Legacy packages — no revision, rewritten in place by Replace / Import / guidance — were left out
+ * of the cache on purpose, and paid a storage read + sha1 + brotli per file per viewer per open
+ * (the packages an existing production library is most likely made of). They are cached here for
+ * a short window, and every writer that rewrites such a package evicts its prefix, so a rewrite
+ * is served on the next request rather than in thirty seconds.
+ */
+export const LEGACY_TEXT_CACHE_TTL_MS = 30 * 1000;
+export const simLegacyTextCache = new SimTextCache({
+  maxBytes: 16 * 1024 * 1024, ttlMs: LEGACY_TEXT_CACHE_TTL_MS, maxEntryBytes: 4 * 1024 * 1024,
+});

@@ -97,7 +97,9 @@ function SimulationSurface({ material }: { material: LibraryMaterial }) {
   // carries posts SIM_PAINTED on the first real frame; that is the honest signal. A package that
   // never posts it (none in production, but a cheap fallback beats a stuck cover) reveals a
   // moment after load (night run 2026-09-03 §6).
-  const painted = usePaintedSignal(frameRef, loaded, 2500);
+  // 1 200 ms: the serve-time boot snippet now posts SIM_PAINTED two frames after load for a
+  // package without the gate, so the timer is the last resort, not the common path.
+  const painted = usePaintedSignal(frameRef, loaded, 1200);
   const revealed = painted;
   const poster = material.posterUrl ?? material.bannerUrl ?? null;
   return (

@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { simLegacyTextCache } from './simTextCache.js';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import type { StorageService } from '../storage/StorageService.js';
@@ -528,6 +529,7 @@ export class GuidanceService {
 
     const mdKey = `${prefix}/guidance/understanding.md`;
     await this.storage.uploadFile(mdKey, Buffer.from(understandingMd, 'utf-8'), 'text/markdown; charset=utf-8');
+    simLegacyTextCache.evictPrefix(prefix);
     const mdUrl = this.storage.getSimPublicUrl(mdKey);
 
     // Pass 2 — structured cues, grounded in the analysis
@@ -698,6 +700,7 @@ export class GuidanceService {
 
     await withGuidanceLock(guidanceKey, async () => {
       await this.storage.uploadFile(guidanceKey, Buffer.from(guidanceJs, 'utf-8'), 'application/javascript');
+      simLegacyTextCache.evictPrefix(prefix);
 
       // Resolve the entry HTML key: use the authoritative key from opts first (no listing
       // needed), then fall back to listing if that's not available.
@@ -734,6 +737,7 @@ export class GuidanceService {
       // Ensure the head rAF gate too (idempotent) — publish also brings pre-gate sims up to date.
       const updatedHtml = injectGuidanceScriptTag(injectRafGate(rawHtml), relPath, guidanceHash);
       await this.storage.uploadFile(entryKey, Buffer.from(updatedHtml, 'utf-8'), 'text/html; charset=utf-8');
+      simLegacyTextCache.evictPrefix(prefix);
     });
 
     logger.info({ simId, published: published.filter(e => e.enabled).length }, 'Guidance published');

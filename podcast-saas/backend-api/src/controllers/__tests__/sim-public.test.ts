@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import { createHash } from 'crypto';
 import { gunzipSync, brotliDecompressSync, gzipSync } from 'zlib';
 import { registerSimPublicRoutes, injectSimBootSnippet } from '../sim-public.controller.js';
+import { simTextCache, simLegacyTextCache } from '../../services/simulation/simTextCache.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,9 @@ async function makeApp() {
 }
 
 beforeEach(() => {
+  // Both text caches are process-wide; a body one test served must not answer the next.
+  simTextCache.clear();
+  simLegacyTextCache.clear();
   mockStorage.readObject.mockReset();
   mockStorage.getPublicUrl.mockClear();
 });

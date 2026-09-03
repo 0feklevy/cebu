@@ -1,3 +1,4 @@
+import { simLegacyTextCache } from './simTextCache.js';
 import { createHash } from 'crypto';
 import { z } from 'zod';
 import type { StorageService } from '../storage/StorageService.js';
@@ -2369,6 +2370,9 @@ export class SimulationService {
       );
     }
 
+    // The package was written in place: anything served from memory for this prefix is stale.
+    simLegacyTextCache.evictPrefix(prefix);
+
     const entryStoragePath = `${prefix}/${entryRelPath}`;
     const entryUrl = this.storage.getSimPublicUrl(entryStoragePath);
 
@@ -2496,6 +2500,7 @@ export class SimulationService {
 
     // Delete stale files AFTER the uploads so a viewer never sees a half-missing sim.
     // Best-effort: a failed delete leaves a harmless orphan and must not fail the swap.
+    simLegacyTextCache.evictPrefix(prefix);
     const newKeySet = new Set(entries.map(([relPath]) => `${prefix}/${relPath}`));
     const staleKeys = listingAvailable
       ? existingKeys.filter(k => k.startsWith(`${prefix}/`) && !newKeySet.has(k) && !isGeneratedKey(k))

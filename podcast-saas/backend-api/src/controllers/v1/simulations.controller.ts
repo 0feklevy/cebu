@@ -15,7 +15,8 @@ import { posterAspectFor, posterKeyForSection } from '../../services/simulation/
 import { decodePngDataUrl, parsePngHeader } from '../../services/simulation/pngHeader.js';
 import { packageRevisionFor } from 'shared/sim/simRevision';
 import { derivePackageRevision } from 'shared/sim/simIdentity';
-import { POSTER_SIZES, posterIdentityString } from 'shared/sim/posterIdentity';
+import { POSTER_SIZES, posterIdentityString, type PosterKey } from 'shared/sim/posterIdentity';
+import type { SimAspectProfile } from 'shared/sim/simIdentity';
 import { projectOrientation } from 'shared/video/orientation';
 import { getStorageAdapter } from '../../services/storage/getStorageAdapter.js';
 import { tooLargeMessage, UPLOAD_MAX_BYTES } from '../../services/security/uploadLimits.js';
@@ -100,6 +101,46 @@ function parseManifestPaths(value: unknown): string[] | null {
     }
     throw new Error('manifest entries must be strings or { path } objects');
   });
+}
+
+/**
+ * Store the renditions a creator's browser captured, under an identity the SERVER decided.
+ * Shared by the section route (the player's identity) and the simulation route (the library's).
+ * Renditions must be PNGs of exactly the sizes the aspect names; an existing poster for the
+ * identity is reported, not re-stored, unless forced; storing and invalidating land together.
+ */
+async function storeCapturedPoster(
+  body: { renditions?: unknown; force?: unknown } | undefined,
+  reply: FastifyReply,
+  ctx: { sim: { id: string; storage_prefix: string }; key: PosterKey; packageRevision: string; aspect: SimAspectProfile },
+): Promise<FastifyReply> {
+  const { sim, key, packageRevision, aspect } = ctx;
+  const identity = posterIdentityString(key);
+  const force = body?.force === true;
+  if (!force) {
+    const existing = await posterService.getPoster(sim.id, key).catch(() => null);
+    if (existing) return reply.send({ outcome: 'existed', identity, aspectProfile: aspect });
+  }
+
+  const wanted = POSTER_SIZES[aspect];
+  const raw = Array.isArray(body?.renditions) ? body.renditions as Array<{ size?: unknown; format?: unknown; dataUrl?: unknown }> : [];
+  const renditions = [];
+  for (const size of wanted) {
+    const r = raw.find((x) => x?.size === size.name);
+    if (!r || r.format !== 'png' || typeof r.dataUrl !== 'string') {
+      return reply.code(400).send({ message: `Missing PNG rendition: ${size.name}` });
+    }
+    const bytes = decodePngDataUrl(r.dataUrl, 4 * 1024 * 1024);
+    const header = bytes ? parsePngHeader(bytes) : null;
+    if (!bytes || !header || header.width !== size.width || header.height !== size.height) {
+      return reply.code(400).send({ message: `Rendition ${size.name} must be a ${size.width}×${size.height} PNG` });
+    }
+    renditions.push({ size: size.name, format: 'png' as const, bytes, width: header.width, height: header.height, transparent: false });
+  }
+
+  await posterService.storePoster(sim.id, sim.storage_prefix, key, renditions, { capturedAt: new Date() });
+  await posterService.invalidate(sim.id, packageRevision);
+  return reply.code(201).send({ outcome: 'stored', identity, aspectProfile: aspect });
 }
 
 export async function registerSimulationsRoutes(app: FastifyInstance): Promise<void> {
@@ -205,33 +246,47 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         derivePackageRevision,
       );
       const key = posterKeyForSection(section, packageRevision, aspect);
-      const identity = posterIdentityString(key);
 
-      const force = request.body?.force === true;
-      if (!force) {
-        const existing = await posterService.getPoster(sim.id, key).catch(() => null);
-        if (existing) return reply.send({ outcome: 'existed', identity, aspectProfile: aspect });
-      }
+      return storeCapturedPoster(request.body, reply, { sim, key, packageRevision, aspect });
+    },
+  );
 
-      const wanted = POSTER_SIZES[aspect];
-      const raw = Array.isArray(request.body?.renditions) ? request.body.renditions as Array<{ size?: unknown; format?: unknown; dataUrl?: unknown }> : [];
-      const renditions = [];
-      for (const size of wanted) {
-        const r = raw.find((x) => x?.size === size.name);
-        if (!r || r.format !== 'png' || typeof r.dataUrl !== 'string') {
-          return reply.code(400).send({ message: `Missing PNG rendition: ${size.name}` });
-        }
-        const bytes = decodePngDataUrl(r.dataUrl, 4 * 1024 * 1024);
-        const header = bytes ? parsePngHeader(bytes) : null;
-        if (!bytes || !header || header.width !== size.width || header.height !== size.height) {
-          return reply.code(400).send({ message: `Rendition ${size.name} must be a ${size.width}×${size.height} PNG` });
-        }
-        renditions.push({ size: size.name, format: 'png' as const, bytes, width: header.width, height: header.height, transparent: false });
-      }
+  /**
+   * POST /api/v1/projects/:id/simulations/:simId/poster — a poster for the SIMULATION, captured by
+   * the editor's banner sweep (useBannerSweep.ts) for every ready simulation the project owns,
+   * whether or not a section places it. Identity: the simulation's default presentation —
+   * no section, so the variant key is the entry's own (`variantKeyFor` falls through to the id),
+   * the default config at quality 'high', the project's aspect. The library and the import
+   * gallery look posters up by package revision, so this one banners the tile; a section's own
+   * identity (the player's) is captured by the section editor as before.
+   */
+  app.post<{ Params: { id: string; simId: string }; Body: { renditions?: unknown; force?: unknown } }>(
+    '/api/v1/projects/:id/simulations/:simId/poster',
+    { preHandler: [firebaseAuthMiddleware], bodyLimit: 12 * 1024 * 1024 },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser!;
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      const sim = await db.query.simulations.findFirst({
+        where: and(eq(simulations.id, request.params.simId), eq(simulations.project_id, project.id)),
+      });
+      if (!sim) return reply.code(404).send({ message: 'Simulation not found' });
 
-      await posterService.storePoster(sim.id, sim.storage_prefix, key, renditions, { capturedAt: new Date() });
-      await posterService.invalidate(sim.id, packageRevision);
-      return reply.code(201).send({ outcome: 'stored', identity, aspectProfile: aspect });
+      const videos = await db.query.video_files.findMany({
+        where: eq(video_files.project_id, project.id),
+        orderBy: [asc(video_files.created_at)],
+        columns: { width: true, height: true, is_broll: true },
+      });
+      const aspect = posterAspectFor(projectOrientation(videos));
+      const packageRevision = packageRevisionFor(
+        { id: sim.id, bridge_hash: sim.bridge_hash, active_revision_id: sim.active_revision_id },
+        derivePackageRevision,
+      );
+      const key = posterKeyForSection(
+        { id: sim.id, simulation_url: sim.entry_file, sim_script: null, simple_ui: false, auto_script: true, sim_meta: null },
+        packageRevision, aspect,
+      );
+      return storeCapturedPoster(request.body, reply, { sim, key, packageRevision, aspect });
     },
   );
 
@@ -248,6 +303,9 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         where: eq(simulations.project_id, project.id),
         orderBy: (t, { desc }) => [desc(t.created_at)],
       });
+      // The banner each simulation has (the tile's compact rendition), so the editor's banner
+      // sweep knows which ones still need one. A failed read is "no banner", never a failed list.
+      const stills = await loadSimBannerUrls(rows).catch(() => new Map());
       // Transform entry_file: new rows store a storage key, old rows store a full URL.
       // Always return a fresh public URL so the client always gets a working link.
       return reply.send(rows.map(r => ({
@@ -255,6 +313,7 @@ export async function registerSimulationsRoutes(app: FastifyInstance): Promise<v
         entry_file: r.entry_file
           ? (r.entry_file.startsWith('http') ? r.entry_file : storage.getSimPublicUrl(r.entry_file))
           : r.entry_file,
+        poster_url: stills.get(r.id)?.banner ?? null,
       })));
     },
   );

@@ -1,3 +1,4 @@
+import { loadSimBannerUrls } from '../../services/library/buildLibraryView.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { eq, asc, desc } from 'drizzle-orm';
 import { db } from '../../db/index.js';
@@ -73,12 +74,15 @@ export async function registerEditorStateRoutes(app: FastifyInstance): Promise<v
         raw_url: v.storage_key ? await storage.getPresignedDownloadUrl(v.storage_key, 3600).catch(() => null) : null,
       })));
 
-      // Same entry_file shaping as GET /simulations.
+      // Same entry_file shaping as GET /simulations — and the same poster_url, which is what the
+      // editor's banner sweep reads to know which simulations still have no banner.
+      const stills = await loadSimBannerUrls(simRows).catch(() => new Map());
       const simulationsOut = simRows.map(r => ({
         ...r,
         entry_file: r.entry_file
           ? (r.entry_file.startsWith('http') ? r.entry_file : storage.getSimPublicUrl(r.entry_file))
           : r.entry_file,
+        poster_url: stills.get(r.id)?.banner ?? null,
       }));
 
       // Same served-URL shaping as GET /sections: the stored `simulation_url` is what a section

@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import { registerSimPublicRoutes } from '../sim-public.controller.js';
-import { simTextCache } from '../../services/simulation/simTextCache.js';
+import { simTextCache, simLegacyTextCache } from '../../services/simulation/simTextCache.js';
 
 const mocks = vi.hoisted(() => ({
   mockStorage: {
@@ -74,6 +74,7 @@ async function makeApp() {
 
 beforeEach(() => {
   simTextCache.clear();
+  simLegacyTextCache.clear();
   mockStorage.readObject.mockReset();
   mockStorage.readObject.mockResolvedValue(Buffer.from('<!doctype html><html><body>secret draft</body></html>'));
   mockStorage.getPublicUrl.mockClear();
@@ -179,11 +180,21 @@ describe('GET /sim-public/* — a served revision’s text is read from storage 
     expect(mockStorage.readObject).toHaveBeenCalledTimes(1);
   });
 
-  it('a LEGACY (non-revision) key is never cached — Replace overwrites those bytes in place', async () => {
+  it('a LEGACY (non-revision) key is cached for a short window, and a rewrite of its package evicts it', async () => {
     const app = await makeApp();
     const legacy = `simulations/proj-1/${SIM}/index.html`;
-    await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
-    await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
+    const first = await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
+    const second = await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
+    expect(first.statusCode).toBe(200);
+    expect(second.headers.etag).toBe(first.headers.etag);
+    expect(mockStorage.readObject, 'the second open of a legacy package costs no storage read').toHaveBeenCalledTimes(1);
+    // Replace / Import / guidance rewrite the package in place and evict its prefix — the writer’s
+    // call, made here by hand — so the next request reads the new bytes.
+    mockStorage.readObject.mockResolvedValue(Buffer.from('<!doctype html><html><body>replaced</body></html>'));
+    expect(simLegacyTextCache.evictPrefix(`simulations/proj-1/${SIM}`)).toBeGreaterThan(0);
+    const third = await app.inject({ method: 'GET', url: `/sim-public/${legacy}` });
     expect(mockStorage.readObject).toHaveBeenCalledTimes(2);
+    expect(third.body).toContain('replaced');
+    expect(third.headers.etag).not.toBe(first.headers.etag);
   });
 });
