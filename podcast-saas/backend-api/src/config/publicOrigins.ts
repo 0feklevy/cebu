@@ -89,6 +89,26 @@ export function browserOrigins(): string[] {
 }
 
 /**
+ * CORS headers for a route that calls `reply.hijack()` (currently only the voice-question SSE
+ * stream). `@fastify/cors` sets `Access-Control-Allow-Origin` via `reply.header()`, which Fastify
+ * only ever writes to the wire as part of its own send pipeline — a hijacked reply skips that
+ * pipeline entirely, by design, so those headers are computed and then silently never sent. The
+ * failure is exactly a same-origin request from the browser's point of view: everything else
+ * about the response is fine, so it shows up as a CORS error in devtools with nothing in the
+ * backend logs, on the one route in the app that bypasses the plugin doing this everywhere else.
+ *
+ * Mirrors what `@fastify/cors` would have done for `origin: browserOrigins()`: reflect the
+ * request's Origin when it is one of ours, omit the header otherwise, and mark the response as
+ * origin-dependent so a shared cache never serves one caller's allow-origin to another's browser.
+ */
+export function hijackedReplyCorsHeaders(requestOrigin: string | undefined): Record<string, string> {
+  if (requestOrigin && browserOrigins().includes(requestOrigin)) {
+    return { 'Access-Control-Allow-Origin': requestOrigin, Vary: 'Origin' };
+  }
+  return { Vary: 'Origin' };
+}
+
+/**
  * Boot-time assertion — call once at server/worker startup so a misconfigured
  * container fails fast with a clear message instead of silently poisoning the DB
  * and serving localhost URLs to every user.
