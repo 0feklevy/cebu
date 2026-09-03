@@ -44,6 +44,19 @@ describe('car-mode player', () => {
     expect(screen.queryByText(/description/i)).toBeNull();
   });
 
+  it('the page is voice-only: nothing to type a question INTO, on a page that can be asked', () => {
+    // The typed hand was removed on 2026-09-03 by owner ruling, and its backend routes with it.
+    // The failure this pins is a quiet one: a reinstated text box would look like a feature and
+    // post to an endpoint that no longer exists.
+    render(<AudioEditionPlayer view={view} slug="flocking" />);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(document.querySelector('textarea')).toBeNull();
+    expect(screen.queryByText(/raise your hand/i)).toBeNull();
+    expect(screen.queryByText(/type your question/i)).toBeNull();
+    // What replaces it is the voice button, which must still be there.
+    expect(screen.getByRole('button', { name: /ask by voice/i })).toBeTruthy();
+  });
+
   it('without a slug there is no ASK, no STOP and no hand — a private page has nowhere to send a question', () => {
     render(<AudioEditionPlayer view={view} />);
     expect(screen.queryByRole('button', { name: /ask by voice/i })).toBeNull();
