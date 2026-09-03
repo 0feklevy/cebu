@@ -661,13 +661,14 @@ export function SectionEditor({
   // Remember where the keyboard was, and put it back when the dialog closes — by Escape, by
   // Cancel, by the backdrop, or by a save that succeeded. Without this the caret lands on <body>
   // and the next Tab starts again at the top of the page.
+  const rememberFocus = useCallback(() => {
+    const active = document.activeElement;
+    setupDialogReturnFocus.current = active instanceof HTMLElement ? active : null;
+  }, []);
+
   const setupDialogOpen = presetSaveOpen || loadOpen;
   useEffect(() => {
-    if (setupDialogOpen) {
-      const active = document.activeElement;
-      setupDialogReturnFocus.current = active instanceof HTMLElement ? active : null;
-      return;
-    }
+    if (setupDialogOpen) return;
     const back = setupDialogReturnFocus.current;
     setupDialogReturnFocus.current = null;
     // Only if it is still on the page: the button can be gone if the section re-rendered around it.
@@ -1187,6 +1188,7 @@ export function SectionEditor({
   }, [presetLabel, presetBusy, projectId, section.id]);
 
   const openLoadPicker = useCallback(async () => {
+    rememberFocus();
     setLoadOpen(true);
     setSelectedPreset(null);
     setPresetFit(null);
@@ -1202,7 +1204,7 @@ export function SectionEditor({
       setPresetError((e as Error).message || 'Could not load your saved bridges');
       setPresets([]);
     }
-  }, []);
+  }, [rememberFocus]);
 
   const handleSelectPreset = useCallback(async (p: BridgePreset) => {
     setSelectedPreset(p);
@@ -2415,9 +2417,9 @@ export function SectionEditor({
                                   : uiScan.phase === 'unreachable' ? 'The scanner did not answer'
                                   : 'Nothing scanned yet'}
                               </p>
-                              <p style={{ fontSize: 10, color: '#9ca3af', margin: '0 0 9px', lineHeight: 1.5 }}>
+                              <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', margin: '0 0 9px', lineHeight: 1.5 }}>
                                 {uiScan.phase === 'empty'
-                                  ? 'This simulation has no buttons or sliders for Minimal UI to hide.'
+                                  ? 'This simulation has no buttons or sliders for Simple UI to hide.'
                                   : uiScan.phase === 'unreachable'
                                     ? 'The preview may still be loading — try again in a moment.'
                                     : 'The preview has to be open for the picker to read the simulation.'}
@@ -2760,7 +2762,7 @@ export function SectionEditor({
                     )}
                     <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6 }}>
                       <button
-                        onClick={() => { setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
+                        onClick={() => { rememberFocus(); setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
                         // A bridge worth saving exists once the section HAS a generated setup —
                         // the sim_meta the save snapshots. Before that there is nothing to name.
                         disabled={presetBusy || !simId || !section.sim_meta}
@@ -2800,7 +2802,7 @@ export function SectionEditor({
                         aria-label="Regenerate this setup's script for this simulation"
                         style={{
                           marginTop: 8, padding: 10, borderRadius: 8,
-                          border: '1.5px solid #f59e0b', background: 'rgba(245,158,11,0.12)',
+                          border: '1.5px solid hsl(var(--warning))', background: 'hsl(var(--warning) / 0.12)',
                         }}
                       >
                         <div style={{ fontSize: 12, color: 'hsl(var(--foreground))', marginBottom: 8, lineHeight: 1.4 }}>

@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Import simulations from your other projects — the whole screen, stills first (night run
- * 2026-09-03 §6).
+ * Import simulations from your other projects — a large panel, stills first (night run
+ * 2026-09-03 §6; resized to a panel the same day by owner ruling — see below).
  *
  * ── WHAT CHANGED, AND WHY ─────────────────────────────────────────────────────────────────────
  *
@@ -11,6 +11,14 @@
  * twelve animation loops at postage-stamp size, none of them readable. Now the gallery is the
  * screen, tiles are ≥300px 16:9 stills of each simulation's poster, and a simulation only runs
  * when the author asks to see it move (hover / "Play") or opens it full screen.
+ *
+ * ── AND THEN IT WENT BACK TO A PANEL ──────────────────────────────────────────────────────────
+ *
+ * "The whole screen" above was owner-corrected the same afternoon: the gallery should sit at about
+ * 90% like Video settings, not edge to edge. What survived from that rewrite is the part that
+ * mattered — the portal, so no ancestor's stacking context can trap it, and the stills. The
+ * geometry is `importSimulation.css`: a fixed OVERLAY carrying the backdrop, and a bounded panel
+ * inside it (`min(1400px, 92vw)` × `min(920px, 90vh)`), full-screen only under 640px.
  *
  * ── ONE REQUEST, NOT ONE PER PROJECT ──────────────────────────────────────────────────────────
  *

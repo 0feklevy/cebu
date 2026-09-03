@@ -154,6 +154,26 @@ describe('the script panel says what will happen', () => {
     expect(simpleUi.getAttribute('aria-checked')).toBe('true');
     // "Minimal UI" and "Simple UI" named the same toggle four lines apart in this card.
     expect(screen.queryByText(/Minimal UI/i)).toBeNull();
+    // Including the picker's own empty/unopened states, which the default view never renders and
+    // where the last "Minimal UI" survived the first rename.
+    fireEvent.click(screen.getByText(/which controls the viewer keeps/i).closest('button') as HTMLButtonElement);
+    expect(screen.queryByText(/Minimal UI/i)).toBeNull();
+  });
+
+  it('closing a setup dialog puts the keyboard back on the button that opened it', () => {
+    // Both dialogs are portaled to <body>. Without this the caret lands on <body> and the next
+    // Tab restarts at the top of the page, a long way from where the author was working.
+    mount({ sim_meta: { planVersion: '7', prompt: 'x' } as never });
+    const save = screen.getByText('Save setup…').closest('button') as HTMLButtonElement;
+    save.focus();
+    expect(document.activeElement).toBe(save);
+
+    fireEvent.click(save);
+    expect(screen.getByRole('dialog', { name: /save setup/i })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /save setup/i })).toBeNull();
+    expect(document.activeElement).toBe(save);
   });
 
   it('the reuse row is named for what it does, and there is no banner button', () => {

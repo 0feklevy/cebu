@@ -267,6 +267,14 @@ own words ("really unclear, messy and problematic"). It found things the tests c
   spent a line on nothing; it now says what the button cannot — that it uses AI and counts against
   the generation limit — which mirrors "No AI, no cost" on the other branch.
 
+A verification pass over the PR then found three of its own claims incomplete, all fixed in it:
+the last "Minimal UI" survived in a picker state the default view never renders (an empty scan);
+the regenerate box had been made dark-safe with a literal amber rather than the new `--warning`;
+and the focus restore was implemented but untested — and the test, once written, FAILED. The
+capture was in an effect, and the dialog's own autofocused field takes the focus before a parent
+effect can look, so it was restoring to an input that had just unmounted. It captures at the click
+now.
+
 Not done, recorded rather than lost: the setup dialogs still have no focus TRAP (Tab reaches the
 editor behind them), and the file's remaining hardcoded colours outside these two cards are
 untouched.
