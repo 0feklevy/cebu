@@ -493,104 +493,27 @@ describe('the public mini-site route resolves a slug, and only a public one', ()
   });
 });
 
-describe('Raise Your Hand — an anonymous stranger, the owner’s bill', () => {
-  const PUBLIC = { id: 'p1', slug: 'my-lesson', visibility: 'public', created_by: 'owner', title: 'A Lesson', seo_description: null };
-
-  it('lets an anonymous listener ask, because the listener is driving', async () => {
-    // Requiring an account to ask about the thing they are already hearing would make the feature
-    // unusable for the person it exists for.
-    state.project = PUBLIC;
-    const r = await call('POST', '/api/v1/public/audio/:slug/questions', {
-      user: null, body: { question: 'Why?', position_ms: 1000, intent: 'answer' },
-    });
-    expect(r.code).toBe(200);
-    expect((r.body as { answer: string }).answer).toBe('Because.');
+describe('the typed-question routes are GONE, and their absence is the assertion', () => {
+  // Removed 2026-09-03 with the feature (owner ruling). What was here was a large, careful suite
+  // about an anonymous stranger spending the project owner's LLM budget through a public,
+  // unauthenticated POST — a risk that only existed because the route did. The route is the fix.
+  //
+  // These two cases stay because a route is easy to reinstate by accident: a merge that restores
+  // a deleted block, a revert taken too wide. Registering either path again fails here.
+  it('POST …/audio/:slug/questions is not registered', async () => {
+    await expect(call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?' } }))
+      .rejects.toThrow(/no POST .* route is registered/);
   });
 
-  it('defaults an unknown intent to SAVE, never to answer', async () => {
-    // Defaulting the other way would make a malformed client spend the owner's money by omission.
-    state.project = PUBLIC;
-    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', position_ms: 0 } });
-    expect(state.asked[0].intent).toBe('save');
-    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'nonsense' } });
-    expect(state.asked[1].intent).toBe('save');
+  it('GET /projects/:id/questions is not registered', async () => {
+    await expect(call('GET', '/api/v1/projects/:id/questions', { user: { id: 'owner' } }))
+      .rejects.toThrow(/no GET .* route is registered/);
   });
 
-  it('rate-limits asking far more tightly than reading', async () => {
-    // A read is cheap and idempotent; this one can cost real money.
-    state.project = PUBLIC;
-    state.rateLimitAllows = false;
-    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
-    expect(r.code).toBe(429);
-    expect(state.asked, 'a rate-limited question still reached the service').toEqual([]);
-  });
-
-  it('uses a DIFFERENT rate-limit bucket from the read route', async () => {
-    // Sharing one bucket would let a listener reading the page exhaust their own ability to ask,
-    // and would let a script asking questions lock everyone out of reading.
-    state.project = PUBLIC;
-    state.edition = READY_EDITION;
-    await call('GET', '/api/v1/public/audio/:slug');
-    await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?' } });
-    const [readKey, askKey] = state.rateLimitKeys;
-    expect(readKey.split(':')[0]).not.toBe(askKey.split(':')[0]);
-  });
-
-  it('refuses a question on a PRIVATE lesson without reaching the service', async () => {
-    state.project = { ...PUBLIC, visibility: 'private' };
-    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
-    expect(r.code).toBe(404);
-    expect(state.asked).toEqual([]);
-  });
-
-  it('passes the refusal REASON back, so a withheld answer is not a silent non-response', async () => {
-    state.project = PUBLIC;
-    state.askResult = { status: 'saved', reason: 'This lesson has answered all its questions for today.' };
-    const r = await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: 'Why?', intent: 'answer' } });
-    expect(r.code).toBe(200);
-    expect((r.body as { status: string }).status).toBe('saved');
-    expect((r.body as { message: string }).message).toMatch(/today/);
-  });
-
-  it('400s a malformed question rather than pretending it was saved', async () => {
-    state.project = PUBLIC;
-    state.askResult = { status: 'refused', reason: 'A question needs some words in it.' };
-    expect((await call('POST', '/api/v1/public/audio/:slug/questions', { body: { question: '' } })).code).toBe(400);
-  });
-});
-
-describe('the creator’s view of what listeners asked', () => {
-  it('requires EDIT rights — audience data is not viewer data', async () => {
-    // A viewer of a public lesson has no more claim on its questions than a reader of a blog has
-    // on its analytics.
-    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: false };
-    expect((await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'viewer' } })).code).toBe(404);
-  });
-
-  it('refuses an anonymous caller', async () => {
-    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    expect((await call('GET', '/api/v1/projects/:id/questions', { user: null })).code).toBe(401);
-  });
-
-  it('returns the questions to an editor, including the ones never answered', async () => {
-    // The capped and failed ones are exactly the list's value: they are where a lesson's confusing
-    // passage becomes visible, and the demand signal A2.5 is waiting on.
-    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    state.questions = [
-      { id: 'q1', position_ms: 1000, question: 'Why?', answer: 'Because.', status: 'answered', language: null, created_at: new Date(0) },
-      { id: 'q2', position_ms: 2000, question: 'And this?', answer: null, status: 'saved', language: null, created_at: new Date(0) },
-    ];
-    const r = await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'owner' } });
-    expect(r.code).toBe(200);
-    expect((r.body as { questions: unknown[] }).questions).toHaveLength(2);
-  });
-
-  it('never exposes who asked', async () => {
-    // `asked_by` is a user id. The creator needs the QUESTION, not the identity of an anonymous
-    // listener who was told nothing about being identified.
-    state.project = { id: 'p1', visibility: 'public', created_by: 'owner', editable: true };
-    state.questions = [{ id: 'q1', position_ms: 0, question: 'Why?', answer: null, status: 'saved', language: null, created_at: new Date(0), asked_by: 'user-42' }];
-    const r = await call('GET', '/api/v1/projects/:id/questions', { user: { id: 'owner' } });
-    expect(JSON.stringify(r.body)).not.toContain('user-42');
+  it('the voice question route, which writes through the SAME service and table, is untouched', async () => {
+    // The removal must not be read as "listener questions are gone". Every spoken question still
+    // lands in `listener_questions` through `askListenerQuestion`; only the typed doors closed.
+    await expect(call('POST', '/api/v1/public/audio/:slug/voice-question', { body: {} }))
+      .resolves.toBeTruthy();
   });
 });
