@@ -1,6 +1,7 @@
 import { R2StorageAdapter } from './R2StorageAdapter.js';
 import { SupabaseStorageAdapter } from './SupabaseStorageAdapter.js';
 import { LocalStorageAdapter } from './LocalStorageAdapter.js';
+import { MigratingStorageAdapter } from './MigratingStorageAdapter.js';
 import type { StorageService } from './StorageService.js';
 import { logger } from '../../lib/logger.js';
 
@@ -52,16 +53,48 @@ function hasSupabaseStorage(): boolean {
   );
 }
 
+function hasR2Storage(): boolean {
+  return (
+    isRealCred(process.env.R2_ACCOUNT_ID) &&
+    isRealCred(process.env.R2_ACCESS_KEY_ID) &&
+    isRealCred(process.env.R2_SECRET_ACCESS_KEY)
+  );
+}
+
+export type NamedBackend = 'r2' | 'supabase';
+
+/** One provider BY NAME, with its own credentials checked — the probe and the migrating mode build these. */
+export function buildNamedAdapter(name: string | undefined): StorageService {
+  if (name === 'r2') {
+    if (!hasR2Storage()) throw new Error('R2 is named but R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not real credentials.');
+    return new R2StorageAdapter();
+  }
+  if (name === 'supabase') {
+    if (!hasSupabaseStorage()) throw new Error('Supabase Storage is named but SUPABASE_S3_* credentials are not real.');
+    return new SupabaseStorageAdapter();
+  }
+  throw new Error(`Unknown storage provider '${name}' — expected r2 or supabase.`);
+}
+
+/**
+ * The cutover window (owner ruling 2026-09-03, staged R2): STORAGE_BACKEND=migrating with
+ * STORAGE_PRIMARY and STORAGE_SECONDARY naming two DIFFERENT providers, both with real credentials.
+ */
+function buildMigratingAdapter(): MigratingStorageAdapter {
+  const primary = process.env.STORAGE_PRIMARY;
+  const secondary = process.env.STORAGE_SECONDARY;
+  if (!primary || !secondary) throw new Error('STORAGE_BACKEND=migrating needs STORAGE_PRIMARY and STORAGE_SECONDARY (r2 | supabase).');
+  if (primary === secondary) throw new Error('STORAGE_PRIMARY and STORAGE_SECONDARY must differ.');
+  return new MigratingStorageAdapter(buildNamedAdapter(primary), buildNamedAdapter(secondary), { primary, secondary });
+}
+
 export function getStorageAdapter(): StorageService {
   if (_adapter) return _adapter;
 
   const backend = process.env.STORAGE_BACKEND; // optional explicit override
   const prod = process.env.NODE_ENV === 'production';
 
-  const hasR2 =
-    isRealCred(process.env.R2_ACCOUNT_ID) &&
-    isRealCred(process.env.R2_ACCESS_KEY_ID) &&
-    isRealCred(process.env.R2_SECRET_ACCESS_KEY);
+  const hasR2 = hasR2Storage();
 
   // ── Production fail-closed guard (evaluated FIRST) ─────────────────────────────
   // Media must live in a shared cloud bucket, never per-instance local disk served over
@@ -75,7 +108,7 @@ export function getStorageAdapter(): StorageService {
           'Configure Supabase (SUPABASE_S3_*) or real R2 credentials.',
       );
     }
-    if (!hasSupabaseStorage() && !hasR2 && backend !== 'supabase') {
+    if (!hasSupabaseStorage() && !hasR2 && backend !== 'supabase' && backend !== 'migrating') {
       throw new Error(
         'No cloud storage configured. Set SUPABASE_S3_* (or real R2_*) credentials — ' +
           'local-disk storage is not allowed in production.',
@@ -86,6 +119,19 @@ export function getStorageAdapter(): StorageService {
   // Explicit local opt-in (dev only — the prod guard above already rejected it).
   if (_forceLocal || backend === 'local') {
     _adapter = new LocalStorageAdapter();
+    return _adapter;
+  }
+  // The cutover window: both providers, by name, each with real credentials (it throws otherwise —
+  // a half-configured window must not silently become one provider).
+  if (backend === 'migrating') {
+    const migrating = buildMigratingAdapter();
+    logger.info(`Storage backend: ${migrating.describe()}`);
+    _adapter = migrating;
+    return _adapter;
+  }
+  if (backend === 'r2') {
+    _adapter = buildNamedAdapter('r2');
+    logger.info('Storage backend: Cloudflare R2 (explicit)');
     return _adapter;
   }
 
