@@ -17,8 +17,8 @@ tooling, (5) staged R2 readiness/migration, (6) narrow playlist → course publi
 | 0a | #172 hotfix v0.3.1 — layout regression | `hotfix/v0.3.1-layout` | — | none (dispatch delegated) | done, in CI |
 | 0b | #173 share library: a banner for every simulation, and a fast first paint | `fix/library-banners` | 0a | none | M — built, in PR |
 | 1 | credential rotation | — (owner) | — | **rotate Anam key** | owner |
-| 2 | #174 deploy: keep current + one rollback, refuse a low-disk deploy | `ops/image-retention-disk-guard` | — | none | S |
-| 3 | #175 listener inbox: creator reads, replies, listener sees the reply | `feat/listener-inbox` | — | none | L |
+| 2 | #174 deploy: keep current + one rollback, refuse a low-disk deploy | `ops/image-retention-disk-guard` | — | none | S — built, waiting for #173 to merge |
+| 3 | #175 listener inbox: creator reads, replies, listener sees the reply | `feat/listener-inbox` | — | none | L — built, waiting for #174 |
 | 4 | #176 storage reconciliation (dry-run) + multipart listing/abort sweep + delete-GC gaps | `ops/storage-reconcile` | — | run the dry-run on the VM, read the report | L |
 | 5 | #177 R2 readiness: capability probe, adapter parity, dual-read adapter, URL-rewrite dry-run | `feat/r2-readiness` | 4 (census facts) | R2 token with write/list/multipart; run the probe | L |
 | 6 | #178 playlist → publish as course | `feat/publish-playlist-as-course` | — | none | M |
@@ -127,14 +127,18 @@ update `PREVIOUS_VERSION`. Compose services share exactly three app images
   by a container refuses, and that refusal is correct), never touches other namespaces, volumes,
   nginx, certbot, or the digest-pinned GHCR references of the kept versions; prints what it removed
   and what it kept. Called from `deploy-images.sh`'s success block (after the health gate, before
-  `prune -f`) with `VERSION` and `OLD_VERSION`, and from `deploy.sh`'s equivalent. `rollback.sh`
-  sets `PREVIOUS_VERSION` to the version it rolled back FROM, so the pair stays "current + one".
+  `prune -f`) with `VERSION` and `OLD_VERSION`, and from `deploy.sh`'s equivalent. `rollback.sh` is
+  left alone on purpose: after a rollback, `APP_VERSION` is the target, and the NEXT successful
+  deploy's `OLD_VERSION` is that target — so the failed release is what gets pruned then, and
+  `rollback.sh` without an argument keeps pointing where it did. Also `retain-images.sh`, the
+  by-hand version of the same policy (the 2026-09-03 cleanup was by hand).
 - `_lib.sh`: `require_free_disk_gb PATH MIN` — `df -PBG`; in `deploy-images.sh`'s guard block with
   `DEPLOY_MIN_FREE_GB` (default 8) for `/var/lib/docker`, refusing before any pull; overridable with
-  `DEPLOY_ALLOW_LOW_DISK=1` for an emergency. The same check in `remote-deploy.ts`'s
-  `CHECK_REMOTE_STATUS` so CI fails early with the number in the log, and `vm.disk-low` promoted to
-  CRITICAL below the same threshold in `commands.ts` (post-deploy: rollback would not help disk,
-  so the pre-deploy refusal is the real gate; CRITICAL there is the alarm).
+  `DEPLOY_ALLOW_LOW_DISK=1` for an emergency. NOT in the git-only sync script of
+  `remote-deploy.ts`: its tested contract is that it never mentions docker (`remote-sync.test.ts`),
+  and the VM script's refusal is streamed into the CI log anyway, before any pull. `vm.disk-low` in
+  `commands.ts` becomes HIGH below 3 GB and a WARNING below 8 (post-deploy: a rollback frees nothing,
+  so the pre-deploy refusal is the gate; the audit finding is the alarm).
 - `deploy/README.md`: the retention policy in one paragraph; the owner's manual cleanup of
   2026-09-03 recorded as the reason.
 
