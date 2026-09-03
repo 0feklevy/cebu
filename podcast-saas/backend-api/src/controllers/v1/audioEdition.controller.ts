@@ -22,7 +22,7 @@
  * share tokens. Nothing here decides access by looking at the edition row.
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, lt } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { project_audio_editions, projects } from '../../db/schema.js';
 import { firebaseAuthMiddleware, firebaseAuthOptionalMiddleware } from '../../middleware/firebase-auth.js';
@@ -59,6 +59,24 @@ async function findEdition(projectId: string, language: string | null) {
       ? and(eq(project_audio_editions.project_id, projectId), isNull(project_audio_editions.language))
       : and(eq(project_audio_editions.project_id, projectId), eq(project_audio_editions.language, language)),
   });
+}
+
+const questionIdsAreUuid = requireUuidParams(['id', 'qid']);
+/** The creator's reply is a sentence or a paragraph, not a document. */
+export const CREATOR_REPLY_MAX_CHARS = 2000;
+
+interface AudioChapterRow { title?: unknown; startMs?: unknown; endMs?: unknown }
+function chaptersOf(raw: unknown): AudioChapterRow[] {
+  return Array.isArray(raw) ? (raw as AudioChapterRow[]) : [];
+}
+/** The chapter a position falls in — the "lesson context" the inbox shows beside a question. */
+export function chapterTitleAt(chapters: readonly AudioChapterRow[], positionMs: number): string | null {
+  for (const c of chapters) {
+    const start = typeof c.startMs === 'number' ? c.startMs : NaN;
+    const end = typeof c.endMs === 'number' ? c.endMs : NaN;
+    if (positionMs >= start && positionMs < end) return typeof c.title === 'string' ? c.title : null;
+  }
+  return null;
 }
 
 export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<void> {
@@ -352,41 +370,167 @@ export async function registerAudioEditionRoutes(app: FastifyInstance): Promise<
     },
   );
 
-  /**
-   * GET /api/v1/projects/:id/questions — what listeners have been asking.
-   *
-   * The creator's view, and the reason the capped and failed questions are kept rather than
-   * discarded: this list is where a lesson's confusing passage becomes visible, and it is the
-   * demand signal A2.5 ("Call It") is explicitly waiting on before it gets built.
-   */
-  app.get<{ Params: { id: string } }>(
+  // ── The creator's inbox (owner ruling 2026-09-03) ───────────────────────────────────────────
+  //
+  // Listener → question → Creator Inbox → answer. The rows already existed (migration 072); what
+  // was missing was every creator-facing half: reading them with their context, replying, and a
+  // way for the reply to reach a listener who has no account. EDIT rights throughout — listener
+  // questions are audience data, and a viewer of a public lesson has no more claim on them than a
+  // reader of a blog has on its analytics.
+
+  /** GET /api/v1/projects/:id/questions?status=unanswered|answered|all&limit=&before= */
+  app.get<{ Params: { id: string }; Querystring: { status?: string; limit?: string; before?: string } }>(
     '/api/v1/projects/:id/questions',
     { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
     async (request, reply: FastifyReply) => {
       const user = request.dbUser;
       if (!user) return reply.code(401).send({ message: 'Unauthorized' });
-      // EDIT rights, not view: listener questions are audience data, and a viewer of a public
-      // lesson has no more claim on them than a reader of a blog has on its analytics.
       const project = await editableProject(request.params.id, user);
       if (!project) return reply.code(404).send({ message: 'Project not found' });
 
-      const rows = await db.query.listener_questions.findMany({
-        where: eq(listener_questions.project_id, project.id),
-        orderBy: [desc(listener_questions.created_at)],
-        limit: 200,
-      });
+      const status = request.query.status === 'unanswered' || request.query.status === 'answered' ? request.query.status : 'all';
+      const limit = Math.min(200, Math.max(1, Number(request.query.limit) || 50));
+      const before = request.query.before ? new Date(request.query.before) : null;
+      const conditions = [eq(listener_questions.project_id, project.id)];
+      if (status === 'unanswered') conditions.push(isNull(listener_questions.creator_reply));
+      if (status === 'answered') conditions.push(isNotNull(listener_questions.creator_reply));
+      if (before && !Number.isNaN(before.getTime())) conditions.push(lt(listener_questions.created_at, before));
 
+      const [rows, editions] = await Promise.all([
+        db.query.listener_questions.findMany({
+          where: and(...conditions),
+          orderBy: [desc(listener_questions.created_at)],
+          limit: limit + 1,
+        }),
+        // The lesson context: the chapter the listener was in, per edition language.
+        db.query.project_audio_editions.findMany({ where: eq(project_audio_editions.project_id, project.id) }),
+      ]);
+      const chaptersByLanguage = new Map<string | null, AudioChapterRow[]>();
+      for (const e of editions) chaptersByLanguage.set(e.language ?? null, chaptersOf(e.chapters_json));
+
+      const page = rows.slice(0, limit);
       return reply.send({
-        questions: rows.map((q) => ({
+        questions: page.map((q) => ({
           id: q.id,
           position_ms: q.position_ms,
           question: q.question,
           answer: q.answer,
           status: q.status,
           language: q.language,
+          source: q.source ?? 'text',
+          creator_reply: q.creator_reply ?? null,
+          creator_replied_at: q.creator_replied_at,
+          seen_at: q.seen_at ?? null,
+          chapter: chapterTitleAt(chaptersByLanguage.get(q.language ?? null) ?? [], q.position_ms),
           created_at: q.created_at,
+        })),
+        next_before: rows.length > limit ? page[page.length - 1]!.created_at : null,
+      });
+    },
+  );
+
+  /** GET /api/v1/projects/:id/questions/summary — the badge: how many await a reply, how many are unseen. */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/questions/summary',
+    { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      const rows = await db.query.listener_questions.findMany({
+        where: eq(listener_questions.project_id, project.id),
+        columns: { creator_reply: true, seen_at: true },
+      });
+      return reply.send({
+        total: rows.length,
+        unanswered: rows.filter((r) => r.creator_reply == null).length,
+        unseen: rows.filter((r) => r.seen_at == null).length,
+      });
+    },
+  );
+
+  /** POST /api/v1/projects/:id/questions/seen — the creator opened the inbox: nothing is unread now. */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/projects/:id/questions/seen',
+    { preHandler: [projectIdIsUuid, firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      await db.update(listener_questions)
+        .set({ seen_at: new Date() })
+        .where(and(eq(listener_questions.project_id, project.id), isNull(listener_questions.seen_at)));
+      return reply.send({ ok: true });
+    },
+  );
+
+  /**
+   * PATCH /api/v1/projects/:id/questions/:qid — the creator's reply. An empty string clears it.
+   * The MODEL's answer is untouched; this is the human one, and it is what the audio page shows.
+   */
+  app.patch<{ Params: { id: string; qid: string }; Body: { creator_reply?: unknown } }>(
+    '/api/v1/projects/:id/questions/:qid',
+    { preHandler: [questionIdsAreUuid, firebaseAuthMiddleware] },
+    async (request, reply: FastifyReply) => {
+      const user = request.dbUser;
+      if (!user) return reply.code(401).send({ message: 'Unauthorized' });
+      const project = await editableProject(request.params.id, user);
+      if (!project) return reply.code(404).send({ message: 'Project not found' });
+      const raw = request.body?.creator_reply;
+      if (typeof raw !== 'string') return reply.code(400).send({ message: 'creator_reply must be a string' });
+      const text = raw.trim().slice(0, CREATOR_REPLY_MAX_CHARS);
+      const existing = await db.query.listener_questions.findFirst({
+        where: and(eq(listener_questions.id, request.params.qid), eq(listener_questions.project_id, project.id)),
+      });
+      if (!existing) return reply.code(404).send({ message: 'Question not found' });
+      const now = new Date();
+      const [updated] = await db.update(listener_questions)
+        .set(text ? { creator_reply: text, creator_replied_at: now, seen_at: existing.seen_at ?? now } : { creator_reply: null, creator_replied_at: null })
+        .where(eq(listener_questions.id, existing.id))
+        .returning({ id: listener_questions.id, creator_reply: listener_questions.creator_reply, creator_replied_at: listener_questions.creator_replied_at });
+      return reply.send({ id: existing.id, creator_reply: updated?.creator_reply ?? (text || null), creator_replied_at: updated?.creator_replied_at ?? (text ? now : null) });
+    },
+  );
+
+  /**
+   * GET /api/v1/public/audio/:slug/replies?language= — the creator's replies, for the listener.
+   *
+   * An anonymous listener has no inbox of their own; the reply reaches them where they asked —
+   * on the episode, at the position. Public projects only, the same language convention as the
+   * edition (null = the source language), and only rows that HAVE a reply: the questions
+   * themselves are the creator's audience data until the creator chooses to answer one in public.
+   * Rate-limited per IP like every other unauthenticated read here.
+   */
+  app.get<{ Params: { slug: string }; Querystring: { language?: string } }>(
+    '/api/v1/public/audio/:slug/replies',
+    async (request, reply: FastifyReply) => {
+      if (!rateLimit(`audioreplies:${request.ip}`, 60, 60_000)) {
+        return reply.code(429).send({ message: 'Too many requests — please slow down.' });
+      }
+      const project = await db.query.projects.findFirst({ where: eq(projects.slug, request.params.slug) });
+      if (!project || project.visibility !== 'public') return reply.code(404).send({ message: 'Not found' });
+      const language = request.query.language?.trim() || null;
+      const rows = await db.query.listener_questions.findMany({
+        where: and(
+          eq(listener_questions.project_id, project.id),
+          isNotNull(listener_questions.creator_reply),
+          language === null ? isNull(listener_questions.language) : eq(listener_questions.language, language),
+        ),
+        orderBy: [asc(listener_questions.position_ms)],
+      });
+      reply.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      return reply.send({
+        replies: rows.map((q) => ({
+          id: q.id,
+          position_ms: q.position_ms,
+          question: q.question,
+          reply: q.creator_reply as string,
+          replied_at: (q.creator_replied_at ?? q.created_at).toISOString(),
         })),
       });
     },
   );
+
 }
