@@ -274,10 +274,19 @@ untouched.
 ✅ **CLOSED by #184 — the typed-question backend surface.**
 `POST /api/v1/public/audio/:slug/questions` and `GET /api/v1/projects/:id/questions` are removed.
 The first was public, unauthenticated and spent the project owner's LLM budget by design; with no
-caller left it protected nothing. `listener_questions` and `ListenerQuestionService` STAY — the
-voice path writes every spoken question through them, and migration 083's columns are kept for the
-same reason. Three assertions replace the removed suite: each path is no longer registered, and the
-voice route through the same service still answers.
+caller left it protected nothing. `listener_questions` and `ListenerQuestionService` STAY, and that
+part is load-bearing: `askListenerQuestion` records every SPOKEN question, before answering it, and
+the voice routes call it exactly as the typed route did.
+
+**Migration 083's four columns are a different case, and the first version of this entry blurred
+them together.** `source`, `creator_reply`, `creator_replied_at` and `seen_at` were the inbox's
+columns; with the inbox gone they now have no reader and no writer anywhere in `src/`. They are
+kept because dropping a column is a contract migration against the previous image, they cost
+nothing while nullable, and a creator-facing view of what listeners ASKED BY VOICE is a plausible
+thing to want later. Dormant, not load-bearing — do not cite them as evidence the feature is alive.
+
+Three assertions replace the removed suite: each path is no longer registered, and the voice route
+through the same service still answers.
 
 ## ✅ CLOSED (2026-08-30) — gate v5 reached every stored simulation, and the documented way to do it was wrong
 
