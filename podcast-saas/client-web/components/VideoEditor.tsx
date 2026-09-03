@@ -1217,6 +1217,7 @@ export function VideoEditor({ projectId }: Props) {
   // 2026-09-03 §3). Landscape keeps following the window, as it always has.
   const editorOrientation = projectOrientation(videos);
   // A banner for every ready simulation, captured offscreen one at a time (useBannerSweep.ts).
+  // Silent by the owner's ruling (2026-09-03): no button, no status — it just runs.
   const bannerSweep = useBannerSweep({ projectId, simulations, aspect: editorOrientation === 'portrait' ? 'portrait' : 'wide' });
   const previewAspect = editorOrientation === 'portrait'
     ? 9 / 16
@@ -1503,21 +1504,6 @@ export function VideoEditor({ projectId }: Props) {
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60">Simulations</p>
                   </div>
                   <div className="flex items-center gap-1">
-                    {(bannerSweep.state.running || bannerSweep.state.failed > 0 || bannerSweep.state.stored > 0) && (
-                      <span className="text-[10px] text-muted-foreground" aria-live="polite" title="Banners for the share library, captured from each simulation">
-                        {bannerSweep.state.running
-                          ? `Banners… ${bannerSweep.state.stored + bannerSweep.state.existed + bannerSweep.state.failed + 1}/${bannerSweep.state.stored + bannerSweep.state.existed + bannerSweep.state.failed + 1 + bannerSweep.state.queued}`
-                          : `Banners: ${bannerSweep.state.stored + bannerSweep.state.existed} captured${bannerSweep.state.failed > 0 ? ` · ${bannerSweep.state.failed} could not draw` : ''}`}
-                      </span>
-                    )}
-                    <button
-                      onClick={() => bannerSweep.run(true)}
-                      disabled={bannerSweep.state.running}
-                      title="Capture a banner for every simulation — the share library's tiles"
-                      className="flex h-8 items-center justify-center rounded-lg border border-border px-2 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted focus-ring disabled:opacity-50"
-                    >
-                      Banners
-                    </button>
                     <button
                       onClick={() => setShowSimImport(true)}
                       title="Import from another project — nothing is uploaded or stored twice"

@@ -81,7 +81,7 @@ async function routeFor(method: 'GET' | 'POST', path: string): Promise<Handler> 
   const routes: Array<{ method: string; path: string; handler: Handler }> = [];
   const record = (m: string) => (p: string, a: unknown, b?: unknown) =>
     routes.push({ method: m, path: p, handler: (typeof a === 'function' ? a : b) as Handler });
-  await registerAudioEditionRoutes({ get: record('GET'), post: record('POST'), patch: record('PATCH') } as never);
+  await registerAudioEditionRoutes({ get: record('GET'), post: record('POST') } as never);
   const route = routes.find((r) => r.method === method && r.path === path);
   if (!route) throw new Error(`no ${method} ${path} route is registered`);
   return route.handler;

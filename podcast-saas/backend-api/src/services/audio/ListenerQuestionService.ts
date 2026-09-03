@@ -40,8 +40,6 @@ export interface AskInput {
   intent: QuestionIntent;
   /** Null for an anonymous listener — the common case on a public page. */
   userId?: string | null;
-  /** How it was asked. The spoken path stores its transcript as the question (migration 083). */
-  source?: 'text' | 'voice';
 }
 
 export interface AskResult {
@@ -94,7 +92,6 @@ export async function askListenerQuestion(input: AskInput, llm = new LLMService(
     question: input.question.trim().slice(0, 500),
     asked_by: input.userId ?? null,
     status: 'saved',
-    source: input.source ?? 'text',
   }).returning({ id: listener_questions.id });
 
   if (!decision.allowed) {

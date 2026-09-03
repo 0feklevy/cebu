@@ -96,6 +96,7 @@ Each takes the recommendation already recorded unless a measurement contradicted
 - #175 feat — **the listener-question creator inbox** (owner priority 3; plan §3). Migration 083 (additive: `source`, `creator_reply`, `creator_replied_at`, `seen_at`, a partial index for the public read); the spoken path stores `source: 'voice'`; routes: the creator list with a status filter, a cursor, and the chapter the listener was in; a summary for the badge; PATCH reply (empty clears; 2000 chars); POST seen; and `GET /public/audio/:slug/replies` — only rows WITH a reply, public projects, per-IP limited, a minute cacheable — so an anonymous listener gets the reply where they asked. Client: `ListenerInboxDialog` (unanswered/all, the moment, the chapter, typed/spoken, the language, the model's answer folded, one reply box), a "Questions" button with the unanswered count in the project header (a failed summary read never breaks the header), and in the car-mode player a marker per reply on the progress bar plus a "Replies" sheet. Tests: 13 route cases, the dialog, the player's replies, the contract check. Closes plan §11's "creator-facing list of listener questions" deferral.
 - #176 ops — **storage reconciliation (dry-run), the abandoned-multipart sweep, the delete-GC gaps** (owner priority 4; plan §4). `StorageService.listMultipartUploads` on both S3 adapters + `lastModified` on heads; `services/storage/reconcile.ts` (pure classification, a rule per family, never-delete list); `pnpm storage:reconcile` dry-run by default, deletes only with `--apply --delete --older-than=` through the chokepoint; `multipartSweeper` daily, a week's grace; project delete sweeps `dubs/{videoId}` and `editions/{projectId}`. Owner: run `--family=multipart` then `--family=all --json` on the VM before any apply.
 - #177 feat — **R2 readiness** (owner priority 5; plan §5; stacked on #176). `pnpm storage:probe -- --backend=r2|supabase` (the capability matrix of a NAMED provider); `MigratingStorageAdapter` (`STORAGE_BACKEND=migrating`, primary/secondary, refuses a half window); `R2_PUBLIC_BASE_URL`; `pnpm storage:rewrite-urls` (dry-run; only where the object exists at the destination). Owner: the R2 token with write/list/multipart, run the probe, paste the matrix; then the §5 runbook.
+- #180 chore — **UI cleanups by the owner's rulings**: the creator inbox (#175) reverted wholesale — routes, client methods, dialog, header button, car-mode replies — with migration 083 and its four columns kept (applied on production; unused, nullable); the Banners button and status removed (the sweep runs silently); the import gallery a ~92vw × 90vh panel with a dimmed backdrop, full-screen only on phones.
 - #178 feat — **playlist → publish as course** (owner priority 6; plan §6). `PlaylistCourseService` on the dormant schema and API: created once, linked by `courses.legacy_playlist_id` (now the live link), lessons follow the playlist's items in order, the existing readiness-gated publish; routes on the playlists controller; `PlaylistCourseSection` in the playlist editor. Closes the 🟡 below.
 - ✅ CLOSED in #178 (was 🟡) — **Courses have no creator UI.** `courses.controller.ts` (create, slug, lessons) and the public `/c/[courseSlug]/[lessonSlug]` pages exist; nothing in `client-web` calls the create routes. A walkthrough cannot point at what is not there. Either build the creator side (playlist → "publish as course") or retire the routes; owner's call (plan §9).
 
@@ -135,6 +136,27 @@ The plan built from it is `NEXT-PHASE-2026-09-03.md` (indexed at the end of this
   and initiation timestamps first (the zero may be an API reporting limit, not proof nothing is billable); if
   clearly abandoned, add a safe **age-based multipart-abort sweep** rather than a one-off manual clean.
 
+### Owner report, afternoon 2026-09-03
+
+- ✅ **Anam key rotated** (owner-attested). The 🔴 HIGH item below is closed.
+- ✅ **v0.4.1 deployed**; `storage-reconcile` ran on production, DRY RUN, and reported: 4 open multipart
+  uploads (two `_selfcheck/` probes from June/July, two `videos/027d8277…` parts from 2026-07-06 that no
+  `video_files` row names); thumbnails 4 orphan + 5 redundant (~2.4 MiB); captions 10 orphan + 5 redundant
+  (VTT backups for rows whose captions are inline); crop 5 orphan; exports clean (7, ~3.05 GiB); videos 4
+  objects all referenced + ONE dangling row (`videos/431df510…/2d81d995….mp4`); podcasts 69 orphan
+  (~87.6 MiB); images/avatar 10 orphan (~20.6 MiB); dubs (878, ~3.13 GiB), editions, playlist-banners clean.
+  **Ruling given** (in chat, restated here): abort all four multipart uploads; delete the thumbnails,
+  crop, avatar, captions and podcasts orphans/redundants with `--older-than=7d` after (a) nulling
+  `captions_vtt_key` where `captions_vtt` is inline and (b) a glance at the podcasts key list
+  (`previews/` or deleted episodes only); the dangling video row is a DB repair (delete if it never
+  finished uploading, otherwise send the row) — never a storage action. Nothing under `videos/`,
+  `hls/`, `editions/`, `blobs/`, `exports/`.
+- **Rulings on the product (owner):** the Banners button goes (the sweep stays, silent); the import
+  gallery is a ~90% panel like Video settings / the Extended Library, not the whole screen; the
+  creator inbox ("Questions") is NOT wanted — feature and functions removed; **Tap to ask must work
+  like NotebookLM's interrupt** — ask by voice in real time, hear the answer as voice only, resume
+  the episode after a few seconds of silence, and be able to barge in on the linear audio.
+
 ### Rulings (owner, 2026-09-03)
 
 - **R2 — YES, staged.** R2 is the media-storage direction; production is NOT flipped now. `R2StorageAdapter`,
@@ -159,8 +181,7 @@ The plan built from it is `NEXT-PHASE-2026-09-03.md` (indexed at the end of this
 
 ### The owner queue, restated (supersedes plan §9)
 
-- 🔴 **HIGH — rotate the exposed Anam credential**: issue a new key and invalidate the old one; hiding it in
-  history is not rotation.
+- ✅ (owner, afternoon 2026-09-03) **Anam credential rotated.**
 - 🟡 Smoke variables `SMOKE_PUBLIC_PATH`, `SMOKE_PLAYLIST_PATH`, `SMOKE_ADMIN_PREVIEW_PATH`: set only to real
   production pages expected to stay valid (a dead path rolls back a healthy deploy). Real public playlist/test
   URLs were created during earlier production work — use those, do not invent routes.
