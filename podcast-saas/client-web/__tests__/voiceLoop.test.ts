@@ -92,11 +92,16 @@ describe('misfires and empty answers', () => {
     expect(t.effects.map((e) => e.type)).toEqual(['END_CAPTURE', 'RESUME_PLAYBACK']);
   });
 
-  it('a misfire on a MANUAL capture says so and goes back to where it started — hands-free stays off', () => {
+  it('a misfire on a MANUAL capture says so, goes back to where it started, and releases the mic', () => {
     const s: VoiceState = { kind: 'listening', wasPlaying: true, manual: true, home: 'off' };
     const t = reduceVoice(s, { type: 'MISFIRE' });
     expect(t.state).toEqual({ kind: 'off' });
-    expect(t.effects.map((e) => e.type)).toEqual(['END_CAPTURE', 'NOTE', 'RESUME_PLAYBACK']);
+    expect(t.effects.map((e) => e.type)).toEqual(['END_CAPTURE', 'NOTE', 'RESUME_PLAYBACK', 'RELEASE_MIC']);
+  });
+
+  it('a misfire while ARMED keeps the mic — hands-free is still on', () => {
+    const t = reduceVoice({ kind: 'listening', wasPlaying: true, manual: false, home: 'idle' }, { type: 'MISFIRE' });
+    expect(t.effects.map((e) => e.type)).not.toContain('RELEASE_MIC');
   });
 
   it('an exchange started from OFF by the Ask button ends back at OFF, not armed', () => {
@@ -109,7 +114,24 @@ describe('misfires and empty answers', () => {
       { type: 'RESUME_TIMER_DONE' },
     );
     expect(state).toEqual({ kind: 'off' });
-    expect(effects.at(-1)).toBe('RESUME_PLAYBACK');
+    // The microphone stays open through thinking, the answer and the silence window — one tap is
+    // enough to barge in or ask a follow-up — and is released only here, at the end.
+    expect(effects.slice(-2)).toEqual(['RESUME_PLAYBACK', 'RELEASE_MIC']);
+    expect(effects).not.toContain('RELEASE_MIC_EARLY');
+    expect(effects.filter((e) => e === 'RELEASE_MIC')).toHaveLength(1);
+  });
+
+  it('an exchange that stays ARMED never releases the microphone', () => {
+    const { state, effects } = run(
+      { kind: 'idle' },
+      { type: 'SPEECH_START', playing: true },
+      { type: 'SPEECH_END', audio },
+      { type: 'ANSWER', text: 'x', hasAudio: true, note: null },
+      { type: 'SPEAKING_ENDED' },
+      { type: 'RESUME_TIMER_DONE' },
+    );
+    expect(state).toEqual({ kind: 'idle' });
+    expect(effects).not.toContain('RELEASE_MIC');
   });
 
   it('nothing heard / saved-for-the-creator: the note is shown and the episode resumes after the window', () => {
@@ -161,15 +183,15 @@ describe('enable / disable / stop', () => {
     expect(reduceVoice({ kind: 'off' }, { type: 'ENABLE' }).state).toEqual({ kind: 'idle' });
     const t = reduceVoice({ kind: 'speaking', wasPlaying: true, text: 'x', home: 'idle' }, { type: 'DISABLE' });
     expect(t.state).toEqual({ kind: 'off' });
-    expect(t.effects.map((e) => e.type)).toEqual(['STOP_ANSWER', 'RESUME_PLAYBACK']);
+    expect(t.effects.map((e) => e.type)).toEqual(['STOP_ANSWER', 'RESUME_PLAYBACK', 'RELEASE_MIC']);
   });
 
   it('STOP turns everything off and leaves the episode paused', () => {
     const t = reduceVoice({ kind: 'idle' }, { type: 'STOP' });
     expect(t.state).toEqual({ kind: 'off' });
-    expect(t.effects.map((e) => e.type)).toEqual(['PAUSE_PLAYBACK']);
+    expect(t.effects.map((e) => e.type)).toEqual(['PAUSE_PLAYBACK', 'RELEASE_MIC']);
     const t2 = reduceVoice({ kind: 'resuming', wasPlaying: true, note: null, home: 'idle' }, { type: 'STOP' });
-    expect(t2.effects.map((e) => e.type)).toEqual(['CANCEL_RESUME_TIMER']);
+    expect(t2.effects.map((e) => e.type)).toEqual(['CANCEL_RESUME_TIMER', 'RELEASE_MIC']);
     expect(t2.effects.map((e) => e.type)).not.toContain('RESUME_PLAYBACK');
   });
 
