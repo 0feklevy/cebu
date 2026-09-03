@@ -1,22 +1,39 @@
 /*
- * The import gallery — a full-screen surface, not a box (night run 2026-09-03 §6).
- *
- * The previous version borrowed the Extended Library's 1120×760 panel and 210px cards: on a large
- * monitor a small dimmed window in the middle of the editor, each tile a live simulation running
- * at postage-stamp size. Now the gallery IS the screen, tiles are 16:9 stills at ≥300px, and a
- * simulation only runs when the author asks to see it move.
+ * The import gallery — a large panel over the editor, the shape Video settings and the Extended
+ * Library use (owner ruling 2026-09-03: about 90% of the screen, not all of it). Tiles are 16:9
+ * stills at ≥300px, and a simulation only runs when the author asks to see it move.
  *
  * Theme tokens throughout, so it follows dark mode like the rest of the editor.
  */
 
-.import-sim {
+.import-sim__overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.import-sim {
+  position: relative;
+  width: min(1400px, 92vw);
+  height: min(920px, 90vh);
+  display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
   background: hsl(var(--background));
   color: hsl(var(--foreground));
+}
+@media (max-width: 640px) {
+  .import-sim__overlay { padding: 0; }
+  .import-sim { width: 100vw; height: 100dvh; border-radius: 0; border: 0; }
 }
 
 .import-sim__header {

@@ -167,6 +167,7 @@ export function ImportSimulationDialog({ projectId, onImported, onClose }: Props
   // can trap a fixed surface inside the editor rail (v0.3.0 shipped it trapped there).
   if (!canPortal) return null;
   return createPortal(
+    <div className="import-sim__overlay" onClick={(e) => { if (e.target === e.currentTarget && !importing) onClose(); }}>
     <div role="dialog" aria-modal="true" aria-label="Import simulations" className="import-sim">
       <div className="import-sim__header">
         <div>
@@ -255,6 +256,7 @@ export function ImportSimulationDialog({ projectId, onImported, onClose }: Props
           {importing ? 'Importing…' : selected.size === 0 ? 'Select simulations' : `Import ${selected.size}`}
         </button>
       </div>
+    </div>
     </div>,
     document.body
   );
