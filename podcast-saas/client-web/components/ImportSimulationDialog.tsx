@@ -154,13 +154,19 @@ export function ImportSimulationDialog({ projectId, onImported, onClose }: Props
     if (stillSelected.size === 0) onClose();
   }, [importing, selected, projectId, onImported, onClose]);
 
+  const [canPortal, setCanPortal] = useState(false);
+  useEffect(() => { setCanPortal(true); }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !importing) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [importing, onClose]);
 
-  return (
+  // The gallery IS the screen: portaled to <body> so no ancestor's stacking context or transform
+  // can trap a fixed surface inside the editor rail (v0.3.0 shipped it trapped there).
+  if (!canPortal) return null;
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label="Import simulations" className="import-sim">
       <div className="import-sim__header">
         <div>
@@ -249,7 +255,8 @@ export function ImportSimulationDialog({ projectId, onImported, onClose }: Props
           {importing ? 'Importing…' : selected.size === 0 ? 'Select simulations' : `Import ${selected.size}`}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

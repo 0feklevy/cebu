@@ -265,9 +265,9 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
       <audio ref={voiceRef} preload="none" className="hidden" aria-hidden="true" />
 
       {/* ── The glance: artwork · title · bar · transport · ASK/STOP ── */}
-      <div className="flex flex-1 flex-col items-center justify-between gap-4 px-6 py-6 landscape:flex-row landscape:items-center landscape:justify-center landscape:gap-10">
-        <div className="flex w-full max-w-sm flex-1 flex-col items-center justify-center gap-4 landscape:flex-none landscape:w-[38vw] landscape:max-w-md">
-          <div className="relative aspect-square w-[min(60vw,42vh)] overflow-hidden rounded-3xl bg-neutral-800 shadow-2xl landscape:w-[min(38vw,60vh)]">
+      <div className="flex flex-1 flex-col items-center justify-between gap-4 px-6 py-6 [@media(orientation:landscape)_and_(max-height:560px)]:flex-row [@media(orientation:landscape)_and_(max-height:560px)]:items-center [@media(orientation:landscape)_and_(max-height:560px)]:justify-center [@media(orientation:landscape)_and_(max-height:560px)]:gap-10">
+        <div className="flex w-full max-w-sm flex-1 flex-col items-center justify-center gap-4 [@media(orientation:landscape)_and_(max-height:560px)]:flex-none [@media(orientation:landscape)_and_(max-height:560px)]:w-[38vw] [@media(orientation:landscape)_and_(max-height:560px)]:max-w-md">
+          <div className="relative aspect-square w-[min(60vw,42vh)] overflow-hidden rounded-3xl bg-neutral-800 shadow-2xl [@media(orientation:landscape)_and_(max-height:560px)]:w-[min(38vw,60vh)]">
             {artworkUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={artworkUrl} alt="" className="h-full w-full object-cover" draggable={false} />
@@ -281,7 +281,7 @@ export function AudioEditionPlayer({ view, artworkUrl, slug }: Props) {
           </p>
         </div>
 
-        <div className="flex w-full max-w-sm flex-col items-center gap-5 landscape:w-[44vw] landscape:max-w-md">
+        <div className="flex w-full max-w-sm flex-col items-center gap-5 [@media(orientation:landscape)_and_(max-height:560px)]:w-[44vw] [@media(orientation:landscape)_and_(max-height:560px)]:max-w-md">
           {/* Progress bar — a real range input so a thumb drag and a steering-wheel seek agree. */}
           <div className="w-full">
             <input
