@@ -1615,8 +1615,18 @@ recommendation on each:
   translation. Groq Whisper stays allowed only for captions-only languages with no dub.
 - Migration numbers are reserved by hand across branches; BOTH hardcoded registries
   (`db/migrate.ts`, `scripts/check-db.ts`) must carry every file. Latest reserved: **070**.
-- The classifier boundaries stand: merges yes, `--admin` no; push yes, force-push no; release
-  dispatch and deploy approval are yours alone.
+- The classifier boundaries stand: merges yes, `--admin` no; push yes, force-push no.
+- **Release dispatch changed hands on 2026-09-03 by owner ruling** — it is MINE to run now, not
+  the owner's ("אתה אמור לעשות gh workflow run release.yml ... בעצמך - לא אני"). What the old rule
+  was protecting is unchanged and still applies: `production` has 0 required reviewers, so a
+  dispatch with `deploy=true` IS a deploy, with only the deterministic gates between it and the
+  VM. So before dispatching: local `main` equals `origin/main`, clean worktree, zero open PRs, CI
+  green on that SHA — and check whether a release is ALREADY in flight. The first time this ruling
+  applied, the owner had dispatched seconds before telling me to; a second dispatch would have cut
+  two versions and deployed twice. Deploy approval, where a risk plan sets `requires_human`,
+  remains the owner's.
+- Migration numbers: the note above says "latest reserved 070" and is stale by fourteen. The live
+  answer is the two registries themselves, and as of 2026-09-03 the latest is **084**.
 
 ## 🟢 The sweep's fix-now queue is DONE — 8 landed, 1 corrected by measurement (2026-08-22)
 
