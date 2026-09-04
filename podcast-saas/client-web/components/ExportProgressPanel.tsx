@@ -13,6 +13,10 @@
  * 2. WARNINGS ARE PART OF THE RESULT. The plan's warnings are honest degradations — a simulation
  *    rendered as its poster still, an omitted layer. They are listed verbatim whenever present,
  *    including on success; a bare "ready" would be a lie of omission.
+ *    AMENDMENT (owner direction 2026-09-04): the ROUTINE per-section "no poster still exists for
+ *    this exact configuration" lines are operational noise to a regular user — a project can carry
+ *    a dozen of them saying the same thing. They go to console.warn (still recoverable for a bug
+ *    report), and only NON-routine warnings render in the panel.
  * 3. A DEGRADED SUCCESS IS NOT A PLAIN SUCCESS. A ready export with `quality_state: 'degraded'`
  *    carries a "Completed with substitutions" label beside its download.
  * 4. FAILURES ARE THE SERVER'S WORDS. The backend stores a classified reason; it is shown verbatim
@@ -34,7 +38,7 @@
  *    Zero/unknown progress renders an INDETERMINATE bar (no number, no aria-valuenow) instead.
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Download, Loader2, X } from 'lucide-react';
 import { exportPhaseLabel, type UseProjectExport } from '../lib/useProjectExport';
 
@@ -53,7 +57,21 @@ interface Props {
  */
 function WarningList({ warnings }: { warnings: readonly string[] }) {
   const [copied, setCopied] = useState(false);
+
+  // Rule 2 amendment: the routine per-section poster-fallback lines collapse into ONE summary
+  // row (and go to console.warn verbatim); everything else renders as before. "Copy all" still
+  // hands over the FULL original text — the detail exists for bug reports, not for the popover.
+  const routine = useMemo(() => warnings.filter((w) => ROUTINE_POSTER_WARNING.test(w)), [warnings]);
+  const visible = useMemo(() => warnings.filter((w) => !ROUTINE_POSTER_WARNING.test(w)), [warnings]);
+  useEffect(() => {
+    if (routine.length > 0) {
+      console.warn(`[export] ${routine.length} routine poster-fallback warning(s):\n${routine.join('\n')}`);
+    }
+  }, [routine]);
+
   if (warnings.length === 0) return null;
+
+  const shownCount = visible.length + (routine.length > 0 ? 1 : 0);
 
   const copyAll = async (): Promise<void> => {
     try {
@@ -69,7 +87,7 @@ function WarningList({ warnings }: { warnings: readonly string[] }) {
     <div className="flex min-h-0 flex-shrink flex-col gap-1">
       <div className="flex flex-none items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+          {shownCount} warning{shownCount === 1 ? '' : 's'}
         </span>
         <button
           onClick={() => void copyAll()}
@@ -86,7 +104,13 @@ function WarningList({ warnings }: { warnings: readonly string[] }) {
         tabIndex={0}
         className="min-h-0 max-h-40 flex-shrink overflow-y-auto space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 focus-ring"
       >
-        {warnings.map((w, i) => (
+        {routine.length > 0 && (
+          <li className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            {routine.length} section{routine.length === 1 ? '' : 's'} without a poster for this exact
+            configuration — they fall back to the base video if capture is unavailable.
+          </li>
+        )}
+        {visible.map((w, i) => (
           <li key={i} className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
             {w}
           </li>
@@ -95,6 +119,9 @@ function WarningList({ warnings }: { warnings: readonly string[] }) {
     </div>
   );
 }
+
+/** Rule 2 amendment: routine per-section poster-fallback lines are logged, not rendered. */
+const ROUTINE_POSTER_WARNING = /no poster still exists for this exact configuration/i;
 
 export function ExportProgressPanel({ open, onClose, flow }: Props) {
   const {

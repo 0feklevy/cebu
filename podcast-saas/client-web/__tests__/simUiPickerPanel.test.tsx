@@ -102,9 +102,11 @@ beforeEach(() => {
     scanned: true, requestId: 'r1', sid: 'sid-test', controls: CONTROLS, truncated: false,
   });
   globalThis.fetch = vi.fn(async (u: RequestInfo | URL) => routedResponse(String(u))) as unknown as typeof fetch;
+  // A section with sim_meta logs its last-generation diagnostics via console.warn by design.
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 function renderEditor() {
   return render(
@@ -115,9 +117,15 @@ function renderEditor() {
   );
 }
 
+/** The picker lives behind the collapsed-by-default Advanced disclosure (owner 2026-09-04). */
+function openAdvanced(): void {
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
+}
+
 /** Open the picker and wait for the first scan to land. */
 async function openPicker(): Promise<void> {
   renderEditor();
+  openAdvanced();
   fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
   await waitFor(() => expect(screen.getByText('Speed')).toBeTruthy());
 }
@@ -139,6 +147,7 @@ describe('the status line and the body can no longer contradict each other', () 
       scanned: true, requestId: 'r1', sid: 'sid-test', controls: [], truncated: false,
     });
     renderEditor();
+    openAdvanced();
     fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     await waitFor(() => expect(screen.getByText(/No controls to choose from/)).toBeTruthy());
     // A DIFFERENT sentence from the unreachable case — that distinction is the whole fix.
@@ -151,6 +160,7 @@ describe('the status line and the body can no longer contradict each other', () 
       String(u).includes('ui-controls') ? new Response('', { status: 404 }) : routedResponse(String(u))
     )) as unknown as typeof fetch;
     renderEditor();
+    openAdvanced();
     fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     // This path genuinely waits out the old gate's 2s timeout before it can honestly say nothing
     // answered — the delay is the evidence, not an inefficiency to hide.
@@ -238,6 +248,7 @@ describe('the preview has to be usable while picking', () => {
     // The badges are drawn in that frame. A picker whose visual half is behind another tab is
     // the feature not working.
     renderEditor();
+    openAdvanced();
     fireEvent.click(screen.getByText(/Files/i));
     fireEvent.click(screen.getByText(/which controls the viewer keeps/i));
     await waitFor(() => expect(connectSimAuthoring).toHaveBeenCalled());

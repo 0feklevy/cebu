@@ -99,8 +99,15 @@ describe('the settings and section tours', () => {
   });
 
   it('a simulation section with a simulation attached covers the Minimal-UI control picker and presets', () => {
+    // The picker and the reuse-setups card moved behind ONE Advanced disclosure (owner direction
+    // 2026-09-04), so the tour points at that disclosure — and its body still has to sell both
+    // features, or the step stops covering what this test exists to guarantee.
     const anchors = [...SECTION_STEPS_SIM_PICK, ...SECTION_STEPS_SIM_ATTACHED].map((s) => s.anchor);
-    expect(anchors).toEqual(['sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-controls', 'sec-sim-presets']);
+    expect(anchors).toEqual(['sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-advanced']);
+    const advanced = SECTION_STEPS_SIM_ATTACHED.find((s) => s.anchor === 'sec-sim-advanced')!;
+    expect(advanced.body).toMatch(/controls/i);
+    expect(advanced.body).toMatch(/reuse/i);
+    expect(advanced.body).toMatch(/voice/i);
   });
 });
 

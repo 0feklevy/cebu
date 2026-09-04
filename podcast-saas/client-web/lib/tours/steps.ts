@@ -128,8 +128,7 @@ export const SECTION_STEPS_SIM_PICK: readonly Step[] = [
 export const SECTION_STEPS_SIM_ATTACHED: readonly Step[] = [
   { anchor: 'sec-sim-prompt', title: 'Describe the moment', body: 'Tell the AI what the simulation should show here. Simple UI and Auto Script below decide how much the viewer drives.' },
   { anchor: 'sec-sim-generate', title: 'Generate and preview', body: 'Generate the bridge with AI and play it in the preview before saving.' },
-  { anchor: 'sec-sim-controls', title: 'Minimal UI — pick the controls', body: 'Under Advanced · UI controls, scan the simulation and choose which of its controls viewers see. All, none, or “keep only those”; Undo takes it back.' },
-  { anchor: 'sec-sim-presets', title: 'Save and reuse a bridge', body: 'Save a working setup under a name and load it on the same simulation in another video — it can bring the simulation with it. Instant when it fits; regenerated from your settings when it does not.' },
+  { anchor: 'sec-sim-advanced', title: 'Advanced tools', body: 'Open Advanced for the power tools: pick exactly which controls viewers see (Minimal UI), save this whole setup under a name and reuse it on another video, and add guided voice narration.' },
 ];
 
 export const SECTION_STEPS_IMAGE: readonly Step[] = [

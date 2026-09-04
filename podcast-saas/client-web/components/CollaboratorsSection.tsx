@@ -84,7 +84,10 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {isOwner && (
-        <div style={{ display: 'flex', gap: 8 }}>
+        /* flexWrap + minWidth:0: in a narrow settings column the email input's intrinsic
+           min-width used to push the Invite button out of the card; now the input shrinks
+           and, at the extreme, the button wraps to its own line instead of overflowing. */
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input
             type="email"
             value={email}
@@ -93,7 +96,7 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
             placeholder="Invite by email…"
             aria-label={`Invite a collaborator to this ${contentType} by email`}
             style={{
-              flex: 1, height: 38, padding: '0 12px', borderRadius: 8, fontSize: 13,
+              flex: 1, minWidth: 160, height: 38, padding: '0 12px', borderRadius: 8, fontSize: 13,
               border: '1px solid hsl(var(--border))',
               background: 'hsl(var(--background))', color: 'hsl(var(--foreground))',
             }}

@@ -38,7 +38,7 @@ const IMAGE = { id: 'img-1', project_id: 'proj-1', filename: 'a.png', created_at
 
 /** The section kinds, and the anchors each one is expected to render. */
 const KINDS: Array<{ name: string; over: Partial<TimelineSection>; anchors: readonly string[] }> = [
-  { name: 'simulation with a simulation attached', over: {}, anchors: ['sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-presets', 'sec-sim-controls'] },
+  { name: 'simulation with a simulation attached', over: {}, anchors: ['sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-advanced'] },
   { name: 'AI video', over: { type: 'video', simulation_id: null, simulation_url: null }, anchors: ['sec-video-prompt', 'sec-video-generate', 'sec-video-options'] },
   { name: 'clip over a video', over: { type: 'clip', simulation_id: null, simulation_url: null, clip_source_video_id: 'vid-1' }, anchors: ['sec-video'] },
   { name: 'clip over an image', over: { type: 'clip', simulation_id: null, simulation_url: null, clip_source_image_id: 'img-1' }, anchors: ['sec-camera'] },

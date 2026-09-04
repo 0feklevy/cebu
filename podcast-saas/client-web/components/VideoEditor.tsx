@@ -920,6 +920,7 @@ export function VideoEditor({ projectId }: Props) {
   const [libraryDragOver, setLibraryDragOver] = useState(false);
   const [libraryFeedback, setLibraryFeedback] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   const [simAutoFiles, setSimAutoFiles] = useState<File[] | null>(null);
+  const [videoAutoFiles, setVideoAutoFiles] = useState<File[] | null>(null);
   const libraryDragDepth = useRef(0);
 
   // ── Guided walkthrough — auto-runs once per browser, re-openable from the header "?" ──
@@ -969,12 +970,15 @@ export function VideoEditor({ projectId }: Props) {
     if (files.length === 0) { setShowSimUploader(true); return; } // folder drag → sim uploader
     const images = files.filter(f => f.type.startsWith('image/'));
     const audio  = files.filter(f => f.type.startsWith('audio/'));
+    const vids   = files.filter(f => f.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|m4v)$/i.test(f.name));
     const sims   = files.filter(f => f.name.toLowerCase().endsWith('.zip') || f.type === 'application/zip' || f.type === 'application/x-zip-compressed');
-    const other  = files.filter(f => !images.includes(f) && !audio.includes(f) && !sims.includes(f));
+    const other  = files.filter(f => !images.includes(f) && !audio.includes(f) && !vids.includes(f) && !sims.includes(f));
     images.forEach(f => void uploadImageFile(f));
     audio.forEach(f => void uploadAudioFile(f));
+    if (vids.length > 0) { setShowUploader(true); setVideoAutoFiles(vids); }
     if (sims.length > 0) { setShowSimUploader(true); setSimAutoFiles(sims); }
     const parts = [
+      vids.length && `${vids.length} video${vids.length > 1 ? 's' : ''}`,
       images.length && `${images.length} image${images.length > 1 ? 's' : ''}`,
       audio.length && `${audio.length} audio`,
       sims.length && `${sims.length} simulation${sims.length > 1 ? 's' : ''}`,
@@ -1262,6 +1266,8 @@ export function VideoEditor({ projectId }: Props) {
         <div className="shrink-0 border-b border-border bg-card/30 px-3 py-3 sm:px-6 sm:py-4">
           <VideoUploader
             projectId={projectId}
+            autoFiles={videoAutoFiles}
+            onAutoFilesConsumed={() => setVideoAutoFiles(null)}
             onUploaded={(video) => {
               if (video.raw_url) setRawUrls(prev => ({ ...prev, [video.id]: video.raw_url! }));
               loadData();
@@ -1381,7 +1387,7 @@ export function VideoEditor({ projectId }: Props) {
                   <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-amber-400 bg-amber-50/85 backdrop-blur-sm">
                     <Upload size={22} className="text-amber-500" aria-hidden />
                     <p className="text-xs font-semibold text-amber-700">Drop to add to the Library</p>
-                    <p className="text-[10px] text-amber-600">Images · audio · simulation .zip</p>
+                    <p className="text-[10px] text-amber-600">Videos · simulation .zip · images · audio — sorted automatically</p>
                   </div>
                 )}
                 {libraryFeedback && (
@@ -1410,11 +1416,11 @@ export function VideoEditor({ projectId }: Props) {
                     <button
                       type="button"
                       onClick={() => setExtendedLibraryOpen(true)}
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
-                      title="Manage the avatar's basic and extended visual library"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-ring"
+                      title="Extended — manage the avatar's basic and extended visual library"
+                      aria-label="Extended library"
                     >
-                      <Sparkles size={12} strokeWidth={1.9} aria-hidden />
-                      Extended
+                      <Sparkles size={13} strokeWidth={1.9} aria-hidden />
                     </button>
                   </div>
                 </div>
@@ -1451,7 +1457,7 @@ export function VideoEditor({ projectId }: Props) {
                         : 'border-border/60 bg-card/90 hover:border-primary/30'
                     }`}
                   >
-                    <div className="w-full text-left px-3 py-2.5 pr-12">
+                    <div className="w-full text-left px-3 py-2.5 pr-[72px]">
                       <p className="text-xs font-medium text-foreground truncate">{v.filename}</p>
                       <div className="mt-1 space-y-0.5">
                         <p className="text-[10px] text-muted-foreground">
@@ -1474,10 +1480,13 @@ export function VideoEditor({ projectId }: Props) {
                         ) : null}
                       </div>
                     </div>
+                    {/* Side by side with Delete (right-10 / right-2), never stacked: on a short
+                        card the old top-2/bottom-2 pair overlapped into one unclickable blob. */}
                     <button
                       onClick={(e) => { e.stopPropagation(); setReplacingVideoId(v.id); }}
                       title="Replace with a new version (re-upload)"
-                      className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                      aria-label="Replace video"
+                      className="absolute right-10 top-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-ring"
                     >
                       <RefreshCw size={14} strokeWidth={1.9} aria-hidden />
                     </button>
@@ -1619,7 +1628,9 @@ export function VideoEditor({ projectId }: Props) {
                 )}
                 </div>
 
-              {/* Images section */}
+              {/* Images section — hidden while empty to keep the Library minimal: it appears the
+                  moment an image lands (dropped anywhere on the panel, which auto-sorts by type). */}
+              {(images.length > 0 || pendingCropImage || imgUploading) && (
               <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1726,8 +1737,10 @@ export function VideoEditor({ projectId }: Props) {
                   ))
                 )}
               </div>
+              )}
 
-              {/* Sound section */}
+              {/* Sound section — hidden while empty, same minimal-Library rule as Images. */}
+              {(audioFiles.length > 0 || audioUploading) && (
               <div className="mt-3 flex flex-col gap-2 pt-3 border-t border-border/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1793,6 +1806,7 @@ export function VideoEditor({ projectId }: Props) {
                   ))
                 )}
               </div>
+              )}
               </div>
               <EditorToolsPanel
                 toolMode={toolMode}

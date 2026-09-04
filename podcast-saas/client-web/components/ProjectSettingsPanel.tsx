@@ -743,22 +743,25 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
             </div>
           </div>
 
-          {/* RIGHT panel — Details + Crop + Access */}
+          {/* RIGHT panel — Details + Crop + Access.
+              Two independent flex COLUMNS rather than a grid: grid rows stretched every card
+              to its row partner's height, which left Smart Crop mostly empty air beside the
+              tall Access card and a hole under it before Collaborators. Columns pack each
+              card to its content with no gaps. */}
           <div style={{
             flex: 1,
             minHeight: 0,
             overflowY: 'auto',
             padding: isCompact ? '14px' : '20px 24px',
-            display: 'grid',
-            gridTemplateColumns: isCompact ? '1fr' : 'repeat(2, minmax(0, 1fr))',
+            display: 'flex',
+            flexDirection: 'column',
             gap: 16,
-            alignContent: 'start',
             backgroundColor: 'hsl(var(--card))',
             boxSizing: 'border-box',
           }}>
 
             {/* Details */}
-            <div {...tourAnchor('settings-details')} style={{ ...sectionCardStyle, gridColumn: isCompact ? undefined : '1 / -1' }}>
+            <div {...tourAnchor('settings-details')} style={sectionCardStyle}>
               {sectionHead(<Type size={16} strokeWidth={2} />, 'Details', 'Title & description for SEO and sharing', '#0ea5e9')}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
@@ -801,6 +804,8 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
             </div>
 
+            <div style={{ display: 'flex', flexDirection: isCompact ? 'column' : 'row', gap: 16, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16, alignSelf: 'stretch' }}>
             {/* Smart Crop — only for a landscape source; a portrait project IS the portrait frame and is never cropped (night run 2026-09-03 §3). */}
             {projectOrientation(videos) !== 'portrait' && (
             <div {...tourAnchor('settings-crop')} style={sectionCardStyle}>
@@ -851,11 +856,15 @@ export function ProjectSettingsPanel({ projectId, project, onProjectChange }: Pr
               </div>
               <LockPriceControl contentType="project" contentId={projectId} bordered={false} />
             </div>
+            </div>
 
-            {/* Collaboration */}
+            {/* Collaboration — its own column, packed to content beside Crop+Access. */}
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div {...tourAnchor('settings-collab')} style={sectionCardStyle}>
               {sectionHead(<Users size={16} strokeWidth={2} />, 'Collaborators', 'Invite people by email to edit this video with you', '#8b5cf6')}
               <CollaboratorsSection contentType="project" contentId={projectId} />
+            </div>
+            </div>
             </div>
           </div>
         </div>

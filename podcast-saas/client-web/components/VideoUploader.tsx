@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getAuth } from 'firebase/auth';
 import type { VideoFile } from 'shared/src/generated/client-v1';
 
@@ -106,9 +106,12 @@ interface Props {
   // When set, the upload REPLACES this video's media (keeps the same id, so timeline
   // clips stay attached) instead of adding a new one — the Library "Replace" action.
   replaceVideoId?: string;
+  /** Files routed in from the Library-panel dropzone — uploaded once, then reported consumed. */
+  autoFiles?: File[] | null;
+  onAutoFilesConsumed?: () => void;
 }
 
-export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) {
+export function VideoUploader({ projectId, onUploaded, replaceVideoId, autoFiles, onAutoFilesConsumed }: Props) {
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -371,7 +374,7 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
     }
   };
 
-  const handleFiles = (files: FileList | null) => {
+  const handleFiles = (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
     const newFiles = Array.from(files);
     const startIdx = uploads.length;
@@ -381,6 +384,17 @@ export function VideoUploader({ projectId, onUploaded, replaceVideoId }: Props) 
     ]);
     newFiles.forEach((file, i) => uploadFile(file, startIdx + i));
   };
+
+  // Files the Library dropzone routed here (mirrors SimulationUploader's autoFiles contract).
+  const consumedAutoRef = useRef<File[] | null>(null);
+  useEffect(() => {
+    if (!autoFiles || autoFiles.length === 0) return;
+    if (consumedAutoRef.current === autoFiles) return;
+    consumedAutoRef.current = autoFiles;
+    handleFiles(autoFiles);
+    onAutoFilesConsumed?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFiles]);
 
   return (
     <div className="space-y-3">

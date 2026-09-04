@@ -119,6 +119,8 @@ function analyzeButton(name: RegExp): HTMLButtonElement {
 
 /** Click "Analyze & draft" and hand back the EventSource it opened. */
 async function startAnalysis(): Promise<FakeEventSource> {
+  // The Guided Simulation card lives behind the collapsed-by-default Advanced disclosure.
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
   fireEvent.click(screen.getByRole('button', { name: /Analyze & draft/ }));
   await waitFor(() => { expect(FakeEventSource.instances).toHaveLength(1); });
   // The panel is busy: the button now shows the stream's status line.

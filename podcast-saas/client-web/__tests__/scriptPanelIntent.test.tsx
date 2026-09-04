@@ -51,6 +51,10 @@ function mount(over: Partial<TimelineSection> = {}) {
 
 const promptBox = () => screen.getByPlaceholderText(/lattice-size slider/i);
 const applyButton = () => screen.getByRole('button', { name: /Generate with AI|Apply|Nothing to apply yet/ });
+// The power tools — the control picker, "Reuse this setup" and "Guided Simulation" — live behind a
+// collapsed-by-default Advanced disclosure (owner direction 2026-09-04).
+const openAdvanced = () =>
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
 
 beforeEach(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -59,6 +63,8 @@ beforeEach(() => {
   });
   Element.prototype.scrollIntoView ??= function scrollIntoView() {};
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // Sections with sim_meta log their last-generation diagnostics via console.warn by design.
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); Reflect.deleteProperty(window, 'matchMedia'); });
 
@@ -100,20 +106,25 @@ describe('the script panel says what will happen', () => {
     expect(screen.getByText(/Uses AI, and counts against your generation limit\. Also hides the controls you unchecked/i)).toBeTruthy();
   });
 
-  it('the switches that decide whether any of it applies are step 3, inside the same card', () => {
+  it('the switches that decide whether any of it applies are step 2, inside the same card', () => {
     // They were the one fragment the redesign left loose: unnumbered furniture under numbered
     // steps, and the only part of the card painted in a hardcoded light-only wash.
     mount();
-    expect(screen.getByText(/3 · How it behaves/)).toBeTruthy();
+    expect(screen.getByText(/2 · How it behaves/)).toBeTruthy();
     const simpleUi = screen.getByText('Simple UI').closest('button') as HTMLButtonElement;
     expect(simpleUi.style.backgroundColor).not.toBe('rgb(255, 251, 235)');
     expect(simpleUi.style.borderColor === '' || simpleUi.style.border.includes('hsl(var(--border))')).toBe(true);
   });
 
-  it('the two optional steps are numbered and the control picker shows how many are kept', () => {
+  it('the steps are numbered, and the control picker sits behind Advanced with no number', () => {
     mount();
     expect(screen.getByText(/1 · Describe it/)).toBeTruthy();
-    expect(screen.getByText(/2 · Choose the controls/)).toBeTruthy();
+    // The picker moved behind the Advanced disclosure (owner direction 2026-09-04): collapsed by
+    // default, and no longer a numbered step of the card.
+    expect(screen.queryByText(/which controls the viewer keeps/i)).toBeNull();
+    openAdvanced();
+    expect(screen.getByText(/Choose the controls/)).toBeTruthy();
+    expect(screen.queryByText(/\d · Choose the controls/)).toBeNull();
     const toggle = screen.getByText(/which controls the viewer keeps/i).closest('button') as HTMLButtonElement;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.textContent).toContain('not scanned');
@@ -134,6 +145,7 @@ describe('the script panel says what will happen', () => {
         onUpdate={vi.fn()} onDelete={vi.fn()} onClose={onClose}
       />,
     );
+    openAdvanced();
     fireEvent.click(screen.getByText('Save setup…'));
     expect(screen.getByRole('dialog', { name: /save setup/i })).toBeTruthy();
 
@@ -155,7 +167,9 @@ describe('the script panel says what will happen', () => {
     // "Minimal UI" and "Simple UI" named the same toggle four lines apart in this card.
     expect(screen.queryByText(/Minimal UI/i)).toBeNull();
     // Including the picker's own empty/unopened states, which the default view never renders and
-    // where the last "Minimal UI" survived the first rename.
+    // where the last "Minimal UI" survived the first rename. The picker lives behind Advanced now.
+    openAdvanced();
+    expect(screen.queryByText(/Minimal UI/i)).toBeNull();
     fireEvent.click(screen.getByText(/which controls the viewer keeps/i).closest('button') as HTMLButtonElement);
     expect(screen.queryByText(/Minimal UI/i)).toBeNull();
   });
@@ -164,6 +178,7 @@ describe('the script panel says what will happen', () => {
     // Both dialogs are portaled to <body>. Without this the caret lands on <body> and the next
     // Tab restarts at the top of the page, a long way from where the author was working.
     mount({ sim_meta: { planVersion: '7', prompt: 'x' } as never });
+    openAdvanced();
     const save = screen.getByText('Save setup…').closest('button') as HTMLButtonElement;
     save.focus();
     expect(document.activeElement).toBe(save);
@@ -178,6 +193,7 @@ describe('the script panel says what will happen', () => {
 
   it('the reuse row is named for what it does, and there is no banner button', () => {
     mount();
+    openAdvanced();
     expect(screen.getByText('Reuse this setup')).toBeTruthy();
     expect(screen.getByText('Save setup…')).toBeTruthy();
     expect(screen.getByText('Load setup…')).toBeTruthy();
@@ -187,10 +203,12 @@ describe('the script panel says what will happen', () => {
 
   it('saving a setup needs something to save', () => {
     const fresh = mount().container;
+    openAdvanced();
     expect((screen.getByText('Save setup…').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect(fresh).toBeTruthy();
     cleanup();
     mount({ sim_meta: { planVersion: '7', prompt: 'x' } as never });
+    openAdvanced();
     expect((screen.getByText('Save setup…').closest('button') as HTMLButtonElement).disabled).toBe(false);
   });
 });

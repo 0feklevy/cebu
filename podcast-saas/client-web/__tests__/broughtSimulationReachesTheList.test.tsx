@@ -94,7 +94,14 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); Reflect.deleteProperty(window, 'matchMedia'); });
 
+/** The "Reuse this setup" card lives behind the collapsed-by-default Advanced disclosure —
+ *  deliberately rendered even on a section with NO simulation, which this feature exists for. */
+function openAdvanced() {
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
+}
+
 async function loadTheSetup() {
+  openAdvanced();
   fireEvent.click(screen.getByText('Load setup…'));
   await screen.findByText(PRESET.label);
   fireEvent.click(screen.getByText(PRESET.label));
@@ -107,6 +114,7 @@ describe('the panel hands a brought simulation upwards', () => {
     // Before this ruling the button was disabled here, which is exactly backwards: a section with
     // nothing in it is where a saved setup is worth the most.
     mount(vi.fn());
+    openAdvanced();
     const load = screen.getByText('Load setup…').closest('button') as HTMLButtonElement;
     expect(load.disabled).toBe(false);
     fireEvent.click(load);
