@@ -13,3 +13,4 @@
 - [7 owner rulings audit (PRs #180/#181 main, #183 portable-setup)](project_flowvid-2026-09-03-owner-rulings-audit.md) — 6 clean; real bug: VideoEditor.tsx:1861 onSimulationUpdate can't append a new sim
 - [Layout regression + library banners + PR #185 panel followups audit](project_flowvid-2026-09-03-layout-regression-and-panel-followups-audit.md) — #172/#173 clean; PR #185's 5 claims hold, 2 narrow residual gaps (untested focus-restore, one Minimal-UI string survives in empty-scan state)
 - [Kinesin/Dynein sim → FlowVid integration](project_kinesin-dynein-flowvid-integration.md) — not started at all; source dist/'s paid CGTrader kinesin GLB has an unresolved browser-redistribution license, the real gate on shipping
+- [Sim-review fix round audit (2026-09-04, fix/sim-review-findings)](project_flowvid-2026-09-04-sim-review-fix-round-audit.md) — all 7 checklist items DONE + tested, no gaps; rare fully-clean round
