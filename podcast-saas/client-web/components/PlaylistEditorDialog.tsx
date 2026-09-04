@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { failureMessage } from './failureSurface';
+import { ConfirmDialog } from './ConfirmDialog';
 import { LockPriceControl } from './LockPriceControl';
 import { PermalinkEditor } from './PermalinkEditor';
 import { CollaboratorsSection } from './CollaboratorsSection';
@@ -34,7 +35,7 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
         type="button"
         onClick={() => onChange(!checked)}
         className="relative h-5 w-9 shrink-0 rounded-full transition-colors focus-ring"
-        style={{ background: checked ? '#6366f1' : 'hsl(var(--border))' }}
+        style={{ background: checked ? 'hsl(var(--primary))' : 'hsl(var(--border))' }}
         role="switch"
         aria-checked={checked}
       >
@@ -79,6 +80,18 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  /**
+   * The ConfirmDialog portals to <body>, OUTSIDE the Radix content — and Radix's modal mode both
+   * yanks focus back from anything outside the content and sets `pointer-events: none` on the
+   * body, which would leave the confirm unclickable. So while the confirm is up, the editor drops
+   * to non-modal (the confirm's own backdrop + focus trap take over), and this flag routes focus
+   * back to the Delete button when the remounted content re-runs its open-autofocus.
+   */
+  const returnFocusToDelete = useRef(false);
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
 
   const dragIndex = useRef<number | null>(null);
   const bannerInputRef = useRef<HTMLInputElement>(null);
@@ -225,20 +238,36 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
 
   const handleDelete = async () => {
     if (!playlistId) return;
-    if (!window.confirm('Delete this playlist? This cannot be undone.')) return;
+    setDeleting(true);
     setError(null);
-    try { await api.deletePlaylist(playlistId); onChanged(); onClose(); }
+    try { await api.deletePlaylist(playlistId); setConfirmDelete(false); onChanged(); onClose(); }
     catch (err) {
       console.error('Playlist delete failed', err);
+      // Close the confirm over the failure (same shape as HomeHero's tiles): the error lands in
+      // the footer, and leaving a no-longer-busy "Delete" over it would read as "try me again".
+      setConfirmDelete(false);
+      returnFocusToDelete.current = true;
       setError(failureMessage(err, 'Could not delete this playlist.'));
-    }
+    } finally { setDeleting(false); }
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+    <Dialog.Root open={open} modal={!confirmDelete} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[900] bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden bg-card shadow-2xl sm:h-[min(880px,calc(100dvh-32px))] sm:w-[calc(100vw-32px)] sm:max-w-[1000px] sm:rounded-2xl sm:border sm:border-border data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+        <Dialog.Overlay className="fixed inset-0 z-[900] bg-slate-950/55 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Content
+          // While the delete confirm is up, Escape and outside interaction belong to IT — without
+          // these guards the same Escape that answers the confirm also closes the whole editor.
+          onEscapeKeyDown={(e) => { if (confirmDelete) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (confirmDelete) e.preventDefault(); }}
+          onOpenAutoFocus={(e) => {
+            if (returnFocusToDelete.current) {
+              returnFocusToDelete.current = false;
+              e.preventDefault();
+              deleteButtonRef.current?.focus();
+            }
+          }}
+          className="fixed left-1/2 top-1/2 z-[901] flex h-dvh w-screen -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden bg-card shadow-modal sm:h-[min(880px,calc(100dvh-32px))] sm:w-[calc(100vw-32px)] sm:max-w-[1000px] sm:rounded-lg sm:border sm:border-border data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
 
           {/* ── Header ── */}
           <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-3.5">
@@ -307,7 +336,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           onClick={() => { addItem(p); setQuery(''); }}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/60"
                         >
-                          <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/8">
+                          <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/10">
                             {p.thumbnail_url ? (
                               <img
                                 src={p.thumbnail_url}
@@ -352,7 +381,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           className="group flex items-center gap-2 rounded-lg border border-transparent bg-muted/30 px-2.5 py-2 transition-colors hover:border-border/70 hover:bg-muted/50"
                         >
                           <GripVertical size={14} className="shrink-0 cursor-grab text-muted-foreground/40 group-hover:text-muted-foreground/70" aria-hidden />
-                          <span className="relative h-9 w-14 shrink-0 overflow-hidden rounded-md bg-primary/8 text-[10px] font-bold text-primary/70">
+                          <span className="relative h-9 w-14 shrink-0 overflow-hidden rounded-md bg-primary/10 text-[10px] font-bold text-primary/70">
                             {it.thumbnail_url ? (
                               <img
                                 src={it.thumbnail_url}
@@ -392,7 +421,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                             onClick={() => addItem(p)}
                             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
                           >
-                            <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/8 text-primary">
+                            <span className="relative h-8 w-12 shrink-0 overflow-hidden rounded-md bg-primary/10 text-primary">
                               {p.thumbnail_url ? (
                                 <img
                                   src={p.thumbnail_url}
@@ -427,15 +456,15 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                     {bannerUrl ? (
                       <img src={bannerUrl} alt="" className="h-full w-full object-cover" draggable={false} />
                     ) : (
-                      <div className="flex h-full w-full items-center justify-center" style={{ background: 'radial-gradient(circle at 20% 50%, rgba(99,102,241,0.35), transparent 60%), linear-gradient(135deg,#080818,#181828)' }}>
-                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-card/8">
-                          <ImageIcon size={18} strokeWidth={1.5} className="text-white/40" />
+                      <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-muted via-primary/20 to-card">
+                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-background/30">
+                          <ImageIcon size={18} strokeWidth={1.5} className="text-foreground/60" />
                         </span>
                       </div>
                     )}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-                      <p className="line-clamp-1 text-xs font-semibold text-white/90">{title.trim() || 'Untitled playlist'}</p>
-                      <p className="text-[10px] text-white/50">{items.length} video{items.length !== 1 ? 's' : ''}</p>
+                      <p className="line-clamp-1 text-xs font-semibold text-white">{title.trim() || 'Untitled playlist'}</p>
+                      <p className="text-[10px] text-white opacity-60">{items.length} video{items.length !== 1 ? 's' : ''}</p>
                     </div>
                     {/* Hover overlay */}
                     <button
@@ -455,7 +484,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           Upload
                         </button>
                         {bannerUrl && (
-                          <button onClick={() => { setBannerUrl(null); setBannerPrompt(''); }} className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-2.5 text-xs text-muted-foreground hover:text-red-500 transition-colors">
+                          <button onClick={() => { setBannerUrl(null); setBannerPrompt(''); }} className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-2.5 text-xs text-muted-foreground hover:text-destructive transition-colors focus-ring">
                             <Trash2 size={12} strokeWidth={1.8} aria-hidden />
                           </button>
                         )}
@@ -469,12 +498,11 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                         <input value={bannerPrompt} onChange={(e) => setBannerPrompt(e.target.value)} placeholder="Prompt (optional)"
                           className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring/25" />
                         <button onClick={handleBannerGenerate} disabled={bannerBusy}
-                          className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2.5 text-xs font-semibold text-white disabled:opacity-40"
-                          style={{ background: 'linear-gradient(135deg,#7c3aed,#2563eb)' }}>
+                          className="btn-gradient inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2.5 text-xs font-semibold focus-ring">
                           {bannerBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} strokeWidth={1.8} />}
                         </button>
                       </div>
-                      {bannerError && <p className="text-[11px] text-red-500">{bannerError}</p>}
+                      {bannerError && <p className="text-[11px] text-destructive">{bannerError}</p>}
                     </div>
                   )}
                   <input ref={bannerInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={handleBannerUpload} />
@@ -519,7 +547,7 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                           Open viewer
                         </a>
                         <button onClick={handleRevokeShare} disabled={shareLoading}
-                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring">
+                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-destructive/20 bg-destructive/10 px-3 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-40 focus-ring">
                           {shareLoading ? <Loader2 size={12} className="animate-spin" /> : <Unlink2 size={12} strokeWidth={1.8} aria-hidden />}
                           Revoke link
                         </button>
@@ -561,8 +589,8 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
 
                 {/* Danger */}
                 <div className="px-4 py-3 mt-auto">
-                  <button onClick={handleDelete}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-red-500">
+                  <button ref={deleteButtonRef} onClick={() => setConfirmDelete(true)}
+                    className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground transition-colors hover:text-destructive focus-ring">
                     <Trash2 size={12} strokeWidth={1.8} aria-hidden />
                     Delete playlist
                   </button>
@@ -585,13 +613,23 @@ export function PlaylistEditorDialog({ playlistId, open, onClose, onChanged }: P
                 Cancel
               </button>
               <button onClick={handleSave} disabled={saving || loadFailed}
-                className="inline-flex h-9 items-center gap-2 rounded-lg px-5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:opacity-40 focus-ring"
-                style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}>
+                className="btn-gradient inline-flex h-9 items-center gap-2 rounded-lg px-5 text-sm font-semibold shadow-sm focus-ring">
                 {saving && <Loader2 size={14} className="animate-spin" />}
                 Save changes
               </button>
             </div>
           </footer>
+
+          {confirmDelete && (
+            <ConfirmDialog
+              title="Delete playlist?"
+              description={`"${title.trim() || 'Untitled playlist'}" will be permanently removed. This cannot be undone.`}
+              confirmLabel="Delete"
+              busy={deleting}
+              onConfirm={handleDelete}
+              onCancel={() => { if (!deleting) { returnFocusToDelete.current = true; setConfirmDelete(false); } }}
+            />
+          )}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePaintedSignal } from './usePaintedSignal';
-import { X } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import { SimSurface } from '@/lib/sim/SimSurface';
 import type { LibraryMaterial } from 'shared/src/types/library-view';
 
@@ -103,7 +103,7 @@ function SimulationSurface({ material }: { material: LibraryMaterial }) {
   const revealed = painted;
   const poster = material.posterUrl ?? material.bannerUrl ?? null;
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">
+    <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card shadow-modal">
       {poster && !revealed && (
         // The still of the same package, at once — the listener sees the picture the sim will
         // resolve into, instead of a grey box with a caption.
@@ -141,6 +141,10 @@ const NOOP_FRAME_REF = () => {};
 function VideoSurface({ material }: { material: LibraryMaterial }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [error, setError] = useState(false);
+  // True once the element can actually render frames — the moment the spinner stops earning
+  // its place. `canplay` covers the pre-play wait; `playing` covers a stream that goes straight
+  // to playback without ever firing it (native HLS on Safari has been seen doing exactly that).
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -157,7 +161,11 @@ function VideoSurface({ material }: { material: LibraryMaterial }) {
       try {
         const Hls = (await import('hls.js')).default;
         if (destroyed || !Hls.isSupported()) { setError(!Hls.isSupported()); return; }
-        const instance = new Hls();
+        // startLevel 0: the first fragment comes from the lowest rung, so first frames arrive in
+        // one small fetch and ABR climbs from there — the default (-1) spends the cold start
+        // guessing bandwidth. capLevelToPlayerSize keeps ABR from ever fetching rungs larger
+        // than the surface it is drawing into.
+        const instance = new Hls({ startLevel: 0, capLevelToPlayerSize: true });
         hls = instance;
         instance.loadSource(material.url);
         instance.attachMedia(el);
@@ -177,25 +185,39 @@ function VideoSurface({ material }: { material: LibraryMaterial }) {
   }
 
   return (
-    <video
-      ref={videoRef}
-      controls
-      playsInline
-      // The stored thumbnail (when the payload carries one) fills the surface while HLS attaches.
-      poster={material.bannerUrl ?? undefined}
-      className="max-h-full max-w-full rounded-lg border border-border bg-card"
-    >
-      {material.captionsUrl && (
-        <track kind="captions" src={material.captionsUrl} srcLang="en" label="Captions" default />
+    <div className="relative flex max-h-full max-w-full items-center justify-center">
+      <video
+        ref={videoRef}
+        controls
+        playsInline
+        // Metadata only: duration and dimensions arrive at once (so the controls are honest),
+        // while the segment bytes wait for the play gesture — this page never streams unasked.
+        preload="metadata"
+        onCanPlay={() => setReady(true)}
+        onPlaying={() => setReady(true)}
+        // The stored thumbnail (when the payload carries one) fills the surface while HLS attaches.
+        poster={material.bannerUrl ?? undefined}
+        className="max-h-full max-w-full rounded-lg border border-border bg-card shadow-modal"
+      >
+        {material.captionsUrl && (
+          <track kind="captions" src={material.captionsUrl} srcLang="en" label="Captions" default />
+        )}
+      </video>
+      {!ready && (
+        // The product spinner (Loader2 + animate-spin, as everywhere else in client-web), riding
+        // over the poster until the element reports it can draw frames.
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <Loader2 size={22} strokeWidth={2} aria-hidden className="animate-spin text-muted-foreground" />
+        </span>
       )}
-    </video>
+    </div>
   );
 }
 
 /** `preload="none"` matters on a 2-vCPU VM with no CDN: opening the page must fetch no audio. */
 function AudioSurface({ material }: { material: LibraryMaterial }) {
   return (
-    <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-sm-soft">
+    <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-modal">
       <p className="mb-3 truncate text-sm font-semibold text-card-foreground">{material.name}</p>
       <audio controls preload="none" src={material.url} className="w-full">
         Your browser cannot play this sound.

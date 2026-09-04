@@ -118,7 +118,11 @@ export function useVoiceLoop(opts: VoiceLoopOptions): VoiceLoop {
           positiveSpeechThreshold: 0.6,
           negativeSpeechThreshold: 0.4,
           minSpeechMs: 250,
-          redemptionMs: 1100,        // the silence that ends an utterance
+          // The silence that ends an utterance. This is a FIXED cost on every single turn —
+          // the largest one in the whole pipeline — so it is as short as natural pauses allow:
+          // 550ms still survives a mid-sentence breath, and the old 1100ms doubled every
+          // question's dead air before a byte even left the device (latency work 2026-09-04).
+          redemptionMs: 550,
           preSpeechPadMs: 300,
           submitUserSpeechOnPause: true,
           getStream: () => navigator.mediaDevices.getUserMedia({

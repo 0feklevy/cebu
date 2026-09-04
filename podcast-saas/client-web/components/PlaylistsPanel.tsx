@@ -7,16 +7,8 @@ import { canLoadPrivateWorkspace } from '../lib/authGate';
 import { useAuth } from '../lib/firebase';
 import type { PlaylistSummary } from 'shared/src/generated/client-v1';
 import { PlaylistEditorDialog } from './PlaylistEditorDialog';
+import { gradientFor } from './library/LibraryCard';
 import { tourAnchor } from '@/lib/tours/anchors';
-
-const CARD_GRADIENTS = [
-  'linear-gradient(135deg,#6366f1 0%,#a855f7 100%)',
-  'linear-gradient(135deg,#0ea5e9 0%,#2563eb 100%)',
-  'linear-gradient(135deg,#f97316 0%,#ef4444 100%)',
-  'linear-gradient(135deg,#10b981 0%,#059669 100%)',
-  'linear-gradient(135deg,#ec4899 0%,#8b5cf6 100%)',
-  'linear-gradient(135deg,#06b6d4 0%,#3b82f6 100%)',
-];
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -46,17 +38,22 @@ export function PlaylistsPanel() {
     return readCachedPlaylists();
   });
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
     if (playlists.length === 0) setLoading(true);
+    setLoadFailed(false);
     api.listPlaylists()
       .then((items) => {
         setPlaylists(items);
         try { localStorage.setItem(PLAYLISTS_CACHE_KEY, JSON.stringify(items)); } catch { /* quota */ }
       })
-      .catch(() => { if (playlists.length === 0) setPlaylists([]); })
+      // A failed load used to fall through to the "Create playlist" empty state — which tells a
+      // user with real playlists that they have none. Say the load failed and offer a retry;
+      // cached playlists (if any) stay on screen.
+      .catch(() => { if (playlists.length === 0) { setPlaylists([]); setLoadFailed(true); } })
       .finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -101,8 +98,7 @@ export function PlaylistsPanel() {
         <button
           onClick={handleNew}
           disabled={creating}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-50 focus-ring"
-          style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
+          className="btn-gradient inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold shadow-sm focus-ring"
         >
           {creating ? (
             <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeDasharray="31.4" strokeDashoffset="10" /></svg>
@@ -126,6 +122,22 @@ export function PlaylistsPanel() {
                 </div>
               </div>
             ))
+          ) : loadFailed && playlists.length === 0 ? (
+            <div
+              role="alert"
+              className="flex min-h-[170px] w-[240px] shrink-0 flex-col items-center justify-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-5 py-6 text-center sm:w-[300px]"
+            >
+              <div>
+                <p className="text-sm font-semibold text-foreground">Couldn&apos;t load your playlists</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">They&apos;re still there — this panel just couldn&apos;t reach them.</p>
+              </div>
+              <button
+                onClick={load}
+                className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-3 text-xs font-semibold text-foreground transition-colors hover:bg-muted focus-ring"
+              >
+                Try again
+              </button>
+            </div>
           ) : playlists.length === 0 ? (
             <button
               onClick={handleNew}
@@ -140,8 +152,7 @@ export function PlaylistsPanel() {
               </span>
             </button>
           ) : (
-            playlists.map((pl, idx) => {
-              const grad = CARD_GRADIENTS[idx % CARD_GRADIENTS.length];
+            playlists.map((pl) => {
               const imageUrl = pl.banner_url ?? pl.thumbnail_url ?? null;
               return (
                 <button
@@ -150,8 +161,12 @@ export function PlaylistsPanel() {
                   className="group flex h-full min-h-[170px] w-[240px] shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-left text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring sm:w-[300px]"
                 >
                   <div className="relative aspect-video w-full shrink-0 overflow-hidden bg-muted">
-                    <div className="absolute inset-0 flex items-center justify-center text-white" style={{ background: grad }}>
-                      <ListVideo size={24} strokeWidth={1.8} aria-hidden />
+                    {/* Token gradient (same palette + hash as the library tiles) so the tile
+                        survives both themes; the glyph rides a chip for the same reason. */}
+                    <div className={`absolute inset-0 flex items-center justify-center ${gradientFor(pl.id)}`}>
+                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-background/30 text-foreground/80">
+                        <ListVideo size={20} strokeWidth={1.8} aria-hidden />
+                      </span>
                     </div>
                     {imageUrl && (
                       <img

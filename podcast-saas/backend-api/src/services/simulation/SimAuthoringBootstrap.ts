@@ -84,7 +84,12 @@ ${SIM_SCANNER_SOURCE}
         if (Math.abs(d[i] - first[0]) > 6 || Math.abs(d[i + 1] - first[1]) > 6 || Math.abs(d[i + 2] - first[2]) > 6 || Math.abs(d[i + 3] - first[3]) > 6) return false;
       }
       return true;   // one flat colour: nothing drawn, or the clear colour only
-    } catch (e) { return true; }
+    } catch (e) {
+      // Could not VERIFY (a tainted canvas poisons the probe): not proven blank. Answering true
+      // here would turn every tainted canvas into a 'blank' refusal; false lets toDataURL throw
+      // on its own and the tainted fall-through to the DOM path keep working.
+      return false;
+    }
   }
   function domToDataUrl(done) {
     try {
@@ -114,7 +119,15 @@ ${SIM_SCANNER_SOURCE}
       var c = largestVisibleCanvas();
       if (c) {
         try {
-          if (isBlank(c) && attempts < 3) { setTimeout(function () { requestAnimationFrame(tryCanvas); }, 250); return; }
+          if (isBlank(c)) {
+            if (attempts < 3) { setTimeout(function () { requestAnimationFrame(tryCanvas); }, 250); return; }
+            // Still one flat colour after two retries: a mid-boot clear frame, not a picture.
+            // REFUSED rather than sent — a blank sent here gets letterboxed, uploaded and stored
+            // as the simulation's permanent banner. An error means the parent keeps the banner it
+            // had and may try again on a later pass.
+            send('SNAPSHOT_RESULT', { requestId: requestId, error: 'blank' });
+            return;
+          }
           send('SNAPSHOT_RESULT', { requestId: requestId, dataUrl: c.toDataURL('image/png'), width: c.width, height: c.height });
           return;
         } catch (e) { /* tainted canvas — fall through to the DOM path */ }

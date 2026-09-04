@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { Route } from 'next';
+import { Play } from 'lucide-react';
 import { LibraryGrid } from './LibraryGrid';
 import {
   LIBRARY_MATERIAL_TYPES, librarySegmentFor, libraryTypeLabel,
@@ -28,6 +29,12 @@ import type { LibraryMaterialType, LibraryView } from 'shared/src/types/library-
  * this page must not, and a test asserts it.
  */
 
+/**
+ * The product's name, the same way the `/c/` OG routes resolve it: the deploy's brand when set,
+ * the app's own name otherwise. A Server Component, so the env read happens on the server.
+ */
+const BRAND = process.env.PUBLIC_BRAND_NAME ?? 'Interactive Video Studio';
+
 interface Props {
   view: LibraryView;
   slug: string;
@@ -43,8 +50,21 @@ export function LibraryMiniSite({ view, slug, activeType }: Props) {
     : `No ${activeLabel} in this library yet.`;
 
   return (
-    <main className="min-h-svh w-full bg-background">
+    // The main element is the page's scroller (h-svh + overflow-y-auto, the PlaylistLobby
+    // pattern), so the product's `fine-scrollbar` treatment actually applies to the bar the
+    // visitor sees rather than sitting on an element that never scrolls.
+    <main className="h-svh w-full overflow-y-auto fine-scrollbar bg-background">
       <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
+        {/* The product's chrome, compact and public-appropriate: the mark (the favicon's
+            gradient-and-play, via the house `gradient-action` class) and the brand name.
+            No account button, no editor links — a visitor here is anonymous by design. */}
+        <div className="mb-5 flex items-center gap-2.5 border-b border-border pb-4 sm:mb-6">
+          <span aria-hidden className="gradient-action flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
+            <Play size={13} strokeWidth={0} fill="currentColor" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight text-foreground">{BRAND}</span>
+        </div>
+
         <header className="mb-5 sm:mb-7">
           <h1 className="text-2xl font-bold leading-tight tracking-tight text-foreground sm:text-3xl lg:text-4xl">
             {view.title}

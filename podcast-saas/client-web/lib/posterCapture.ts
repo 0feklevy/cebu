@@ -30,13 +30,23 @@ export function posterTargets(aspect: SimAspectProfile): PosterTarget[] {
 export interface RenderedRendition { size: PosterSizeName; width: number; height: number; dataUrl: string }
 
 /**
+ * The letterbox-bar fill when the capture's aspect does not match the target's. A dark neutral
+ * rather than PNG alpha: a transparent bar would show whatever sits behind the tile (a theme
+ * background today, an overlay poster surface tomorrow) and read differently everywhere the same
+ * stored file is drawn. When the aspects match, `fitContain` covers the whole canvas and this
+ * paint is invisible. Exported so callers pass it EXPLICITLY — a default parameter nobody passed
+ * was indistinguishable from dead code.
+ */
+export const POSTER_LETTERBOX_BG = '#0b0d12';
+
+/**
  * Draw the raw picture into every target size. `background` fills the letterbox bars — the sim's
  * own page colour when known, so a bar reads as margin rather than as a black frame.
  */
 export async function renderPosterRenditions(
   raw: { dataUrl: string; width: number; height: number },
   aspect: SimAspectProfile,
-  background = '#0b0d12',
+  background = POSTER_LETTERBOX_BG,
 ): Promise<RenderedRendition[]> {
   const img = await loadImage(raw.dataUrl);
   const srcW = img.naturalWidth || raw.width;

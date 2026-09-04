@@ -75,19 +75,19 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <Loader2 size={13} className="animate-spin" /> Loading collaborators…
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="flex flex-col gap-2.5">
       {isOwner && (
-        /* flexWrap + minWidth:0: in a narrow settings column the email input's intrinsic
+        /* flex-wrap + min-w-[160px]: in a narrow settings column the email input's intrinsic
            min-width used to push the Invite button out of the card; now the input shrinks
            and, at the extreme, the button wraps to its own line instead of overflowing. */
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="flex flex-wrap gap-2">
           <input
             type="email"
             value={email}
@@ -95,22 +95,12 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void invite(); } }}
             placeholder="Invite by email…"
             aria-label={`Invite a collaborator to this ${contentType} by email`}
-            style={{
-              flex: 1, minWidth: 160, height: 38, padding: '0 12px', borderRadius: 8, fontSize: 13,
-              border: '1px solid hsl(var(--border))',
-              background: 'hsl(var(--background))', color: 'hsl(var(--foreground))',
-            }}
+            className="h-9 min-w-[160px] flex-1 rounded-lg border border-border bg-background px-3 text-[13px] text-foreground placeholder:text-muted-foreground/60 focus-ring"
           />
           <button
             onClick={() => void invite()}
             disabled={inviting || !email.trim()}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, height: 38, padding: '0 14px',
-              borderRadius: 8, border: 'none', fontSize: 12.5, fontWeight: 600,
-              background: 'hsl(var(--primary))', color: 'hsl(var(--primary-foreground))',
-              cursor: inviting || !email.trim() ? 'default' : 'pointer',
-              opacity: inviting || !email.trim() ? 0.55 : 1, flexShrink: 0,
-            }}
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-default disabled:opacity-55 focus-ring"
           >
             {inviting
               ? <><Loader2 size={13} className="animate-spin" /> Inviting…</>
@@ -119,28 +109,30 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
         </div>
       )}
 
-      {error && <p style={{ fontSize: 12, color: '#ef4444', margin: 0 }}>{error}</p>}
+      {error && <p className="m-0 text-xs text-destructive">{error}</p>}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="flex flex-col gap-1.5">
         {data?.owner && (
-          <div style={rowStyle}>
-            <div style={{ minWidth: 0 }}>
-              <span style={nameStyle}>{data.owner.display_name || data.owner.email || 'Owner'}</span>
-              {data.owner.display_name && data.owner.email && <span style={emailStyle}> {data.owner.email}</span>}
+          <div className={ROW}>
+            <div className="min-w-0">
+              <span className={NAME}>{data.owner.display_name || data.owner.email || 'Owner'}</span>
+              {data.owner.display_name && data.owner.email && (
+                <span className="text-[11px] text-muted-foreground"> {data.owner.email}</span>
+              )}
             </div>
-            <span style={{ ...badgeStyle, background: 'hsl(var(--primary) / 0.12)', color: 'hsl(var(--primary))' }}>Owner</span>
+            <span className={`${BADGE} bg-primary/10 text-primary`}>Owner</span>
           </div>
         )}
 
         {data?.collaborators.map((c) => (
-          <div key={c.id} style={rowStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-              <Mail size={12} strokeWidth={2} style={{ color: 'hsl(var(--muted-foreground))', flexShrink: 0 }} aria-hidden />
-              <span style={{ ...nameStyle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div key={c.id} className={ROW}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Mail size={12} strokeWidth={2} className="shrink-0 text-muted-foreground" aria-hidden />
+              <span className={`${NAME} truncate`}>
                 {c.display_name || c.email}
               </span>
               {c.status === 'pending' && (
-                <span style={{ ...badgeStyle, background: 'hsl(45 90% 50% / 0.14)', color: 'hsl(35 85% 45%)' }}>Pending</span>
+                <span className={`${BADGE} bg-amber-500/15 text-amber-600`}>Pending</span>
               )}
             </div>
             {isOwner && (
@@ -149,11 +141,7 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
                 disabled={removingId === c.id}
                 aria-label={`Remove ${c.email}`}
                 title="Remove collaborator"
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent',
-                  color: 'hsl(var(--muted-foreground))', cursor: 'pointer', flexShrink: 0,
-                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-destructive disabled:opacity-50 focus-ring"
               >
                 {removingId === c.id
                   ? <Loader2 size={13} className="animate-spin" />
@@ -164,7 +152,7 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
         ))}
 
         {data && data.collaborators.length === 0 && (
-          <p style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', margin: 0 }}>
+          <p className="m-0 text-xs text-muted-foreground">
             {isOwner
               ? `No collaborators yet. Invite someone by email — they'll be able to edit this ${contentType} like you can.`
               : 'No other collaborators.'}
@@ -173,7 +161,7 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
       </div>
 
       {isOwner && data && data.collaborators.length > 0 && (
-        <p style={{ fontSize: 10.5, color: 'hsl(var(--muted-foreground))', margin: 0 }}>
+        <p className="m-0 text-[11px] leading-relaxed text-muted-foreground">
           Collaborators can edit everything except deleting the {contentType} or managing collaborators.
           Pending invites activate when that email signs in.
         </p>
@@ -182,21 +170,8 @@ export function CollaboratorsSection({ contentType, contentId }: Props) {
   );
 }
 
-const rowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-  padding: '7px 10px', borderRadius: 8,
-  border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))',
-};
-
-const nameStyle: React.CSSProperties = {
-  fontSize: 12.5, fontWeight: 600, color: 'hsl(var(--foreground))',
-};
-
-const emailStyle: React.CSSProperties = {
-  fontSize: 11.5, color: 'hsl(var(--muted-foreground))',
-};
-
-const badgeStyle: React.CSSProperties = {
-  fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
-  textTransform: 'uppercase' as const, letterSpacing: '0.03em', flexShrink: 0,
-};
+/* Shared row/label classes — token-only, so the section reads the same inside the playlist
+   editor dialog and the project Settings panel, in both themes. */
+const ROW = 'flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5';
+const NAME = 'text-xs font-semibold text-foreground';
+const BADGE = 'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide';

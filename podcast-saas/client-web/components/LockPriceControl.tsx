@@ -78,8 +78,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
           type="button"
           onClick={() => save(!paid)}
           disabled={saving}
-          className="relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50"
-          style={{ background: paid ? '#f59e0b' : 'hsl(var(--border))' }}
+          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 focus-ring ${paid ? 'bg-amber-500' : 'bg-border'}`}
           title={paid ? 'Make free' : 'Lock'}
         >
           <span className="absolute top-0.5 h-4 w-4 rounded-full bg-card shadow transition-all" style={{ left: paid ? 18 : 2 }} />
@@ -100,8 +99,7 @@ export function LockPriceControl({ contentType, contentId, bordered = true, onCh
             type="button"
             onClick={() => save(true)}
             disabled={saving || parseFloat(dollars || '0') < 0.5}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white disabled:opacity-50"
-            style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
+            className="btn-gradient inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold focus-ring"
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <Check size={13} /> : null}
             {saved ? 'Saved' : 'Set price'}

@@ -16,7 +16,7 @@
  * rather than just "an error appeared": a message that says "couldn't save" while the title
  * silently did save is still lying to the user about the state of their data.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { apiMock } = vi.hoisted(() => ({
@@ -65,7 +65,6 @@ beforeEach(() => {
   apiMock.getPlaylist.mockResolvedValue(PLAYLIST);
   apiMock.listProjects.mockResolvedValue([]);
   apiMock.getPlaylistShare.mockResolvedValue({ shareToken: 'tok-123', shareUrl: SHARE_URL });
-  vi.stubGlobal('confirm', vi.fn(() => true));
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -124,11 +123,43 @@ describe('playlist editor — Save', () => {
 });
 
 describe('playlist editor — Delete', () => {
+  it('asks for confirmation first — nothing is deleted until the user answers Delete', async () => {
+    apiMock.deletePlaylist.mockResolvedValue({ ok: true });
+
+    const { onClose, onChanged } = renderDialog();
+    fireEvent.click(await screen.findByRole('button', { name: /Delete playlist/i }));
+
+    // The house ConfirmDialog, not window.confirm: a real dialog with the question in it.
+    const confirm = await screen.findByRole('dialog', { name: /Delete playlist\?/i });
+    expect(apiMock.deletePlaylist).not.toHaveBeenCalled();
+
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => { expect(apiMock.deletePlaylist).toHaveBeenCalledWith('pl-1'); });
+    await waitFor(() => { expect(onClose).toHaveBeenCalled(); });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('Cancel answers the confirmation without deleting anything', async () => {
+    const { onClose } = renderDialog();
+    fireEvent.click(await screen.findByRole('button', { name: /Delete playlist/i }));
+
+    const confirm = await screen.findByRole('dialog', { name: /Delete playlist\?/i });
+    fireEvent.click(within(confirm).getByRole('button', { name: /Cancel/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: /Delete playlist\?/i })).toBeNull();
+    });
+    expect(apiMock.deletePlaylist).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('reports the failure and keeps the dialog open', async () => {
     apiMock.deletePlaylist.mockRejectedValue(new Error('500 storage unavailable'));
 
     const { onClose } = renderDialog();
     fireEvent.click(await screen.findByRole('button', { name: /Delete playlist/i }));
+    const confirm = await screen.findByRole('dialog', { name: /Delete playlist\?/i });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => { expect(apiMock.deletePlaylist).toHaveBeenCalledWith('pl-1'); });
     const notice = await screen.findByRole('alert');

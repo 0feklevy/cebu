@@ -34,7 +34,11 @@ vi.mock('@/lib/sim/SimAuthoringClient', () => ({
     };
   },
 }));
-vi.mock('@/lib/posterCapture', () => ({
+vi.mock('@/lib/posterCapture', async (importOriginal) => ({
+  // The real module's other exports (POSTER_LETTERBOX_BG among them) stay real — the sweep
+  // passes the letterbox colour through explicitly, and a mock that hides the constant fails
+  // every import before a single capture runs.
+  ...(await importOriginal<typeof import('@/lib/posterCapture')>()),
   renderPosterRenditions: async () => [
     { size: 'standard', width: 1280, height: 720, dataUrl: 'data:image/png;base64,AAAA' },
     { size: 'compact', width: 640, height: 360, dataUrl: 'data:image/png;base64,AAAA' },
