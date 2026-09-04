@@ -1,0 +1,18 @@
+---
+name: kinesin-dynein-flowvid-integration
+description: Status of integrating the desktop Kinesin/Dynein 3D motor-protein sim into FlowVid — not started, plus a real licensing blocker on the source dist/ build
+metadata:
+  type: project
+---
+
+Checklist audit run 2026-09-04: zero integration exists. `rg -il "kinesin|dynein" /Users/ofeklevy/cebu` (excluding node_modules) returns no hits anywhere in the FlowVid monorepo — no upload, no bridge, no route, no test, no doc references it.
+
+**The source project:** `/Users/ofeklevy/Desktop/Kinesin and Dynin/3d-kinesin` (separate git repo, Vite/three.js). Its `dist/` (35 MB: `index.html` + `assets/*.js` + `models/*.glb`) is the correct, self-contained artifact to hand to FlowVid's existing upload pathway — `POST /api/v1/projects/:id/simulations/upload` in `backend-api/src/controllers/v1/simulations.controller.ts:354` (zip or files, 256 MiB uncompressed ceiling per `uploadLimits.ts:138`). Everything else in that project (`node_modules/`, `docs/`, `tools/`, `source-assets-private/`, `plan.md`, `STATUS.md`, git history) is dev-only and irrelevant to the runtime package.
+
+**Real blocker found, not a false alarm — verify still-open before any ship decision:** `dist/models/kinesin-alembic-baked.glb` (29.7 MB) is a **purchased CGTrader asset** whose browser-redistribution rights are explicitly unresolved per the source repo's own docs (`STATUS.md:265-268`, `docs/decision-log.md:143,205,237`, `docs/asset-audit.manual.md:134,159-160`): "the purchase-date license copy and written CGTrader/seller browser-delivery clarification are still required before public deployment of the paid mesh." The `dist/` on disk was built with `npm run build:release` (`VITE_RELEASE_ASSETS=1`), an explicitly-labeled internal **audit** build mode (see `tools/assets/verify-dist-assets.mjs:6-19`) that whitelists the paid GLBs so they can be *evaluated*, not a statement that the license is cleared. A normal `npm run build` forbids these GLBs from `dist/` entirely.
+
+`dist/models/dynein-runtime.glb` (5.49 MB) is PDB-derived (CC0, no license blocker) but is separately gated: STATUS.md labels it "ACTIVE PRIVATE REVIEW," not yet user-approved as final, and the required in-page RCSB PDB attribution notice was removed on 2026-08-31 and never restored (`STATUS.md:71-88`, `docs/dynein-attribution.md`) — confirmed absent from the current `dist/index.html` by direct read.
+
+**How to apply:** Before recommending or performing any FlowVid integration of this exact `dist/` build, re-check with the user/owner whether the CGTrader license has since been resolved (purchase-date license copy + written seller browser-delivery clarification) — do not treat the presence of the GLB in `dist/` as license clearance. If unresolved, the kinesin motor cannot ship in a commercial FlowVid product; only the dynein (with attribution restored) or a fully procedural/open-license substitute could ship. This is the single highest-priority gate on the whole integration — everything else (bridge wiring, minimal-UI, auto-script, editing, memory/perf tuning) is downstream of it.
+
+FlowVid's existing sim ingestion machinery already does the right generic things for this kind of package: `.glb` is classified as binary (`SimulationService.ts:184,205` `getSimulationContentType`), never read into the LLM prompt; `selectSources()` (`SimulationService.ts:2068`) only ever considers `.html/.js/.mjs/.ts/.css` for the LLM context and caps total chars at 200k (`SOURCE_BUDGETS`, `SimulationService.ts:2031`), so `.md`/`.txt` docs would not blow the token budget even if accidentally included — but they should not be uploaded at all since they belong to the dev-only source tree, not the `dist/` package.
