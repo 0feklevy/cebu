@@ -2340,7 +2340,7 @@ export function SectionEditor({
 
                     {/* Choose the controls (the Minimal-UI picker) — an Advanced tool. */}
                     {advancedOpen && (
-                    <div style={{ marginTop: -4 }}>
+                    <div id="sim-advanced-picker" style={{ marginTop: -4 }}>
                       <label style={labelStyle}>Choose the controls <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, opacity: 0.75 }}>— optional</span></label>
                       <button
                         type="button"
@@ -2776,6 +2776,7 @@ export function SectionEditor({
                   {...tourAnchor('sec-sim-advanced')}
                   onClick={() => setAdvancedOpen(v => !v)}
                   aria-expanded={advancedOpen}
+                  aria-controls="sim-advanced-picker sim-advanced-reuse sim-advanced-guided"
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
                     border: 'none', background: 'none', padding: '2px 0', cursor: 'pointer',
@@ -2796,7 +2797,7 @@ export function SectionEditor({
                     amber top border read as one card continuing, and these are different
                     features: one writes this section, the other moves it between projects. */}
                 {advancedOpen && (
-                <div style={{ ...cardStyle('#0891b2'), gap: 8 }}>
+                <div id="sim-advanced-reuse" style={{ ...cardStyle('#0891b2'), gap: 8 }}>
                     <label style={{ ...labelStyle, marginBottom: 0 }}>Reuse this setup</label>
                     <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
                       A saved setup is this section’s whole configuration — the prompt, the script, the
@@ -2891,7 +2892,7 @@ export function SectionEditor({
 
                 {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) — Advanced. ── */}
                 {advancedOpen && simId && (
-                  <div style={{ ...cardStyle('#6366f1'), gap: 12 }}>
+                  <div id="sim-advanced-guided" style={{ ...cardStyle('#6366f1'), gap: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span aria-hidden style={{ fontSize: 14 }}>🎙</span>
                       <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>Guided Simulation</span>

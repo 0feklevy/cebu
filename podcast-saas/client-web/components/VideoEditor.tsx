@@ -921,6 +921,18 @@ export function VideoEditor({ projectId }: Props) {
   const [libraryFeedback, setLibraryFeedback] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   const [simAutoFiles, setSimAutoFiles] = useState<File[] | null>(null);
   const [videoAutoFiles, setVideoAutoFiles] = useState<File[] | null>(null);
+
+  // Minimal-Library focus recovery: deleting the LAST image/audio unmounts its whole section
+  // (hidden-while-empty rule), taking the focused delete button with it. When that lands focus
+  // on <body>, put it on the Library heading instead of stranding keyboard users.
+  const libraryHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const prevMediaCounts = useRef({ img: 0, aud: 0 });
+  useEffect(() => {
+    const prev = prevMediaCounts.current;
+    const emptied = (prev.img > 0 && images.length === 0) || (prev.aud > 0 && audioFiles.length === 0);
+    prevMediaCounts.current = { img: images.length, aud: audioFiles.length };
+    if (emptied && document.activeElement === document.body) libraryHeadingRef.current?.focus();
+  }, [images.length, audioFiles.length]);
   const libraryDragDepth = useRef(0);
 
   // ── Guided walkthrough — auto-runs once per browser, re-openable from the header "?" ──
@@ -977,8 +989,10 @@ export function VideoEditor({ projectId }: Props) {
     audio.forEach(f => void uploadAudioFile(f));
     if (vids.length > 0) { setShowUploader(true); setVideoAutoFiles(vids); }
     if (sims.length > 0) { setShowSimUploader(true); setSimAutoFiles(sims); }
+    // Videos are NOT in the "Added" toast: their upload starts asynchronously in the panel this
+    // drop just opened (with its own per-file progress), so "Added N videos" would be claimed
+    // before a byte has moved. Images/audio really are uploading by the time the toast shows.
     const parts = [
-      vids.length && `${vids.length} video${vids.length > 1 ? 's' : ''}`,
       images.length && `${images.length} image${images.length > 1 ? 's' : ''}`,
       audio.length && `${audio.length} audio`,
       sims.length && `${sims.length} simulation${sims.length > 1 ? 's' : ''}`,
@@ -1400,7 +1414,7 @@ export function VideoEditor({ projectId }: Props) {
                 )}
                 <div className="flex items-start justify-between gap-3 border-b border-border/40 pb-2">
                   <div className="min-w-0">
-                    <h2 className="text-sm font-semibold text-foreground">Library</h2>
+                    <h2 ref={libraryHeadingRef} tabIndex={-1} className="text-sm font-semibold text-foreground focus:outline-none">Library</h2>
                     <p className="mt-0.5 text-[10px] text-muted-foreground">
                       {videos.length} clip{videos.length !== 1 ? 's' : ''} · {sections.length} section{sections.length !== 1 ? 's' : ''}
                     </p>
@@ -1501,6 +1515,7 @@ export function VideoEditor({ projectId }: Props) {
                       ) : (
                         <Trash2 size={14} strokeWidth={1.9} aria-hidden />
                       )}
+                      <span className="sr-only">Delete video</span>
                     </button>
                   </div>
                 ))
