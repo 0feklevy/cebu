@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { connectSimAuthoring } from '@/lib/sim/SimAuthoringClient';
-import { renderPosterRenditions } from '@/lib/posterCapture';
+import { POSTER_LETTERBOX_BG, renderPosterRenditions } from '@/lib/posterCapture';
 import type { Simulation } from 'shared/src/generated/client-v1';
 import type { SimAspectProfile } from 'shared/src/sim/simIdentity';
 
@@ -107,7 +107,7 @@ export function useBannerSweep(opts: BannerSweepOptions): BannerSweepHandle {
       if (!iframe) throw new Error('no frame');
       session = await connectSimAuthoring(iframe, { timeoutMs: 2500 });
       const raw = await session.snapshot(4000);
-      const renditions = await renderPosterRenditions(raw, aspect);
+      const renditions = await renderPosterRenditions(raw, aspect, POSTER_LETTERBOX_BG);
       const result = await api.uploadSimulationPoster(projectId, sim.id, {
         renditions: renditions.map((r) => ({ size: r.size, format: 'png' as const, dataUrl: r.dataUrl })),
         force: true,
@@ -115,7 +115,10 @@ export function useBannerSweep(opts: BannerSweepOptions): BannerSweepHandle {
       setState((s) => (result.outcome === 'existed' ? { ...s, existed: s.existed + 1 } : { ...s, stored: s.stored + 1 }));
     } catch (err) {
       // A document that cannot draw itself, a package without the authoring hook, a refused
-      // upload: counted and shown, never retried here, never allowed to interrupt editing.
+      // upload — or a snapshot the document REFUSED because its canvas was still a blank
+      // mid-boot frame (SNAPSHOT_RESULT { error: 'blank' }, which `session.snapshot` surfaces
+      // as a rejection): no capture this pass. Counted and shown, never retried here, never
+      // allowed to interrupt editing; a blank frame is never stored as the permanent banner.
       if (process.env.NODE_ENV !== 'production') console.warn('[banner sweep] capture failed', sim.id, err);
       setState((s) => ({ ...s, failed: s.failed + 1 }));
     } finally {

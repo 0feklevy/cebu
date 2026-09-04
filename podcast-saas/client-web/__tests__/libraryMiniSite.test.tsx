@@ -220,8 +220,11 @@ describe('the video overlay carries the stored thumbnail as its poster', () => {
     fireEvent.click(screen.getByRole('button', { name: /intro\.mp4/ }));
     // The poster is what fills the surface while HLS attaches; dropping the payload field or the
     // attribute wiring leaves a black rectangle for exactly the seconds a viewer is judging the page.
-    expect((container.querySelector('video') as HTMLVideoElement).getAttribute('poster'))
-      .toBe('https://cdn.test/thumbnails/frame.jpg');
+    const video = container.querySelector('video') as HTMLVideoElement;
+    expect(video.getAttribute('poster')).toBe('https://cdn.test/thumbnails/frame.jpg');
+    // Metadata only: duration and dimensions arrive at once, segment bytes wait for the play
+    // gesture — this page must never stream unasked (2-vCPU VM, no CDN).
+    expect(video.getAttribute('preload')).toBe('metadata');
     unmount();
 
     const { container: bare } = render(<LibraryMiniSite view={view()} slug="chaos-abc" activeType={null} />);

@@ -193,11 +193,17 @@ describe('an answer is grounded, or there is no answer', () => {
     expect(state.llmCalls, 'a model was asked to answer from nothing').toEqual([]);
   });
 
-  it('refuses when the question is past the end of the transcript', async () => {
-    // A position with no cues around it is the same situation as no transcript at all.
+  it('a position past the end of the transcript still answers — from the WHOLE transcript', async () => {
+    // Changed with the 2026-09-04 grounding rework (owner: "the CC text is the base knowledge").
+    // The whole transcript is the model's knowledge now, so an out-of-window position — asked
+    // after the lesson ended, or a skewed clock — answers like NotebookLM would, instead of
+    // being treated as "no transcript at all". Refusal remains ONLY for a lesson with no
+    // transcript (the test above).
     const r = await ask({ positionMs: 9_000_000 });
-    expect(r.status).toBe('saved');
-    expect(state.llmCalls).toEqual([]);
+    expect(r.status).toBe('answered');
+    expect(state.llmCalls).toHaveLength(1);
+    // Grounded: the full transcript rides in the system prompt even with no playhead passage.
+    expect(String(state.llmCalls[0].systemPrompt)).toContain('LESSON TRANSCRIPT');
   });
 
   it('treats an empty model answer as a failure, not an answer', async () => {

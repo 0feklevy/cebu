@@ -48,6 +48,13 @@ export interface SendStructuredOpts<T> {
   systemPromptCachePrefix?: string;
   userPrompt: string;
   previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /**
+   * Cap the answer BELOW the admin-configured tier headroom, for tasks whose output is small by
+   * contract (a spoken two-sentence answer does not need 8k tokens of runway). The tier value
+   * stays the ceiling: the override can only lower it, never raise it — a task asking for more
+   * than the admin allowed still gets the admin's number.
+   */
+  maxTokensOverride?: number;
   schema: ZodSchema<T>;
   userId: string | null;      // null when there is no resolved user
   projectId: string | null;   // null for non-project work (e.g. Podcast Studio)
@@ -643,7 +650,9 @@ export class LLMService {
       systemPromptCachePrefix: opts.systemPromptCachePrefix,
       userPrompt: opts.userPrompt,
       previousMessages: opts.previousMessages,
-      maxTokens: reasoning.maxTokens,
+      maxTokens: opts.maxTokensOverride !== undefined
+        ? Math.min(Math.max(1, opts.maxTokensOverride), reasoning.maxTokens)
+        : reasoning.maxTokens,
       temperature: settings.temperature,
       thinkingBudgetTokens: reasoning.thinkingBudgetTokens,
       effort: reasoning.effort,

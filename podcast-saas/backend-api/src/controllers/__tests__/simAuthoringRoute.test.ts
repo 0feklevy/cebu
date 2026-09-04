@@ -52,6 +52,26 @@ describe('serving contract', () => {
     await app.close();
   });
 
+  it('arrives INTACT for a client that offers Accept-Encoding — i.e. every real browser', async () => {
+    // The production bug this pins (2026-09-04): the handler used `reply.compress(Buffer…)`,
+    // and any request carrying Accept-Encoding got `content-encoding: br|gzip` with a ZERO-BYTE
+    // body. The old serving-contract test above never sent the header, so it stayed green while
+    // every browser loaded an empty script, `__SIM_AUTHORING_ADOPT__` never came to exist, every
+    // authoring CONNECT timed out, and no poster was ever captured anywhere.
+    const app = await makeApp();
+    for (const ae of ['br', 'gzip', 'br, gzip, deflate']) {
+      const res = await app.inject({ method: 'GET', url: PATH, headers: { 'accept-encoding': ae } });
+      expect(res.statusCode).toBe(200);
+      const body = res.rawPayload;
+      expect(body.length, `Accept-Encoding: ${ae} must not empty the body`).toBeGreaterThan(1000);
+      // Served plain (no content-encoding), the bytes ARE the script.
+      if (!res.headers['content-encoding']) {
+        expect(body.toString('utf8')).toContain('__SIM_AUTHORING_ACTIVE__');
+      }
+    }
+    await app.close();
+  });
+
   it('revalidates rather than caching hard — a stale picker would disagree with its editor', async () => {
     // Deliberately `no-cache` + a strong ETag rather than `immutable`. These bytes change with a
     // deploy, and a year-cached picker talking to a newer editor is the same class of bug as a

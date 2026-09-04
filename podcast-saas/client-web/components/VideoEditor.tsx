@@ -2012,7 +2012,10 @@ export function VideoEditor({ projectId }: Props) {
     {bannerSweep.frameSrc && (
       // Offscreen, inside the viewport (a frame outside it has its animation frames throttled),
       // invisible and inert: the simulation draws, answers SNAPSHOT, and is unmounted.
-      <div key={bannerSweep.frameKey ?? undefined} aria-hidden style={{ position: 'fixed', right: 0, bottom: 0, width: 640, height: 360, opacity: 0, pointerEvents: 'none', zIndex: -1 }}>
+      // Sized at the STANDARD poster rendition (1280×720, or 720×1280 for a portrait project),
+      // not the compact one: the sim's canvas is captured at the size this box gives it, and a
+      // 640×360 canvas upscaled into the 1280×720 stored rendition is why tiles looked soft.
+      <div key={bannerSweep.frameKey ?? undefined} aria-hidden style={{ position: 'fixed', right: 0, bottom: 0, width: editorOrientation === 'portrait' ? 720 : 1280, height: editorOrientation === 'portrait' ? 1280 : 720, opacity: 0, pointerEvents: 'none', zIndex: -1 }}>
         <SimSurface src={bannerSweep.frameSrc} visible frameRef={bannerSweep.frameRef} onLoad={bannerSweep.onFrameLoad} interactive={false} fade={false} title="Banner capture" />
       </div>
     )}

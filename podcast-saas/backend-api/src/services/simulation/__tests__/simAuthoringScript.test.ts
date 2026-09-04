@@ -281,6 +281,56 @@ describe('badges', () => {
   });
 });
 
+// ── SNAPSHOT ─────────────────────────────────────────────────────────────────
+
+describe('SNAPSHOT', () => {
+  /**
+   * jsdom ships no canvas implementation, so the 2d context and toDataURL are stubbed at the
+   * prototype — which is exactly what lets these tests CHOOSE what the probe sees: one flat
+   * colour for the blank case, varied pixels for the drawn one. Geometry is stubbed per element
+   * because jsdom lays nothing out and `largestVisibleCanvas` filters on the rect.
+   */
+  const CANVAS_HTML = '<!doctype html><html><head></head><body>'
+    + '<canvas id="stage" width="64" height="64" style="opacity:1"></canvas>'
+    + '</body></html>';
+
+  async function bootWithCanvas(pixels: 'flat' | 'drawn'): Promise<void> {
+    await boot(CANVAS_HTML);
+    const data = new Uint8ClampedArray(16 * 16 * 4);
+    if (pixels === 'drawn') for (let i = 0; i < data.length; i += 7) data[i] = (i * 31) % 255;
+    const proto = (win as unknown as { HTMLCanvasElement: { prototype: Record<string, unknown> } }).HTMLCanvasElement.prototype;
+    proto.getContext = function () {
+      return { drawImage() { /* probe copy */ }, getImageData: () => ({ data }), fillRect() {}, fillStyle: '' };
+    };
+    proto.toDataURL = () => 'data:image/png;base64,FRAME';
+    const stage = doc.getElementById('stage') as HTMLCanvasElement;
+    stage.getBoundingClientRect = () =>
+      ({ width: 64, height: 64, top: 0, left: 0, right: 64, bottom: 64, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  }
+
+  it('a canvas still showing one flat colour after the retries is REFUSED, never sent', async () => {
+    // The defect this pins: a simulation captured mid-boot answered with its clear colour, the
+    // parent letterboxed and uploaded it, and the flat frame became the permanent banner. The
+    // honest answer for "nothing has been drawn yet" is an error — the parent keeps the banner
+    // it had and a later pass can try again.
+    await bootWithCanvas('flat');
+    send('SNAPSHOT', { requestId: 'snap-blank' });
+    const r = await waitFor('SNAPSHOT_RESULT', 5000, 'snap-blank');
+    expect(r.error).toBe('blank');
+    expect(r.dataUrl).toBeUndefined();
+  });
+
+  it('a canvas with real pixels answers with the picture and its dimensions', async () => {
+    await bootWithCanvas('drawn');
+    send('SNAPSHOT', { requestId: 'snap-drawn' });
+    const r = await waitFor('SNAPSHOT_RESULT', 5000, 'snap-drawn');
+    expect(r.error).toBeUndefined();
+    expect(r.dataUrl).toBe('data:image/png;base64,FRAME');
+    expect(r.width).toBe(64);
+    expect(r.height).toBe(64);
+  });
+});
+
 // ── Script-touch observation ─────────────────────────────────────────────────
 
 describe('script-touch observation', () => {

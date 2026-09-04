@@ -25,6 +25,30 @@ import { resolveSimUrl } from '@/lib/simUrl';
 
 const FIRST_ROW = 5; // matches the widest grid (2xl:grid-cols-5) — the reference page's eager-first trick
 
+/** One `<link rel="prefetch">` per URL, ever — the head is not a log of pointer events. */
+function prefetchOnce(href: string, as: 'document' | 'image'): void {
+  if (document.querySelector(`link[rel="prefetch"][href="${href.replace(/["\\]/g, '\\$&')}"]`)) return;
+  const link = document.createElement('link');
+  link.rel = 'prefetch';
+  // setAttribute, not the `as` IDL property: environments without the reflected property (jsdom)
+  // would otherwise emit a <link> with no `as`, and the browser deprioritises those.
+  link.setAttribute('as', as);
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+/**
+ * hls.js stays out of the first-load bundle (see LibraryOverlay), but a visitor pressing a video
+ * tile has declared intent: fetching the chunk during the ~100 ms before the overlay mounts is
+ * time the player does not spend showing a black rectangle. Fired and forgotten, once.
+ */
+let hlsWarmed = false;
+function warmHlsChunk(): void {
+  if (hlsWarmed) return;
+  hlsWarmed = true;
+  import('hls.js').catch(() => { hlsWarmed = false; /* offline now; the overlay retries */ });
+}
+
 /**
  * The search rule, exported as a pure function so a test can exercise the RULE and not a
  * re-implementation of it: every whitespace-separated token must appear somewhere in the
@@ -58,19 +82,20 @@ export function LibraryGrid({ materials, typeNav, emptyMessage }: Props) {
     setOpen(material);
   }, []);
 
-  // A pointer going down on a simulation tile is ~100 ms ahead of the click that opens it: enough
-  // to have the entry document in flight before the frame mounts (night run 2026-09-03 §6).
+  // A pointer going down on a tile is ~100 ms ahead of the click that opens it: enough to have
+  // the entry document / the standard poster / the player chunk in flight before the overlay
+  // mounts (night run 2026-09-03 §6).
   const handleWarm = useCallback((material: LibraryMaterial) => {
-    if (material.type !== 'simulation' || typeof document === 'undefined') return;
-    // The SAME resolution the frame applies (origin rebase, `?dpr=` and the device hints): a
-    // prefetch of the bare URL is a different cache key and was never reused (v0.3.0).
-    const href = resolveSimUrl(material.url, { hideSelectors: [] });
-    if (document.querySelector(`link[rel="prefetch"][href="${href}"]`)) return;
-    const link = document.createElement('link');
-    link.rel = 'prefetch';
-    link.as = 'document';
-    link.href = href;
-    document.head.appendChild(link);
+    if (typeof document === 'undefined') return;
+    if (material.type === 'simulation') {
+      // The SAME resolution the frame applies (origin rebase, `?dpr=` and the device hints): a
+      // prefetch of the bare URL is a different cache key and was never reused (v0.3.0).
+      prefetchOnce(resolveSimUrl(material.url, { hideSelectors: [] }), 'document');
+    }
+    if (material.type === 'video') warmHlsChunk();
+    // The standard rendition the overlay draws while the surface attaches — the tile itself only
+    // ever loaded the compact one, so without this the overlay's first paint waits on a fetch.
+    if (material.posterUrl) prefetchOnce(material.posterUrl, 'image');
   }, []);
 
   const handleClose = useCallback(() => {

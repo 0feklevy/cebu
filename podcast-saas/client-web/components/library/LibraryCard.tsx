@@ -92,7 +92,9 @@ export function LibraryCard({ material, eager = false, onOpen, onWarm, buttonRef
       type="button"
       ref={buttonRef}
       onClick={() => onOpen(material)}
-      className="group flex min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border bg-card text-left text-card-foreground shadow-sm-soft transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card focus-ring"
+      // `card-interactive` is the house hover (lift + shadow, one transition curve for every card
+      // in the product) — not a hand-assembled translate/shadow pair that drifts from it.
+      className="group card-interactive flex min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border bg-card text-left text-card-foreground shadow-sm-soft hover:border-primary/30 focus-ring"
       onPointerDown={() => onWarm?.(material)}
     >
       <span className={`relative block aspect-video w-full overflow-hidden ${showImage ? 'bg-muted' : gradientFor(material.id)}`}>
@@ -105,9 +107,9 @@ export function LibraryCard({ material, eager = false, onOpen, onWarm, buttonRef
             alt={material.type === 'image' ? material.name : ''}
             loading={eager ? 'eager' : 'lazy'}
             decoding="async"
-            // A simulation banner is the compact rendition (640×360, or 360×640 for a portrait
-            // capture); declaring a size lets the browser reserve the box before the bytes land.
-            {...(material.type === 'simulation' ? { width: 640, height: 360, sizes: '(min-width: 1536px) 20vw, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw' } : {})}
+            // No width/height attrs: the aspect-video span already reserves the box, and a
+            // hardcoded 640×360 lied about every portrait poster (360×640) — the browser sized
+            // the element from the wrong intrinsic ratio until the bytes arrived.
             onError={() => setImageFailed(true)}
             // A portrait poster (a 9:16 project's simulation, night run 2026-09-03 §3) is shown
             // whole inside the 16:9 tile rather than having its top and bottom cut off.
@@ -126,12 +128,17 @@ export function LibraryCard({ material, eager = false, onOpen, onWarm, buttonRef
             } : { width: '100%', height: '100%', objectFit: portraitBanner ? 'contain' : 'cover', display: 'block' }}
           />
         ) : (
-          <span className="absolute inset-0 flex items-center justify-center text-primary-foreground/90">
-            <TypeGlyph type={material.type} />
+          // On a chip, not bare over the gradient: `text-primary-foreground` is near-invisible on
+          // the light theme's paler gradient stops. `bg-background/30` + `text-foreground/80`
+          // track the theme, so the glyph reads over every TOKEN_GRADIENTS entry in both modes.
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-background/30 text-foreground/80">
+              <TypeGlyph type={material.type} />
+            </span>
           </span>
         )}
-        {/* The scrim, so a caption stays readable over any image or gradient. */}
-        <span className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-background/85 to-transparent" />
+        {/* No scrim: the caption is a sibling BELOW the image span, so a gradient here darkened
+            the poster's bottom half while protecting no text at all. */}
       </span>
 
       <span className="flex min-h-0 flex-col gap-0.5 px-3 py-2.5">

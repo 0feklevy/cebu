@@ -23,7 +23,7 @@ import { evaluateSpendCeiling } from '../usage/spendCeiling.js';
 import { VOICE_QUESTION_MAX_SECONDS } from 'shared';
 import { reportedDurationSec } from '../usage/sttCost.js';
 import { GuidanceTTSService, resolveGuidanceVoice } from './GuidanceTTSService.js';
-import { askListenerQuestion, type AskResult } from './ListenerQuestionService.js';
+import { askListenerQuestion, prefetchAskContext, type AskResult } from './ListenerQuestionService.js';
 import { SentenceSplitter } from './sentenceStream.js';
 import type { VoiceStreamEvent } from 'shared';
 
@@ -50,6 +50,8 @@ export interface VoiceQuestionResult {
 export interface VoiceQuestionDeps {
   transcribe: (audioPath: string, language: string | null) => Promise<{ text: string; durationSec: number | null; model: string }>;
   ask: (input: Parameters<typeof askListenerQuestion>[0]) => Promise<AskResult>;
+  /** Grounding rows fetched concurrently with STT; optional so older test doubles need no change. */
+  prefetchAsk?: (projectId: string, language: string | null) => ReturnType<typeof prefetchAskContext>;
   synthesize: (text: string, language: string) => Promise<{ audio: Buffer; model: string }>;
   recordStt: typeof recordSttSpend;
   recordTts: typeof recordTtsSpend;
@@ -61,7 +63,10 @@ async function transcribeWithGroq(audioPath: string, language: string | null) {
   if (!apiKey) throw new Error('Groq key not configured (Admin → API Keys, or GROQ_API_KEY)');
   const { size } = await stat(audioPath);
   const groq = new Groq({ apiKey });
-  const model = process.env.CAPTIONS_GROQ_MODEL || 'whisper-large-v3';
+  // Its OWN default, not the captions pipeline's: a live question needs latency, and turbo is
+  // several times faster at accuracy that is ample for short conversational speech. Captions keep
+  // whisper-large-v3 for archival quality; override here with VOICE_STT_MODEL when needed.
+  const model = process.env.VOICE_STT_MODEL || 'whisper-large-v3-turbo';
   const file = new File([await readFile(audioPath)], 'question.wav', { type: 'audio/wav' });
   const res = await groq.audio.transcriptions.create({
     file,
@@ -74,15 +79,40 @@ async function transcribeWithGroq(audioPath: string, language: string | null) {
   return { text, durationSec: reportedDurationSec(res), model };
 }
 
+/**
+ * Voice-question TTS: the FAST model, resolved once and cached, synthesized by a singleton.
+ *
+ * The old shape constructed `new GuidanceTTSService()` per SENTENCE (its ApiKeyService cache was
+ * always cold) and ran `resolveGuidanceVoice`'s admin_settings read per sentence too — two DB
+ * round-trips inside every spoken sentence of every answer. And it inherited guidance narration's
+ * quality-first `eleven_multilingual_v2`, the slowest model, for an interactive reply where the
+ * listener is waiting. Flash is the conversational-latency model; guidance publishing keeps its
+ * own resolution untouched.
+ */
+const voiceTts = new GuidanceTTSService();
+let voiceCfgCache: { cfg: { voiceId: string; model: string }; language: string; at: number } | null = null;
+const VOICE_CFG_TTL_MS = 5 * 60_000;
+async function resolveVoiceAnswerConfig(language: string) {
+  const now = Date.now();
+  if (voiceCfgCache && voiceCfgCache.language === language && now - voiceCfgCache.at < VOICE_CFG_TTL_MS) {
+    return voiceCfgCache.cfg;
+  }
+  const base = await resolveGuidanceVoice(language);
+  const cfg = { voiceId: base.voiceId, model: process.env.VOICE_TTS_MODEL || 'eleven_flash_v2_5' };
+  voiceCfgCache = { cfg, language, at: now };
+  return cfg;
+}
+
 async function synthesizeWithElevenLabs(text: string, language: string) {
-  const cfg = await resolveGuidanceVoice(language);
-  const audio = await new GuidanceTTSService().synthesize(text, cfg);
+  const cfg = await resolveVoiceAnswerConfig(language);
+  const audio = await voiceTts.synthesize(text, cfg);
   return { audio, model: cfg.model };
 }
 
 export const defaultVoiceQuestionDeps: VoiceQuestionDeps = {
   transcribe: transcribeWithGroq,
   ask: (input) => askListenerQuestion(input),
+  prefetchAsk: (projectId, language) => prefetchAskContext(projectId, language),
   synthesize: synthesizeWithElevenLabs,
   // Written as CALLS, not references: the spend contract (spendContract.test.ts) recognises a
   // recorder by `record*Spend(` on the path from a paid vendor, and a bare reference reads as an
@@ -198,8 +228,27 @@ export async function answerVoiceQuestionStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const language = input.language?.trim() || null;
+  const t0 = Date.now();
+
+  // Everything that does NOT need the transcript starts NOW, concurrently with Whisper: the
+  // TTS spend ceiling and the grounding rows (project, day-count, edition) were serial stages
+  // on the critical path — pure added latency for a listener who is waiting in silence.
+  const ceilingPromise: Promise<boolean> = evaluateSpendCeiling({ provider: 'elevenlabs' })
+    .then((ceiling) => {
+      if (ceiling.refuse) logger.warn({ reason: ceiling.reason, projectId: input.projectId }, '[voice-question] ceiling reached — text only');
+      return !ceiling.refuse;
+    })
+    .catch((err) => {
+      logger.warn({ err, projectId: input.projectId }, '[voice-question] ceiling check failed — text only');
+      return false;
+    });
+  const prefetchPromise = deps.prefetchAsk?.(input.projectId, language).catch((err) => {
+    logger.warn({ err, projectId: input.projectId }, '[voice-question] context prefetch failed — fetching inline');
+    return undefined;
+  });
 
   const heard = await deps.transcribe(input.audioPath, language);
+  const sttMs = Date.now() - t0;
   void deps.recordStt({
     userId: input.userId ?? null, projectId: input.projectId,
     task: 'listener_voice_question', durationSec: heard.durationSec, model: heard.model,
@@ -214,45 +263,60 @@ export async function answerVoiceQuestionStream(
   }
   onEvent({ type: 'heard', question: heard.text });
 
-  // The ceiling is asked ONCE, before the first sentence; a refusal means text only.
-  let speak = true;
-  try {
-    const ceiling = await evaluateSpendCeiling({ provider: 'elevenlabs' });
-    if (ceiling.refuse) { speak = false; logger.warn({ reason: ceiling.reason, projectId: input.projectId }, '[voice-question] ceiling reached — text only'); }
-  } catch (err) {
-    speak = false;
-    logger.warn({ err, projectId: input.projectId }, '[voice-question] ceiling check failed — text only');
-  }
+  // Resolved concurrently with the transcription above; a refusal means text only.
+  const speak = await ceilingPromise;
 
-  const splitter = new SentenceSplitter();
+  // firstMinChars 12: the opener is what the listener is waiting on — a short first clause
+  // reaching TTS sooner beats a longer one.
+  const splitter = new SentenceSplitter({ firstMinChars: 12 });
   let seq = 0;
   let spokenChars = 0;
   let model: string | null = null;
-  let chain: Promise<void> = Promise.resolve();
+  let firstAudioMs: number | null = null;
+  // TWO synths in flight, emission strictly ordered: launch is gated on the request two back
+  // having settled (so a long sentence cannot starve the pipeline, and ElevenLabs sees at most
+  // two concurrent requests), while the emit chain releases each clip in seq order.
+  const synths: Promise<{ audio: Buffer; model: string } | null>[] = [];
+  let emitChain: Promise<void> = Promise.resolve();
   const speakSentence = (text: string) => {
     if (!speak || signal?.aborted) return;
     const mine = seq++;
-    chain = chain.then(async () => {
-      if (signal?.aborted) return;
+    const launchGate = synths[mine - 2]?.catch(() => null) ?? Promise.resolve(null);
+    const synth = launchGate.then(async () => {
+      if (signal?.aborted) return null;
       try {
-        const spoken = await deps.synthesize(text, language ?? 'en');
-        model = spoken.model;
-        spokenChars += text.length;
-        onEvent({ type: 'audio', seq: mine, audio_base64: spoken.audio.toString('base64'), audio_mime: 'audio/mpeg', text });
+        return await deps.synthesize(text, language ?? 'en');
       } catch (err) {
         logger.warn({ err, projectId: input.projectId, seq: mine }, '[voice-question] sentence synthesis failed — skipped');
+        return null;
       }
+    });
+    synths.push(synth);
+    emitChain = emitChain.then(async () => {
+      const spoken = await synth;
+      if (!spoken || signal?.aborted) return;
+      model = spoken.model;
+      spokenChars += text.length;
+      if (firstAudioMs === null) firstAudioMs = Date.now() - t0;
+      onEvent({ type: 'audio', seq: mine, audio_base64: spoken.audio.toString('base64'), audio_mime: 'audio/mpeg', text });
     });
   };
 
   const asked = await deps.ask({
     projectId: input.projectId, language, positionMs: input.positionMs,
     question: heard.text, intent: 'answer', userId: input.userId ?? null,
+    prefetched: prefetchPromise ? await prefetchPromise : undefined,
     onTokenChunk: (chunk) => { for (const sentence of splitter.push(chunk)) speakSentence(sentence); },
     abortSignal: signal,
   });
   for (const sentence of splitter.flush()) speakSentence(sentence);
-  await chain;
+  await emitChain;
+  // The phase timings ARE the health check for "fast": without them a latency regression is
+  // invisible until an owner complains (which is how this rework started).
+  logger.info(
+    { projectId: input.projectId, sttMs, firstAudioMs, totalMs: Date.now() - t0, sentences: seq },
+    '[voice-question] stream timings',
+  );
 
   if (asked.status !== 'answered' || !asked.answer) {
     onEvent({ type: 'done', status: asked.status, question: heard.text, answer: null, message: asked.reason ?? null, audio_chunks: 0 });

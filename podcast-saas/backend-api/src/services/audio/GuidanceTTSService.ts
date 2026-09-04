@@ -54,6 +54,9 @@ export class GuidanceTTSService {
       `${ELEVENLABS_API_BASE}/text-to-speech/${cfg.voiceId}?output_format=mp3_44100_128`,
       {
         method: 'POST',
+        // A vendor hang here used to hang the caller forever (no timeout anywhere on this
+        // fetch); 30s is generous for the longest guidance sentence and still bounded.
+        signal: AbortSignal.timeout(30_000),
         headers: {
           'xi-api-key':   apiKey,
           'Content-Type': 'application/json',

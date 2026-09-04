@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { connectSimAuthoring } from '@/lib/sim/SimAuthoringClient';
-import { renderPosterRenditions } from '@/lib/posterCapture';
+import { POSTER_LETTERBOX_BG, renderPosterRenditions } from '@/lib/posterCapture';
 import type { SimAspectProfile } from 'shared/src/sim/simIdentity';
 
 /** Section+document pairs already captured this session — a re-open must not re-upload. */
@@ -54,7 +54,7 @@ export function usePosterCapture(opts: PosterCaptureOptions): { state: PosterCap
     try {
       session = await connectSimAuthoring(iframe, { timeoutMs: 2500 });
       const raw = await session.snapshot(4000);
-      const renditions = await renderPosterRenditions(raw, opts.aspect);
+      const renditions = await renderPosterRenditions(raw, opts.aspect, POSTER_LETTERBOX_BG);
       const result = await api.uploadSectionPoster(opts.projectId, opts.sectionId, {
         renditions: renditions.map((r) => ({ size: r.size, format: 'png' as const, dataUrl: r.dataUrl })),
         force,
@@ -62,8 +62,10 @@ export function usePosterCapture(opts: PosterCaptureOptions): { state: PosterCap
       captured.add(key);
       setState(result.outcome);
     } catch {
-      // A document that cannot draw itself, a tainted canvas, or a refused upload: the banner the
-      // tile had stays. Nothing here may interrupt editing.
+      // A document that cannot draw itself, a tainted canvas, a refused upload — or a snapshot
+      // the document refused because its canvas was still a blank mid-boot frame
+      // (SNAPSHOT_RESULT { error: 'blank' }, surfaced by `session.snapshot` as a rejection):
+      // the banner the tile had stays. Nothing here may interrupt editing.
       setState('failed');
     } finally {
       try { session?.dispose(); } catch { /* already gone */ }

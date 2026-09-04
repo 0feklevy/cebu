@@ -43,6 +43,45 @@ export interface AskInput {
   /** The interactive voice path: every token as the model writes it, so speech can start on the first sentence. */
   onTokenChunk?: (chunk: string) => void;
   abortSignal?: AbortSignal;
+  /**
+   * Rows the voice path fetched CONCURRENTLY WITH the speech-to-text call (latency work,
+   * 2026-09-04): the project row, the rolling answer count and the audio edition are all
+   * independent of the transcript, so waiting for Whisper before fetching them was pure serial
+   * waste. Absent (the typed-question path), they are fetched here as before.
+   */
+  prefetched?: Awaited<ReturnType<typeof prefetchAskContext>>;
+}
+
+/**
+ * Everything `askListenerQuestion` needs from the database that does NOT depend on the question
+ * text — safe to start before the listener's audio is even transcribed.
+ */
+export async function prefetchAskContext(projectId: string, language: string | null | undefined) {
+  const [project, answered, edition] = await Promise.all([
+    db.query.projects.findFirst({ where: eq(projects.id, projectId) }),
+    answeredToday(projectId),
+    db.query.project_audio_editions.findFirst({
+      where: and(
+        eq(project_audio_editions.project_id, projectId),
+        language
+          ? eq(project_audio_editions.language, language)
+          : sql`${project_audio_editions.language} IS NULL`,
+      ),
+    }),
+  ]);
+  return { project, answeredToday: answered, edition };
+}
+
+/**
+ * The whole lesson, as plain speech text, capped — the model's base knowledge (owner direction
+ * 2026-09-04: "the CC text is the base knowledge", NotebookLM-style). The cap keeps a pathological
+ * transcript from flooding the context; typical lessons fit whole. Trimmed from the FRONT so the
+ * most recent material — likeliest to be what the question is about — survives.
+ */
+export const MAX_TRANSCRIPT_CHARS = 24_000;
+function fullTranscriptText(vtt: string): string {
+  const text = parseVtt(vtt).map((c) => c.text).join(' ').replace(/\s+/g, ' ').trim();
+  return text.length > MAX_TRANSCRIPT_CHARS ? text.slice(text.length - MAX_TRANSCRIPT_CHARS) : text;
 }
 
 export interface AskResult {
@@ -72,13 +111,14 @@ async function answeredToday(projectId: string): Promise<number> {
 }
 
 export async function askListenerQuestion(input: AskInput, llm = new LLMService(new ApiKeyService(), new UsageTrackingService())): Promise<AskResult> {
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, input.projectId) });
+  const pre = input.prefetched ?? await prefetchAskContext(input.projectId, input.language);
+  const project = pre.project;
   if (!project) return { status: 'refused', reason: 'That lesson no longer exists.' };
 
   const decision = decideSpend({
     intent: input.intent,
     question: input.question,
-    answeredToday: await answeredToday(input.projectId),
+    answeredToday: pre.answeredToday,
     dailyCap: DEFAULT_DAILY_ANSWER_CAP,
     // Until a per-project setting exists, questions are on wherever the lesson is public. Stated
     // here rather than hidden in a default so the eventual column has one obvious home.
@@ -110,16 +150,11 @@ export async function askListenerQuestion(input: AskInput, llm = new LLMService(
   if (input.intent === 'save') return { status: 'saved', questionId: row.id };
 
   // ── Grounding ─────────────────────────────────────────────────────────────────────────────
-  const edition = await db.query.project_audio_editions.findFirst({
-    where: and(
-      eq(project_audio_editions.project_id, input.projectId),
-      input.language
-        ? eq(project_audio_editions.language, input.language)
-        : sql`${project_audio_editions.language} IS NULL`,
-    ),
-  });
-  const context = contextAround(parseVtt(edition?.captions_vtt ?? ''), input.positionMs);
-  if (!context) {
+  const edition = pre.edition;
+  const vtt = edition?.captions_vtt ?? '';
+  const transcript = fullTranscriptText(vtt);
+  const passage = contextAround(parseVtt(vtt), input.positionMs);
+  if (!transcript) {
     // NO TRANSCRIPT, NO ANSWER. Asking a model to answer a lesson question with nothing from the
     // lesson produces a confident, plausible, ungrounded answer — which is worse than no answer,
     // because the listener has no way to tell and the creator's name is on it.
@@ -134,14 +169,30 @@ export async function askListenerQuestion(input: AskInput, llm = new LLMService(
     // Plain text, streamed: the voice path speaks the first sentence while the model writes the
     // next (owner ruling 2026-09-03 — Tap to ask like NotebookLM's interrupt). The register is
     // the prompt's job; there is no JSON to unwrap, so nothing waits for a closing brace.
+    //
+    // GROUNDING (owner direction 2026-09-04): the WHOLE lesson transcript is the base knowledge,
+    // not just a ±window — a question about minute 3 asked at minute 40 deserves an answer. The
+    // transcript is byte-stable for the whole lesson, so it rides in the CACHED PREFIX: the first
+    // question of a session writes the cache, every later one reads it (the old prompt embedded a
+    // per-call window in the system prompt and cache-wrote 1.25× on every single call, never
+    // reading anything back). Only the playhead passage + the question vary per call.
+    const stablePrefix =
+      'You are the lesson\'s instant voice assistant. A listener tapped to ask a question while ' +
+      'listening; they are often driving and cannot check anything. Answer ONLY from the lesson ' +
+      'transcript below. Be fast and conversational: lead with the answer itself in ONE or TWO ' +
+      'short spoken sentences — no preamble, no "great question", no lists, no markdown; it is ' +
+      'read aloud. If the transcript does not contain the answer, say that plainly in one ' +
+      'sentence rather than guessing.\n\nLESSON TRANSCRIPT:\n' + transcript;
     const res = await llm.sendText({
       task: 'listener_question',
       systemPrompt:
-        'You answer a listener\'s question about the passage of a lesson they are currently hearing. ' +
-        'Answer ONLY from the passage. If the passage does not contain the answer, say so plainly in ' +
-        'one sentence rather than guessing — the listener is driving and cannot check. Two or three ' +
-        'sentences, spoken register, no preamble, no lists, no markdown — it will be read aloud.\n\nPASSAGE:\n' + context,
+        stablePrefix +
+        (passage ? '\n\nPASSAGE PLAYING RIGHT NOW (their position):\n' + passage : ''),
+      systemPromptCachePrefix: stablePrefix,
       userPrompt: input.question.trim(),
+      // A spoken two-sentence answer needs nothing like the tier's 8k headroom; the cap also
+      // bounds worst-case TTS spend per answer.
+      maxTokensOverride: 500,
       userId: input.userId ?? null,
       projectId: input.projectId,
       onTokenChunk: input.onTokenChunk,

@@ -14,6 +14,8 @@ export interface SentenceSplitterOptions {
   minChars?: number;
   /** A run longer than this with no boundary is emitted anyway (a model that never punctuates). */
   maxChars?: number;
+  /** Lower boundary floor for the FIRST sentence only — gets audio out sooner. Default: minChars. */
+  firstMinChars?: number;
 }
 
 const BOUNDARY = /([.!?…]+)(?=\s|$)|\n+/g;
@@ -21,12 +23,18 @@ const ABBREVIATION = /(?:^|\s)(?:e\.g|i\.e|etc|vs|mr|mrs|dr|prof|no)\.$/i;
 
 export class SentenceSplitter {
   private buffer = '';
+  private emitted = 0;
   private readonly minChars: number;
   private readonly maxChars: number;
+  private readonly firstMinChars: number;
 
   constructor(opts: SentenceSplitterOptions = {}) {
     this.minChars = opts.minChars ?? 24;
     this.maxChars = opts.maxChars ?? 320;
+    // The FIRST sentence may cut earlier than the rest: on the voice path it is what the
+    // listener waits on (record end → first audible word), and a short opener like "Yes." or
+    // "Good question." reaching TTS 200ms sooner is worth more than a longer first clause.
+    this.firstMinChars = opts.firstMinChars ?? this.minChars;
   }
 
   /** Feed a token; returns the sentences that became complete. */
@@ -38,7 +46,7 @@ export class SentenceSplitter {
       if (cut === null) break;
       const sentence = this.buffer.slice(0, cut).trim();
       this.buffer = this.buffer.slice(cut);
-      if (sentence) out.push(sentence);
+      if (sentence) { out.push(sentence); this.emitted += 1; }
     }
     while (this.buffer.length >= this.maxChars) {
       const at = this.buffer.lastIndexOf(' ', this.maxChars);
@@ -67,7 +75,7 @@ export class SentenceSplitter {
       if (end >= this.buffer.length && !m[0].includes('\n')) return null;
       const head = this.buffer.slice(0, end);
       if (m[0].startsWith('.') && (ABBREVIATION.test(head.trimEnd()) || /\d\.$/.test(head))) continue;
-      if (head.trim().length < this.minChars) continue;
+      if (head.trim().length < (this.emitted === 0 ? this.firstMinChars : this.minChars)) continue;
       // A lowercase word after the mark continues the thought — "Well… maybe not." is ONE
       // spoken sentence, and cutting there would put a synthesis seam mid-phrase. Newlines end a
       // line whatever follows.

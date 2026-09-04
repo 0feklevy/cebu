@@ -150,8 +150,8 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
 
       {check.state === 'checking' && <p className="text-[11px] text-muted-foreground">Checking availability…</p>}
       {check.state === 'ok'  && <p className="text-[11px] text-emerald-600">{check.message}</p>}
-      {check.state === 'bad' && <p className="text-[11px] text-red-500">{check.message}</p>}
-      {error && <p className="text-[11px] text-red-500">{error}</p>}
+      {check.state === 'bad' && <p className="text-[11px] text-destructive">{check.message}</p>}
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
 
       <div className="flex gap-2">
         {dirty ? (
@@ -159,8 +159,7 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
             <button
               onClick={() => save(input.trim() || null)}
               disabled={saving || check.state === 'bad' || check.state === 'checking' || (!input.trim() && !savedSlug)}
-              className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-white transition-all disabled:opacity-50 focus-ring"
-              style={{ background: 'linear-gradient(135deg,#a855f7,#6366f1)' }}
+              className="btn-gradient inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold focus-ring"
             >
               {saving ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <Check size={12} strokeWidth={2.1} aria-hidden />}
               {input.trim() ? (needsPublic ? 'Publish at this address' : 'Save permalink') : 'Remove permalink'}
@@ -196,7 +195,7 @@ export function PermalinkEditor({ contentType, contentId, visibility, onMakePubl
               disabled={saving}
               title="Remove permalink"
               aria-label="Remove permalink"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40 focus-ring"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/20 bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-40 focus-ring"
             >
               {saving ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <Trash2 size={12} strokeWidth={1.8} aria-hidden />}
             </button>
