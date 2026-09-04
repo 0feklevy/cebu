@@ -55,6 +55,21 @@ Last updated: **2026-08-26**, after v0.2.10 deployed and the post-release audit 
 
 ---
 
+## 📋 2026-09-04 (evening) — Tap-to-ask latency+grounding, share-library capture/latency/chrome, playlist restyle
+
+**Branch `feat/tap-to-ask-and-share-library`.** Owner asks: Tap-to-ask should feel like ChatGPT voice / NotebookLM (fast, grounded in the captions, no deep thinking); the share-library page captures sims badly + loads slowly + looks off-system; "Edit playlist" looks disconnected. Plus: verify across browsers/devices.
+
+Delivered (full detail in the PR body): voice path — VAD silence 1100→550ms, whisper-large-v3-turbo STT, ceiling+grounding rows parallel to STT, eleven_flash_v2_5 singleton TTS with 2 synths in flight, WHOLE transcript as a cached-prefix knowledge base (was a ±90s window), 500-token cap via new lower-only `maxTokensOverride`, per-stage timing logs, vendor-fetch timeout. Library — 1280×720 (portrait 720×1280) capture, blank-frame REFUSAL, scrim/wrong-dims removed, poster+hls prefetch on intent, preload=metadata + startLevel 0, product header + card-interactive/shadow-modal/fine-scrollbar chrome, graceful gradient fallback. Playlists — `bg-*/8` (compiles to nothing) → /10, window.confirm → ConfirmDialog with correct Radix modal interop, all inline hex → tokens/.btn-gradient, CollaboratorsSection fully tokenized + focus-ring, real load-error surface, new no-hex guard test.
+
+Verified: full `-r test` green (backend 4873, client 1988, shared 1109); voice suites 37 client + 301 backend incl. the hijacked-reply CORS guard; new env vars documented; **device matrix 20/20** (chromium/firefox/webkit × iphone-portrait/landscape, android, ipad, laptop) on the library page + playlist editor — zero h-overflow, zero page errors; mobile screenshots reviewed.
+
+✅/🔴 **The "posters are never captured" chain — root cause #1 FOUND AND FIXED in this batch; one residual still open.**
+- **FIXED (production-grade bug, pre-existing on main): `/sim-authoring.js` arrived as ZERO BYTES in every real browser.** The handler ended with `reply.compress(Buffer…)`, and any request carrying Accept-Encoding — i.e. every browser — got `content-encoding: br|gzip` with an EMPTY body (reproduced: `curl -H 'Accept-Encoding: br'` → 200, `content-encoding: br`, 0 bytes; plain curl → 26KB, which is why it was invisible). So the boot-snippet-injected script tag loaded nothing, `__SIM_AUTHORING_ADOPT__` never existed, every authoring CONNECT timed out ("no CONNECTED within timeout"), and **no poster was ever captured anywhere — including production**. Fix: plain `.send(SIM_AUTHORING_SCRIPT)` (26KB once per editor session, ETag-revalidated; it needs to arrive, not to be small) + a regression test that offers Accept-Encoding (the old serving-contract test never sent the header and stayed green through the whole outage). Verified: isolated CONNECT → CONNECTED handshake now completes against a served revision.
+- 🔴 **OPEN (residual, local evidence only): the editor's banner sweep STILL times out after the fix** — the sweep-frame child samples show `__SIM_AUTHORING_PENDING__` never set, i.e. the CONNECT postMessage does not reach that specific frame's listener (while an isolated harness frame with identical URL connects fine). Suspects: frame identity (the editor mounts several same-URL iframes — pool + sweep), postMessage targetOrigin vs. frame origin normalization, or timing around SimSurface's load callback. NOT caused by this batch (A/B on `SimAuthoringBootstrap.ts` against 668a228 reproduced before the compress fix). Needs a focused client-side session; evidence scripts in the session scratchpad (`sweep-child-state.mjs`, `authoring-isolate2.mjs`).
+- The batch's capture-quality changes (1280×720 frame, blank-frame refusal, tainted-probe fix) are unit-tested and land regardless; they begin to matter the moment CONNECT completes in the editor flow.
+
+---
+
 ## 📋 2026-09-04 — Heavy-sim day: kinesin/dynein integration proven, no-loading reveal shipped, Library/section-editor minimalism, sim-subsystem review findings
 
 **Branch `feat/library-minimal-ui`** (one PR, all of the below; opened for release the same day).

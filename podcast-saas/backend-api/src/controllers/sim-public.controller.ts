@@ -216,8 +216,14 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
       // no-cache, not immutable: the bytes change with a deploy, and a year-cached picker that
       // disagrees with its editor is the same class of bug as a year-cached entry document.
       .header('Cache-Control', 'no-cache')
-      .header('Vary', 'accept-encoding')
-      .compress(Buffer.from(SIM_AUTHORING_SCRIPT, 'utf8'));
+      // PLAIN send, deliberately NOT reply.compress(): that call emitted `content-encoding: br`
+      // (or gzip) with a ZERO-BYTE body for every request carrying Accept-Encoding — i.e. every
+      // real browser — so the injected <script> tag loaded 0 bytes, `__SIM_AUTHORING_ADOPT__`
+      // never came to exist, every authoring CONNECT timed out, and NO POSTER was ever captured
+      // anywhere (found 2026-09-04 chasing "simulations are captured badly"; reproduced with
+      // `curl -H 'Accept-Encoding: br'` → 200, encoding br, 0 bytes). 26KB once per editor
+      // session, ETag-revalidated, does not need compression; it needs to arrive.
+      .send(SIM_AUTHORING_SCRIPT);
   });
 
   app.get<{ Params: { '*': string } }>(
