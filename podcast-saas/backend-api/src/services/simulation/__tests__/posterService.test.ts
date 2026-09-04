@@ -100,9 +100,28 @@ vi.mock('../../../db/index.js', () => ({
       },
     },
     insert: () => ({
-      values: (vals: Record<string, unknown>) => ({
-        onConflictDoUpdate: ({ target, set }: { target: unknown; set: Record<string, unknown> }) => {
+      values: (rawVals: Record<string, unknown>) => ({
+        onConflictDoUpdate: ({ target, set: rawSet }: { target: unknown; set: Record<string, unknown> }) => {
           h.state.conflictTargets.push(target);
+          // `variants` now arrives as a jsonbValue() SQL expression — `(<json text>::text)::jsonb`
+          // — so the double-encoding write bug cannot recur (db/jsonb.ts). A real driver parses
+          // it server-side; this fake evaluates it by pulling the bound JSON text back out.
+          const evalValue = (v: unknown): unknown => {
+            if (v && typeof v === 'object' && 'queryChunks' in (v as object)) {
+              // Chunk shapes: StringChunk { value: string[] } for the literal SQL pieces, and the
+              // bound parameter as a plain string — the JSON text jsonbValue() embedded.
+              for (const chunk of (v as { queryChunks: unknown[] }).queryChunks) {
+                if (typeof chunk === 'string') {
+                  try { return JSON.parse(chunk); } catch { /* not the JSON param — keep looking */ }
+                }
+              }
+            }
+            return v;
+          };
+          const evalRow = (o: Record<string, unknown>): Record<string, unknown> =>
+            Object.fromEntries(Object.entries(o).map(([k, v]) => [k, evalValue(v)]));
+          const vals = evalRow(rawVals);
+          const set = evalRow(rawSet);
           return {
             returning: async () => {
               const existing = h.state.rows.find(
@@ -745,6 +764,26 @@ describe('migration 049 — sim_posters DDL', () => {
     await insertPoster();
     const n = await pg.query<{ n: number }>('SELECT count(*)::int AS n FROM sim_posters');
     expect(n.rows[0].n).toBe(1);
+  });
+
+  it('the jsonbValue() write path stores a TRUE jsonb array — sim-review P2 (live prod bug)', async () => {
+    // The naive drizzle `.values({ variants })` write double-encoded on the production
+    // postgres-js driver (verified: jsonb STRING scalar → this migration's
+    // sim_posters_variants_array_chk rejected EVERY server-side poster store, which is what
+    // the export panel's "no poster still exists" warnings were reporting). storePoster now
+    // writes through db/jsonb.ts jsonbValue(); this pins that expression against the real DDL.
+    const { jsonbValue } = await import('../../../db/jsonb.js');
+    const chunks = (jsonbValue([{ size: 'standard' }]) as unknown as { queryChunks: unknown[] }).queryChunks;
+    const jsonText = chunks.find((c): c is string => typeof c === 'string')!;
+    await pg.query(
+      `INSERT INTO sim_posters (simulation_id, package_revision, variant_key, config_hash,
+         aspect_profile, quality_profile, identity, variants, transparent)
+       VALUES ($1, 'rev', 'section-a', 'cfg', 'wide', 'high', 'jsonbvalue-probe', ($2::text)::jsonb, false)`,
+      [simId, jsonText],
+    );
+    const t = await pg.query<{ t: string }>(
+      `SELECT jsonb_typeof(variants) AS t FROM sim_posters WHERE identity = 'jsonbvalue-probe'`);
+    expect(t.rows[0].t).toBe('array');
   });
 
   it('enforces one row per (simulation_id, identity)', async () => {

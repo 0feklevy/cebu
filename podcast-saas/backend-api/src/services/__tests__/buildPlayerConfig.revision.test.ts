@@ -43,6 +43,8 @@ vi.mock('../../db/schema.js', () => ({
   branch_edges: Symbol('branch_edges'), playlists: Symbol('playlists'),
   simulations: Symbol('simulations'), sim_posters: Symbol('sim_posters'),
   video_dubs: Symbol('video_dubs'),
+  // Not a Symbol: the sim_weight_bytes emission reads .id/.metadata as select columns.
+  sim_revisions: { id: 'sim_revisions.id', metadata: 'sim_revisions.metadata' },
 }));
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn(() => ({ type: 'eq' })), asc: vi.fn(() => ({ type: 'asc' })),

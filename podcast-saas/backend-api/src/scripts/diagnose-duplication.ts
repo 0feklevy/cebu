@@ -1155,8 +1155,24 @@ export function readOnlyStorage(real: StorageService): StorageService {
  * produced with this one says so on its own summary line.
  */
 export function localJsonbScanExpression(table: string, col: PgColumn): SQL {
+  // Mirrors the typeof-guarded expression in ProjectDuplicationService: a double-encoded
+  // metadata row (jsonb STRING scalar, db/jsonb.ts) is parsed back before the key subtraction,
+  // and `jsonb - text` never runs against a scalar (SQLSTATE 22023).
   return table === 'sim_revisions' && col.name === 'metadata'
-    ? sql`(COALESCE(${col}, '{}'::jsonb) - 'duplicatedFrom')`
+    ? sql`(
+      CASE WHEN jsonb_typeof(
+        CASE WHEN jsonb_typeof(COALESCE(${col}, '{}'::jsonb)) = 'string'
+             THEN (COALESCE(${col}, '{}'::jsonb) #>> '{}')::jsonb
+             ELSE COALESCE(${col}, '{}'::jsonb) END
+      ) = 'object'
+      THEN (
+        CASE WHEN jsonb_typeof(COALESCE(${col}, '{}'::jsonb)) = 'string'
+             THEN (COALESCE(${col}, '{}'::jsonb) #>> '{}')::jsonb
+             ELSE COALESCE(${col}, '{}'::jsonb) END
+      ) - 'duplicatedFrom'
+      ELSE COALESCE(${col}, '{}'::jsonb)
+      END
+    )`
     : sql`COALESCE(${col}, '{}'::jsonb)`;
 }
 

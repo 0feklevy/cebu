@@ -2167,7 +2167,25 @@ function rewriteCanaryReport(
  */
 export function jsonbScanExpression(table: string, col: PgColumn): SQL {
   if (table === 'sim_revisions' && col.name === 'metadata') {
-    return sql`(COALESCE(${col}, '{}'::jsonb) - 'duplicatedFrom')`;
+    // `jsonb - text` raises SQLSTATE 22023 ("cannot delete from scalar") on rows the
+    // double-encoding write path (db/jsonb.ts) stored as a jsonb STRING scalar — which aborted
+    // every duplication of a project carrying such a revision (sim-review 2026-09-04, P2).
+    // Normalize first: a string scalar holds the JSON text of the object it should have been,
+    // so parse it back before subtracting; anything still not an object is scanned as-is.
+    return sql`(
+      CASE WHEN jsonb_typeof(
+        CASE WHEN jsonb_typeof(COALESCE(${col}, '{}'::jsonb)) = 'string'
+             THEN (COALESCE(${col}, '{}'::jsonb) #>> '{}')::jsonb
+             ELSE COALESCE(${col}, '{}'::jsonb) END
+      ) = 'object'
+      THEN (
+        CASE WHEN jsonb_typeof(COALESCE(${col}, '{}'::jsonb)) = 'string'
+             THEN (COALESCE(${col}, '{}'::jsonb) #>> '{}')::jsonb
+             ELSE COALESCE(${col}, '{}'::jsonb) END
+      ) - 'duplicatedFrom'
+      ELSE COALESCE(${col}, '{}'::jsonb)
+      END
+    )`;
   }
   return sql`COALESCE(${col}, '{}'::jsonb)`;
 }

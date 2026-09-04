@@ -267,3 +267,34 @@ describe('makeFailure', () => {
     expect(failure.actions).toContain('retry');
   });
 });
+
+// ── prepareTimeoutMsFor — the per-package prepare bound (sim-review 2026-09-04, P1) ───────────
+
+import { prepareTimeoutMsFor, SIM_PREPARE_TIMEOUT_MS as PREP_FLOOR, SIM_PREPARE_TIMEOUT_MAX_MS } from '../simFailurePolicy.js';
+
+describe('prepareTimeoutMsFor', () => {
+  it('an unmeasured package keeps the historical 5s bound exactly', () => {
+    expect(prepareTimeoutMsFor()).toBe(PREP_FLOOR);
+    expect(prepareTimeoutMsFor({})).toBe(PREP_FLOOR);
+    expect(prepareTimeoutMsFor({ prepareBudgetMs: null, weightTotalBytes: null })).toBe(PREP_FLOOR);
+  });
+
+  it('a measured budget above the floor extends the bound with headroom', () => {
+    // The regression this exists for: a 30MB GLB package measures ~6s prepare on a cold miss at
+    // 40Mbps — the flat 5s bound failed it deterministically and the breaker then killed
+    // auto-preparation for the whole session on a healthy connection.
+    expect(prepareTimeoutMsFor({ prepareBudgetMs: 6_000 })).toBe(9_000);
+    expect(prepareTimeoutMsFor({ prepareBudgetMs: 1_000 })).toBe(PREP_FLOOR); // light stays at the floor
+  });
+
+  it('package weight extends the bound ~1s per 2MB beyond the first 5MB', () => {
+    expect(prepareTimeoutMsFor({ weightTotalBytes: 4_000_000 })).toBe(PREP_FLOOR);
+    expect(prepareTimeoutMsFor({ weightTotalBytes: 35_000_000 })).toBe(PREP_FLOOR + 15_000 > SIM_PREPARE_TIMEOUT_MAX_MS ? SIM_PREPARE_TIMEOUT_MAX_MS : PREP_FLOOR + 15_000);
+  });
+
+  it('the ceiling holds against absurd or hostile published numbers', () => {
+    expect(prepareTimeoutMsFor({ prepareBudgetMs: 10 * 60_000 })).toBe(SIM_PREPARE_TIMEOUT_MAX_MS);
+    expect(prepareTimeoutMsFor({ weightTotalBytes: Number.MAX_SAFE_INTEGER })).toBe(SIM_PREPARE_TIMEOUT_MAX_MS);
+    expect(prepareTimeoutMsFor({ prepareBudgetMs: NaN, weightTotalBytes: -5 })).toBe(PREP_FLOOR);
+  });
+});

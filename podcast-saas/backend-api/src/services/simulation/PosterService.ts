@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
+import { jsonbValue } from '../../db/jsonb.js';
 import { sim_posters } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { deleteWithFallback } from '../storage/deleteWithFallback.js';
@@ -164,7 +165,11 @@ export class PosterService {
         aspect_profile: key.aspectProfile,
         quality_profile: key.qualityProfile,
         identity,
-        variants,
+        // jsonbValue, not the raw array: the drizzle/postgres-js write path double-encodes a
+        // JS value bound to jsonb into a STRING scalar, which violates
+        // sim_posters_variants_array_chk — so every server-side poster store failed and every
+        // export carried "no poster still exists" warnings (sim-review 2026-09-04).
+        variants: jsonbValue(variants),
         transparent,
         captured_at: capturedAt,
       })
@@ -176,7 +181,7 @@ export class PosterService {
           config_hash: key.configHash,
           aspect_profile: key.aspectProfile,
           quality_profile: key.qualityProfile,
-          variants,
+          variants: jsonbValue(variants),
           transparent,
           captured_at: capturedAt,
         },

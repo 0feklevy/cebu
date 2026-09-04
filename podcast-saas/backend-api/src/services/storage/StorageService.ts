@@ -75,8 +75,28 @@ export interface StorageService {
   copyPrefix(srcPrefix: string, destPrefix: string): Promise<number>;
   /** Returns the public (no-auth) URL for a storage key. Used for HLS segments. */
   getPublicUrl(path: string): string;
-  /** Returns the public (no-auth) URL for a simulation file. Served via /sim-public/* in local dev, R2 public URL in prod. */
+  /**
+   * Returns the public (no-auth) URL for a simulation file — ALWAYS the backend's
+   * `/sim-public/*` proxy (bar the content-addressed poster fast-path), on every adapter.
+   *
+   * The proxy is load-bearing, not a dev convenience: it is where the sim CSP
+   * (`frame-ancestors`), the serve-time boot snippet, and the revision PUBLICATION GATE are
+   * applied. An adapter that hands out a direct bucket URL here skips all three — a draft
+   * revision's bytes become world-readable at a URL that appears in every player config
+   * (sim-review 2026-09-04, P0).
+   */
   getSimPublicUrl(path: string): string;
+  /**
+   * The redirect target `/sim-public/*` sends a BINARY sim asset (.glb, images, media) to —
+   * the bucket/CDN URL, so big assets stream edge-cached over HTTP/2 instead of serializing
+   * through the proxy. Only ever called AFTER the route's access + publication checks passed,
+   * so pointing it straight at the bucket does not widen who may read a package.
+   *
+   * Optional: absent means `getPublicUrl` already answers with a bucket URL (Supabase, local).
+   * R2 must implement it — its `getPublicUrl` wraps everything in `/hls-proxy/…`, whose scope
+   * check refuses `simulations/` keys with a 403.
+   */
+  getSimAssetRedirectUrl?(path: string): string;
   /**
    * The storage key a URL this adapter published names — the INVERSE of `getPublicUrl` /
    * `getSimPublicUrl` — or null when the URL is not one of ours.

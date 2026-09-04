@@ -54,7 +54,11 @@ describe('named providers', () => {
   it('the R2 custom domain is the public base when set, and both bases reverse to a key', () => {
     setEnv({ ...REAL_R2, R2_PUBLIC_BASE_URL: 'https://media.flowvidco.com/' });
     const r2 = new R2StorageAdapter();
-    expect(r2.getSimPublicUrl('simulations/p/s/index.html')).toBe('https://media.flowvidco.com/simulations/p/s/index.html');
+    // Sim ENTRY urls go through the /sim-public proxy — the direct-bucket answer this line used
+    // to pin was the sim-review 2026-09-04 P0 (no CSP, no boot snippet, no publication gate).
+    // The custom domain remains the base for the binary-asset redirect and for the inverse.
+    expect(r2.getSimPublicUrl('simulations/p/s/index.html')).toContain('/sim-public/simulations/p/s/index.html');
+    expect(r2.getSimAssetRedirectUrl('simulations/p/s/models/m.glb')).toBe('https://media.flowvidco.com/simulations/p/s/models/m.glb');
     expect(r2.keyFromPublicUrl('https://media.flowvidco.com/images/a.png')).toBe('images/a.png');
     expect(r2.keyFromPublicUrl('https://pub.r2.dev/podcast-saas/images/a.png')).toBe('images/a.png');
   });

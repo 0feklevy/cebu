@@ -143,7 +143,7 @@ import {
   SIM_CONTEXT_RESTORE_TIMEOUT_MS,
   SIM_DISPOSE_TIMEOUT_MS,
   SIM_EVICT_GRACE_MS,
-  SIM_PREPARE_TIMEOUT_MS,
+  prepareTimeoutMsFor,
   SIM_PRESENT_TIMEOUT_MS,
   allowsAggressivePreparation,
   initialBreaker,
@@ -430,6 +430,20 @@ export class SimRuntimeClient {
 
   constructor(cbs: SimRuntimeCallbacks = {}) {
     this.cbs = cbs;
+  }
+
+  /**
+   * Per-package prepare cost, set by the owner that knows the package (the pooled player, from
+   * the server-published `sim_prepare_budget_ms` / `sim_weight_bytes` maps). Feeds
+   * `prepareTimeoutMsFor` so a heavy-but-healthy package (a 30MB GLB legitimately spends ~6s in
+   * prepare on a cold miss at 40Mbps) is not deterministically failed by the flat 5s bound and
+   * then breaker-blacklisted for the session (sim-review 2026-09-04, P1). Unset → the historical
+   * 5s bound, unchanged.
+   */
+  packageCost: { prepareBudgetMs?: number | null; weightTotalBytes?: number | null } | null = null;
+
+  private prepareTimeoutMs(): number {
+    return prepareTimeoutMsFor(this.packageCost ?? undefined);
   }
 
   getState(): Readonly<SimRuntimeState> { return this.state; }
@@ -951,7 +965,7 @@ export class SimRuntimeClient {
         if (this.generation !== gen || this.disposed) return;
         if (this.modernActive() || !this.handshakeDeferred) return;   // readiness landed
         this.failModern('handshake-failed', 'the document adopted a port but never became ready');
-      }, SIM_HANDSHAKE_TIMEOUT_MS + SIM_PREPARE_TIMEOUT_MS);
+      }, SIM_HANDSHAKE_TIMEOUT_MS + this.prepareTimeoutMs());
       return;
     }
 
@@ -1496,7 +1510,7 @@ export class SimRuntimeClient {
       this.prepareTimer = null;
       if (this.generation !== gen || this.actMachine?.identity.activationId !== actId) return;
       this.failModern('prepare-timeout', 'the package did not acknowledge PREPARE_SECTION');
-    }, SIM_PREPARE_TIMEOUT_MS);
+    }, this.prepareTimeoutMs());
   }
 
   private sendPresent(): void {

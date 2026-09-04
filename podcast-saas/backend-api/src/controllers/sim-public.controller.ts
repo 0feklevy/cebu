@@ -368,10 +368,16 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
         // at `blobs/<digest>`, shared with every other simulation containing the same file.
         // Resolved here — after every access check above has passed on the requested key — so
         // sharing bytes can never widen who may read them.
+        // getSimAssetRedirectUrl, not getPublicUrl: on R2 the latter wraps everything in
+        // /hls-proxy/…, whose 'hls/' scope check 403s simulations/ keys (sim-review P0).
+        const resolvedBinaryKey = await resolveSimFileKey(key);
         return reply
           .header('Cache-Control', revisionCacheControl ?? 'public, max-age=3600')
           .header('Access-Control-Allow-Origin', '*')
-          .redirect(storage.getPublicUrl(await resolveSimFileKey(key)), 302);
+          .redirect(
+            storage.getSimAssetRedirectUrl?.(resolvedBinaryKey) ?? storage.getPublicUrl(resolvedBinaryKey),
+            302,
+          );
       }
 
       try {

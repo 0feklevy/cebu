@@ -13,7 +13,7 @@ import { resolveSimPoolMode } from '../../lib/simPoolMode';
 // section predicates use the same tolerance instead of a second epsilon of their own (audit §9.6).
 import { SECTION_BOUNDARY_EPSILON_SEC, playheadFromMediaTime } from '../../lib/sectionInterval';
 import { mergeSegmentUrls, shouldPrewarm } from './segmentReadiness';
-import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
+import { collectSimPool, bootHideFor, dynamicScriptFor, flattenSimOccurrences, packageKeyOf, planWindowResidency, poolWithinWeightBudget, sectionKeyOf, SIM_POOL_CAP, type SimPoolFrameSpec } from '../../lib/simPool';
 import { planResidency, type SimOccurrence } from 'shared/src/sim/occurrencePlanner';
 import { resolveBudget } from 'shared/src/sim/prepareBudget';
 import { nextQualityFor, INITIAL_QUALITY_STATE, type QualityState } from 'shared/src/sim/adaptiveQuality';
@@ -458,8 +458,40 @@ export function useProjectPlayer(
   // Data-Saver). 'single': kill-switch — nothing up front; only the active package is ever
   // mounted, dropped on leave (approximates the pre-pool single navigating iframe).
   const poolTierRef = useRef<'all' | 'window' | 'single' | null>(null);
+  // Per-package cost, joined ONCE from the server maps (keyed by simulation id) onto package
+  // keys (what the pool and runtimes are keyed by). Feeds two decisions: the byte half of the
+  // tier choice below, and each runtime's prepare failure bound (sim-review 2026-09-04, P1).
+  const packageCostByKeyRef = useRef<Record<string, { prepareBudgetMs: number | null; weightTotalBytes: number | null }> | null>(null);
+  if (packageCostByKeyRef.current === null) {
+    const weights = config.sim_weight_bytes ?? {};
+    const costs: Record<string, { prepareBudgetMs: number | null; weightTotalBytes: number | null }> = {};
+    for (const seg of config.segments ?? []) {
+      for (const sec of seg.simulations ?? []) {
+        if (!sec.simulation_url || !sec.simulation_id) continue;
+        const key = packageKeyOf(sec.simulation_url);
+        if (!(key in costs)) {
+          costs[key] = {
+            prepareBudgetMs: prepareBudgetsRef.current[sec.simulation_id] ?? null,
+            weightTotalBytes: weights[sec.simulation_id] ?? null,
+          };
+        }
+      }
+    }
+    packageCostByKeyRef.current = costs;
+  }
   if (poolTierRef.current === null) {
-    poolTierRef.current = simPoolModeRef.current === 'single' ? 'single' : canWarmUnpaused() ? 'all' : 'window';
+    // Device gate first (unchanged), then the byte gate: a strong device still mounts nothing
+    // up front when the pooled set is byte-heavy — the window planner mounts each package by
+    // media-time lead instead of pulling tens of MB speculatively at t=0.
+    const weightByKey = Object.fromEntries(
+      Object.entries(packageCostByKeyRef.current)
+        .filter(([, c]) => typeof c.weightTotalBytes === 'number')
+        .map(([k, c]) => [k, c.weightTotalBytes as number]),
+    );
+    poolTierRef.current = simPoolModeRef.current === 'single' ? 'single'
+      : !canWarmUnpaused() ? 'window'
+      : poolWithinWeightBudget(collectSimPool(config, SIM_POOL_CAP), weightByKey) ? 'all'
+      : 'window';
   }
   const initialSimPoolRef = useRef<SimPoolFrameSpec[] | null>(null);
   if (initialSimPoolRef.current === null) {
@@ -926,6 +958,9 @@ export function useProjectPlayer(
           runtimeEventRef.current(key, event, detail);
         },
       });
+      // Per-package prepare cost → the runtime's prepare failure bound. A heavy package gets
+      // the extra seconds its bytes measurably need; an unmeasured one keeps the 5s default.
+      rt.packageCost = packageCostByKeyRef.current?.[key] ?? null;
       simRuntimesRef.current.set(key, rt);
     }
     return rt;

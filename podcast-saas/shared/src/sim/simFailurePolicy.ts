@@ -180,6 +180,43 @@ export function recordSuccess(_prev: CircuitBreakerState): CircuitBreakerState {
  */
 export const SIM_HANDSHAKE_TIMEOUT_MS = 1_500;
 export const SIM_PREPARE_TIMEOUT_MS = 5_000;
+
+/**
+ * Ceiling on any per-package prepare allowance. Past this a poster is the better answer, and a
+ * package that cannot prepare in 15s on the viewer's connection should be classified, not waited
+ * on forever — the breaker exists to stop exactly that.
+ */
+export const SIM_PREPARE_TIMEOUT_MAX_MS = 15_000;
+
+/**
+ * The prepare FAILURE bound for one package — `SIM_PREPARE_TIMEOUT_MS` was a single constant for
+ * every package, which made a heavy-but-healthy one fail deterministically: a 30MB GLB package
+ * legitimately spends ~6s in prepare() on a cold pool miss at 40Mbps, tripping the 5s bound and,
+ * three strikes later, the breaker — auto-preparation dead for the whole session on a connection
+ * that was never the problem (sim-review 2026-09-04, P1).
+ *
+ * Two per-package signals extend the floor, both server-published in the player config:
+ *  • `prepareBudgetMs` — the package's own measured prepare cost (publish-time canary, refined by
+ *    field data). A failure bound must sit ABOVE what the package measurably needs, with headroom.
+ *  • `weightTotalBytes` — the revision's total package weight. Covers the cold-miss case the
+ *    budget deliberately excludes (asset fetch): ~1s per 2MB beyond the first 5MB.
+ *
+ * Absent signals (older configs, unmeasured packages) leave the historical 5s floor untouched, and
+ * the ceiling keeps a hostile or absurd published number from disabling failure detection.
+ */
+export function prepareTimeoutMsFor(pkg?: {
+  prepareBudgetMs?: number | null;
+  weightTotalBytes?: number | null;
+}): number {
+  const budget = typeof pkg?.prepareBudgetMs === 'number' && Number.isFinite(pkg.prepareBudgetMs) && pkg.prepareBudgetMs > 0
+    ? pkg.prepareBudgetMs * 1.5
+    : 0;
+  const weight = typeof pkg?.weightTotalBytes === 'number' && Number.isFinite(pkg.weightTotalBytes) && pkg.weightTotalBytes > 5_000_000
+    ? SIM_PREPARE_TIMEOUT_MS + Math.ceil((pkg.weightTotalBytes - 5_000_000) / 2_000_000) * 1_000
+    : 0;
+  return Math.min(SIM_PREPARE_TIMEOUT_MAX_MS, Math.max(SIM_PREPARE_TIMEOUT_MS, budget, weight));
+}
+
 export const SIM_PRESENT_TIMEOUT_MS = 5_000;
 export const SIM_SUSPEND_TIMEOUT_MS = 2_000;
 export const SIM_DISPOSE_TIMEOUT_MS = 2_000;

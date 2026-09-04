@@ -24,6 +24,30 @@ export interface SimPoolFrameSpec {
 
 export const SIM_POOL_CAP = 4;
 
+/**
+ * Byte budget for the packages tier 'all' mounts UP FRONT. The cap above counts documents;
+ * until now nothing counted bytes, so a strong desktop pulled 4 × 35MB at t=0 against the HLS
+ * start (sim-review 2026-09-04, P1). Over budget the tier demotes to 'window' — the planner
+ * still mounts each package by media-time lead, so nothing is lost but the speculative t=0 burst.
+ * An UNMEASURED package (no weight key) counts 0: absence means "no data", and only known-heavy
+ * sets should demote — legacy configs keep today's behavior exactly.
+ */
+export const SIM_POOL_WEIGHT_BUDGET_BYTES = 60 * 1024 * 1024;
+
+/** Is this pooled set light enough to mount up front? Pure — the tier decision's byte half. */
+export function poolWithinWeightBudget(
+  specs: readonly Pick<SimPoolFrameSpec, 'key'>[],
+  weightByPackageKey: Readonly<Record<string, number>>,
+  budgetBytes: number = SIM_POOL_WEIGHT_BUDGET_BYTES,
+): boolean {
+  let total = 0;
+  for (const spec of specs) {
+    const w = weightByPackageKey[spec.key];
+    if (typeof w === 'number' && Number.isFinite(w) && w > 0) total += w;
+  }
+  return total <= budgetBytes;
+}
+
 /** Package identity of a sim section URL: origin+path, no query/hash. */
 export function packageKeyOf(url: string): string {
   try {

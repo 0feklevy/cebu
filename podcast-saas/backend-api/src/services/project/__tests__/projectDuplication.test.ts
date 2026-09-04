@@ -1880,6 +1880,34 @@ describe('(k) the copy\'s guidance narration survives the original\'s deletion',
     expect(rev.metadata.duplicatedFrom.projectId).toBe(fx.projectId);
     await expect(svc.assertNoEscapingReferences(fx.projectId, target)).resolves.toBeUndefined();
   });
+
+  it('survives a DOUBLE-ENCODED sim_revisions.metadata (jsonb string scalar) — sim-review P2', async () => {
+    // The db/jsonb.ts write-path bug stores some metadata rows as a jsonb STRING whose content
+    // is the JSON text of the object it should have been. The old scan expression ran
+    // `jsonb - 'duplicatedFrom'` unguarded, which raises SQLSTATE 22023 on a scalar and aborted
+    // the WHOLE duplication of any project carrying such a revision (verified live: every
+    // revision row the current write path produces is stored this way).
+    const target = await duplicate();
+    await pg.query(
+      `UPDATE sim_revisions r SET metadata = to_jsonb($2::text)
+       FROM simulations s WHERE s.id = r.simulation_id AND s.project_id = $1`,
+      [target, JSON.stringify({ duplicatedFrom: { projectId: fx.projectId }, weight: { totalBytes: 1 } })],
+    );
+    // Must neither throw 22023 NOR flag the (encoded) provenance as an escape: the fixed
+    // expression parses the scalar back and subtracts the exempted key from the parsed object.
+    await expect(svc.assertNoEscapingReferences(fx.projectId, target)).resolves.toBeUndefined();
+  });
+
+  it('a REAL escape hiding inside a double-encoded metadata row is still caught', async () => {
+    const target = await duplicate();
+    await pg.query(
+      `UPDATE sim_revisions r SET metadata = to_jsonb($2::text)
+       FROM simulations s WHERE s.id = r.simulation_id AND s.project_id = $1`,
+      [target, JSON.stringify({ note: `poster at simulations/${fx.projectId}/x/poster.png` })],
+    );
+    await expect(svc.assertNoEscapingReferences(fx.projectId, target))
+      .rejects.toThrow(/sim_revisions\.metadata/);
+  });
 });
 
 // ── (l) a corpus published under a Supabase URL ───────────────────────────────────────────────
