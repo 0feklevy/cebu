@@ -13,7 +13,7 @@
  *   2. its z-index exceeds the editor modal's 801.
  * Those two properties are exactly what the fix consists of, and losing either re-breaks it.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { SectionEditor } from '../components/SectionEditor';
@@ -63,6 +63,11 @@ function renderEditor() {
   );
 }
 
+/** The "Reuse this setup" card lives behind the collapsed-by-default Advanced disclosure. */
+function openAdvanced(): void {
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
+}
+
 const dialogFacts = (label: string) => {
   const dialog = screen.getByRole('dialog', { name: label });
   // Portaled out of the modal tree: its parent must be document.body itself.
@@ -72,10 +77,13 @@ const dialogFacts = (label: string) => {
 };
 
 describe('the preset dialogs are actually visible when opened', () => {
-  afterEach(() => cleanup());
+  // Sections with sim_meta log their last-generation diagnostics via console.warn by design.
+  beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
   it('Save setup… opens ABOVE the editor modal, portaled to body', () => {
     renderEditor();
+    openAdvanced();
     fireEvent.click(screen.getByText('Save setup…'));
 
     const { portaled, z } = dialogFacts('Save setup');
@@ -85,6 +93,7 @@ describe('the preset dialogs are actually visible when opened', () => {
 
   it('Load setup… opens ABOVE the editor modal, portaled to body', async () => {
     renderEditor();
+    openAdvanced();
     fireEvent.click(screen.getByText('Load setup…'));
 
     const { portaled, z } = dialogFacts('Load setup');
@@ -96,6 +105,7 @@ describe('the preset dialogs are actually visible when opened', () => {
     // The second half of the report: if sim_meta were missing the button is disabled by design —
     // this fixture has it, so a dead-looking button here is a real regression, not the guard.
     renderEditor();
+    openAdvanced();
     const btn = screen.getByText('Save setup…').closest('button') as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });

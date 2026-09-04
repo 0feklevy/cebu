@@ -125,6 +125,8 @@ function renderEditor() {
 
 /** Open the Load picker, select the recipe preset, and confirm the load. */
 async function loadRecipePreset() {
+  // The "Reuse this setup" card lives behind the collapsed-by-default Advanced disclosure.
+  fireEvent.click(screen.getByRole('button', { name: /advanced — controls picker/i }));
   fireEvent.click(screen.getByText('Load setup…'));
   const row = await screen.findByText('Boids pluck');
   await act(async () => { fireEvent.click(row.closest('button') as HTMLButtonElement); });
@@ -134,8 +136,12 @@ async function loadRecipePreset() {
 }
 
 describe('a recipe-fit load never spends an LLM call by itself', () => {
-  beforeEach(() => { fetchCalls = []; H.applyCalled = 0; H.updateCalls = []; stubFetch(); });
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  beforeEach(() => {
+    fetchCalls = []; H.applyCalled = 0; H.updateCalls = []; stubFetch();
+    // A section with sim_meta logs its last-generation diagnostics via console.warn by design.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it('confirming the load hits NO generate endpoint and keeps the current simulation', async () => {
     renderEditor();

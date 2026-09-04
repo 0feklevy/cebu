@@ -23,7 +23,7 @@ export const SURFACE_ANCHORS = {
   /** `SectionEditor`, across the section kinds it switches on. */
   section: [
     'sec-broll-info',
-    'sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-presets', 'sec-sim-controls',
+    'sec-sim-select', 'sec-sim-prompt', 'sec-sim-generate', 'sec-sim-advanced',
     'sec-camera', 'sec-video', 'sec-video-prompt', 'sec-video-generate', 'sec-video-options',
   ],
   /** `AvatarSettingsModal`. */

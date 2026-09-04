@@ -9,6 +9,23 @@ import {
 } from '@/lib/tours/steps';
 import { tourAnchor } from '@/lib/tours/anchors';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+
+/**
+ * Logs the last generation's diagnostics (confidence, provider/model, bridge warnings) to the
+ * console instead of the panel — the Advanced view still renders them, a regular user does not
+ * see them, and a bug report can always pull them from here.
+ */
+function SimMetaConsoleLog({ meta }: { meta: Record<string, unknown> | null }) {
+  useEffect(() => {
+    if (!meta) return;
+    const warns = (meta.warnings as string[] | undefined) ?? [];
+    console.warn('[sim] last generation', {
+      confidence: meta.confidence, provider: meta.provider, model: meta.model,
+      ...(warns.length ? { warnings: warns } : {}),
+    });
+  }, [meta]);
+  return null;
+}
 import { createPortal } from 'react-dom';
 import { getAuth } from 'firebase/auth';
 import { Archive, Check, ChevronDown, ChevronUp, Copy, Download, Maximize2, Minimize2, Play, Square } from 'lucide-react';
@@ -237,6 +254,10 @@ export function SectionEditor({
 
   // ── Minimal-UI control picker (Advanced · UI controls) ────────────────────
   const [uiPanelOpen, setUiPanelOpen]   = useState(false);
+  // One Advanced disclosure for the power tools (owner direction 2026-09-04): the Minimal-UI
+  // control picker, "Reuse this setup" and "Guided Simulation" live behind it, so the default
+  // "This moment" reading is prompt + two toggles and nothing else.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [uiControls, setUiControls]     = useState<SimUiControl[]>([]);
   // Unchecked = HIDDEN in Minimal UI. Tracking the unchecked set means controls that are
   // new to a rescan default to checked (visible) without any bookkeeping.
@@ -2317,9 +2338,10 @@ export function SectionEditor({
                       <p style={{ fontSize: 10, color: 'hsl(var(--muted-foreground))', textAlign: 'right', margin: '3px 0 0' }}>{simPrompt.length}/1000</p>
                     </div>
 
-                    {/* ② Choose the controls (the Minimal-UI picker) */}
-                    <div style={{ marginTop: -4 }} {...tourAnchor('sec-sim-controls')}>
-                      <label style={labelStyle}>2 · Choose the controls <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, opacity: 0.75 }}>— optional</span></label>
+                    {/* Choose the controls (the Minimal-UI picker) — an Advanced tool. */}
+                    {advancedOpen && (
+                    <div id="sim-advanced-picker" style={{ marginTop: -4 }}>
+                      <label style={labelStyle}>Choose the controls <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, opacity: 0.75 }}>— optional</span></label>
                       <button
                         type="button"
                         onClick={() => setUiPanelOpen(v => {
@@ -2564,11 +2586,13 @@ export function SectionEditor({
                       )}
                     </div>
 
+                    )}
+
                     <div style={{ marginTop: -4 }}>
                       {/* NOT "Apply them": the apply is the button below, and numbering a
                           setting as the final step told the reader they were finished one
-                          control early. Three numbered inputs, then the action. */}
-                      <label style={labelStyle}>3 · How it behaves</label>
+                          control early. Numbered inputs, then the action. */}
+                      <label style={labelStyle}>2 · How it behaves</label>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 6 }}>
                       {([
                         { key: 'simpleUi' as const,   label: 'Simple UI',   desc: 'Hides irrelevant controls', on: simpleUi,   set: setSimpleUi },
@@ -2622,7 +2646,18 @@ export function SectionEditor({
                       </div>
                     )}
 
-                    {simMeta && !generating && (
+                    {/* Diagnostics go to the console for every user; the panel itself is an
+                        Advanced view (owner direction 2026-09-04 — confidence %, provider and
+                        bridge warnings are operator chatter to a regular user). */}
+                    {simMeta && <SimMetaConsoleLog meta={simMeta as unknown as Record<string, unknown>} />}
+                    {simMeta && !generating && simMeta.confidence != null && simMeta.confidence < 0.45 && (
+                      <div style={{ backgroundColor: 'hsl(var(--destructive) / 0.12)', border: '1px solid hsl(var(--destructive) / 0.4)', borderRadius: 6, padding: '5px 8px' }}>
+                        <p style={{ fontSize: 10, color: 'hsl(var(--destructive))', margin: 0 }}>
+                          ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — check the script runs correctly before recording
+                        </p>
+                      </div>
+                    )}
+                    {simMeta && !generating && advancedOpen && (
                       <div style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderLeft: '3px solid hsl(var(--success))', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'hsl(var(--success))' }}>Last generation</span>
@@ -2675,13 +2710,6 @@ export function SectionEditor({
                             </>
                           );
                         })()}
-                        {simMeta.confidence != null && simMeta.confidence < 0.45 && (
-                          <div style={{ backgroundColor: 'hsl(var(--destructive) / 0.12)', border: '1px solid hsl(var(--destructive) / 0.4)', borderRadius: 6, padding: '5px 8px' }}>
-                            <p style={{ fontSize: 10, color: 'hsl(var(--destructive))', margin: 0 }}>
-                              ⚠ Low confidence ({Math.round(simMeta.confidence * 100)}%) — check the script runs correctly before recording
-                            </p>
-                          </div>
-                        )}
                       </div>
                     )}
 
@@ -2739,6 +2767,27 @@ export function SectionEditor({
                   </div>
                 )}
 
+                {/* ── Advanced disclosure — the power tools live behind it (owner direction
+                    2026-09-04): the Minimal-UI control picker above, and the "Reuse this
+                    setup" / "Guided Simulation" cards below. Deliberately OUTSIDE the `simId`
+                    gate, because loading a saved setup is exactly for sections with no sim. */}
+                <button
+                  type="button"
+                  {...tourAnchor('sec-sim-advanced')}
+                  onClick={() => setAdvancedOpen(v => !v)}
+                  aria-expanded={advancedOpen}
+                  aria-controls="sim-advanced-picker sim-advanced-reuse sim-advanced-guided"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+                    border: 'none', background: 'none', padding: '2px 0', cursor: 'pointer',
+                    fontSize: 11, fontWeight: 700, color: 'hsl(var(--muted-foreground))',
+                  }}
+                >
+                  <span aria-hidden style={{ display: 'inline-block', transition: 'transform 0.12s', transform: advancedOpen ? 'rotate(90deg)' : 'none' }}>▸</span>
+                  Advanced
+                  <span style={{ fontWeight: 500, opacity: 0.75 }}>— controls picker · reuse setups · guided voice</span>
+                </button>
+
                 {/* ── Reuse: name this setup, or load one saved elsewhere ──
                     Deliberately OUTSIDE the `simId` gate above. A saved setup carries its own
                     simulation, so a section with nothing in it is exactly where loading one is
@@ -2747,7 +2796,8 @@ export function SectionEditor({
                 {/* A different accent from "This moment" above it. Two cards with the same
                     amber top border read as one card continuing, and these are different
                     features: one writes this section, the other moves it between projects. */}
-                <div style={{ ...cardStyle('#0891b2'), gap: 8 }}>
+                {advancedOpen && (
+                <div id="sim-advanced-reuse" style={{ ...cardStyle('#0891b2'), gap: 8 }}>
                     <label style={{ ...labelStyle, marginBottom: 0 }}>Reuse this setup</label>
                     <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0, lineHeight: 1.5 }}>
                       A saved setup is this section’s whole configuration — the prompt, the script, the
@@ -2760,7 +2810,7 @@ export function SectionEditor({
                         simulation with it — nothing is stored twice.
                       </p>
                     )}
-                    <div {...tourAnchor('sec-sim-presets')} style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 6 }}>
                       <button
                         onClick={() => { rememberFocus(); setPresetSaveOpen(true); setPresetLabel(''); setPresetError(null); }}
                         // A bridge worth saving exists once the section HAS a generated setup —
@@ -2838,10 +2888,11 @@ export function SectionEditor({
                       </div>
                     )}
                 </div>
+                )}
 
-                {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) ── */}
-                {simId && (
-                  <div style={{ ...cardStyle('#6366f1'), gap: 12 }}>
+                {/* ── GUIDED SIMULATION (mother-sim-level voice guidance) — Advanced. ── */}
+                {advancedOpen && simId && (
+                  <div id="sim-advanced-guided" style={{ ...cardStyle('#6366f1'), gap: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span aria-hidden style={{ fontSize: 14 }}>🎙</span>
                       <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>Guided Simulation</span>

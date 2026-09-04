@@ -737,7 +737,29 @@ function __simInstallV3(win, sections, opts) {
         // later its layout has landed, which is the same bookkeeping frame the v2 ack uses — and,
         // exactly as there, it is the SYSTEM rAF so this frame can never count as the simulation's
         // own first paint.
-        scope.sysRaf(function () { ctx.markPresented({ canvas: measureCanvas() }); });
+        var ack = function () {
+          scope.sysRaf(function () { ctx.markPresented({ canvas: measureCanvas() }); });
+        };
+        // Heavy-asset readiness hook (2026-09-04): a package whose first COMPLETE frame depends
+        // on large async assets (a multi-MB GLB mid-download) may export
+        // window.__flowvidReadyForPresent, a function returning a thenable. The ack — and
+        // therefore the parent's poster-to-live reveal — waits for it, so a half-loaded scene with its own
+        // loading chrome can never become the acknowledged frame of a published section.
+        // Bounded WELL UNDER the parent's SIM_PRESENT_TIMEOUT_MS (5s): on expiry we ack with
+        // whatever is drawn rather than let the activation be classified a present-timeout.
+        // Absent hook (every package published before this) → the old immediate ack, unchanged.
+        var hook = null;
+        try { hook = win.__flowvidReadyForPresent; } catch (e) { hook = null; }
+        if (typeof hook !== 'function') { ack(); return; }
+        var done = false;
+        var settle = function () { if (!done) { done = true; ack(); } };
+        var timer = win.setTimeout(settle, 4200);
+        var clearAndSettle = function () { win.clearTimeout(timer); settle(); };
+        try {
+          var r = hook();
+          if (r && typeof r.then === 'function') r.then(clearAndSettle, clearAndSettle);
+          else clearAndSettle();
+        } catch (e2) { clearAndSettle(); }
       },
       dispose: function () { if (cleanup) cleanup(); }
     };

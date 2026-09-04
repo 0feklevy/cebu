@@ -36,9 +36,17 @@ function makeFlow(overrides: Partial<UseProjectExport> = {}): UseProjectExport {
   };
 }
 
+// NON-routine warnings: the routine per-section poster-fallback line now collapses into one
+// summary row (owner direction 2026-09-04, see the collapse suite below), so the rule-7
+// scroll/viewport discipline is exercised with warnings that all stay individually visible.
 const MANY_WARNINGS = Array.from(
   { length: 60 },
-  (_, i) => `section ${i}: no poster still exists for this exact configuration — falls back`,
+  (_, i) => `section ${i}: audio layer omitted from the mix — source track unavailable`,
+);
+
+const ROUTINE_WARNINGS = Array.from(
+  { length: 14 },
+  (_, i) => `section ${i}: no poster still exists for this exact configuration — if capture is unavailable this window falls back to the base video`,
 );
 
 describe('consent panel with MANY warnings (rule 7 — the production overflow)', () => {
@@ -109,6 +117,48 @@ describe('consent panel with MANY warnings (rule 7 — the production overflow)'
     expect(list.className).toContain('overflow-y-auto');
     const cancelExport = screen.getByRole('button', { name: 'Cancel export' });
     expect(list.contains(cancelExport)).toBe(false);
+  });
+});
+
+describe('routine poster-fallback warnings collapse (rule 2 amendment, 2026-09-04)', () => {
+  it('renders ONE summary row for the routine lines, keeps non-routine lines verbatim', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    render(
+      <ExportProgressPanel
+        open
+        onClose={() => {}}
+        flow={makeFlow({
+          status: 'assembling', busy: true,
+          warnings: [...ROUTINE_WARNINGS, 'section 99: audio layer omitted from the mix'],
+        })}
+      />,
+    );
+    const list = screen.getByRole('list', { name: 'Export warnings' });
+    const items = list.querySelectorAll('li');
+    expect(items).toHaveLength(2); // 1 summary + 1 non-routine
+    expect(items[0].textContent).toMatch(/14 sections without a poster/);
+    expect(items[1].textContent).toContain('section 99: audio layer omitted');
+    // The header counts what is SHOWN, not the raw list.
+    expect(screen.getByText('2 warnings')).toBeTruthy();
+    // The full detail is not lost — it went to the console for bug reports.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('14 routine poster-fallback'));
+    warnSpy.mockRestore();
+  });
+
+  it('Copy all still hands over the COMPLETE original text, collapsed lines included', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { getByRole } = render(
+      <ExportProgressPanel
+        open
+        onClose={() => {}}
+        flow={makeFlow({ degradedConsent: { warnings: ROUTINE_WARNINGS } })}
+      />,
+    );
+    getByRole('button', { name: /copy all/i }).click();
+    expect(writeText).toHaveBeenCalledWith(ROUTINE_WARNINGS.join('\n'));
+    warnSpy.mockRestore();
   });
 });
 

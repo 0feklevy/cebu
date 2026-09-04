@@ -29,8 +29,11 @@ export const TOUR_ANCHORS = {
   'sec-sim-select': 'sec-sim-select',
   'sec-sim-prompt': 'sec-sim-prompt',
   'sec-sim-generate': 'sec-sim-generate',
-  'sec-sim-presets': 'sec-sim-presets',
-  'sec-sim-controls': 'sec-sim-controls',
+  // One anchor for the Advanced disclosure that now holds the control picker, saved setups
+  // and guided voice (2026-09-04). The old 'sec-sim-presets'/'sec-sim-controls' anchors died
+  // with the always-visible layout — a step pointing INSIDE a collapsed disclosure is skipped
+  // silently, which is exactly the rot this ledger exists to prevent.
+  'sec-sim-advanced': 'sec-sim-advanced',
   'sec-camera': 'sec-camera',
   'sec-video': 'sec-video',
   'sec-video-prompt': 'sec-video-prompt',
