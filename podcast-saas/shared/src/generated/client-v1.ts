@@ -717,7 +717,9 @@ export interface SimMeta {
   warnings?:            string[];
   validationErrors?:    string[];
   validationWarnings?:  string[];
-  runtimeValidated?:    boolean;
+  // runtimeValidated is GONE (sim-review 2026-09-04, P2): every writer wrote a literal `false`,
+  // nothing ever set it true, nothing read it. Rows that still carry it are tolerated — the type
+  // simply no longer advertises a validation claim no code has ever made good on.
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
 
   // ── Legacy BridgePlan (planVersion <= 5) ─────────────────────────────────────

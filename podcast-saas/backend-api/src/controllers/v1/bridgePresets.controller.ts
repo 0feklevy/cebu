@@ -276,7 +276,7 @@ export async function registerBridgePresetRoutes(app: FastifyInstance): Promise<
                 bridgeHash: result.bridgeHash,
                 generatedAt: new Date().toISOString(),
                 supportsRuntimeParams: true,
-                runtimeValidated: false,
+                // runtimeValidated removed in lockstep with sections.controller (sim-review P2).
                 conversationHistory: full.conversation_history ?? undefined,
               },
               simulation_url: result.sectionUrl,

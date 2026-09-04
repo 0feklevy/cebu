@@ -116,6 +116,9 @@ export class MigratingStorageAdapter implements StorageService {
   // ── URLs: the primary's; the inverse understands both ──
   getPublicUrl(path: string): string { return this.primary.getPublicUrl(path); }
   getSimPublicUrl(path: string): string { return this.primary.getSimPublicUrl(path); }
+  getSimAssetRedirectUrl(path: string): string {
+    return this.primary.getSimAssetRedirectUrl?.(path) ?? this.primary.getPublicUrl(path);
+  }
   keyFromPublicUrl(url: string | null | undefined): string | null {
     return this.primary.keyFromPublicUrl(url) ?? this.secondary.keyFromPublicUrl(url);
   }

@@ -21,7 +21,7 @@
 
 import type { SimManifest, SimManifestFile } from './simManifest.js';
 
-export type WeightCategory = 'entry' | 'runtime' | 'script' | 'style' | 'image' | 'media' | 'font' | 'other';
+export type WeightCategory = 'entry' | 'runtime' | 'script' | 'style' | 'image' | 'media' | 'font' | 'model' | 'other';
 
 /** Classify by content type first, extension second: the stored type is what a browser acts on. */
 export function categorize(f: SimManifestFile): WeightCategory {
@@ -31,12 +31,17 @@ export function categorize(f: SimManifestFile): WeightCategory {
   if (ct.startsWith('image/')) return 'image';
   if (ct.startsWith('video/') || ct.startsWith('audio/')) return 'media';
   if (ct.startsWith('font/') || /font|woff/.test(ct)) return 'font';
+  // 3D assets get their own category (sim-review 2026-09-04, P1): a 30MB GLB filed under
+  // 'other' made the one number an operator most needs — "how much of this package is model
+  // data" — invisible in every weight report.
+  if (ct.startsWith('model/')) return 'model';
   if (ct.includes('javascript') || ct.includes('ecmascript')) return 'script';
   if (ct.includes('css')) return 'style';
   const ext = f.path.slice(f.path.lastIndexOf('.') + 1).toLowerCase();
   if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'svg'].includes(ext)) return 'image';
   if (['mp4', 'webm', 'mp3', 'ogg', 'wav'].includes(ext)) return 'media';
   if (['woff', 'woff2', 'ttf', 'otf', 'eot'].includes(ext)) return 'font';
+  if (['glb', 'gltf', 'bin', 'obj', 'fbx', 'usdz'].includes(ext)) return 'model';
   if (['js', 'mjs', 'cjs'].includes(ext)) return 'script';
   if (ext === 'css') return 'style';
   return 'other';
@@ -71,7 +76,7 @@ export const LIMITS = {
 const EMPTY = (): Record<WeightCategory, { bytes: number; count: number }> => ({
   entry: { bytes: 0, count: 0 }, runtime: { bytes: 0, count: 0 }, script: { bytes: 0, count: 0 },
   style: { bytes: 0, count: 0 }, image: { bytes: 0, count: 0 }, media: { bytes: 0, count: 0 },
-  font: { bytes: 0, count: 0 }, other: { bytes: 0, count: 0 },
+  font: { bytes: 0, count: 0 }, model: { bytes: 0, count: 0 }, other: { bytes: 0, count: 0 },
 });
 
 export function analyzeWeight(manifest: SimManifest, topN = 10): WeightReport {

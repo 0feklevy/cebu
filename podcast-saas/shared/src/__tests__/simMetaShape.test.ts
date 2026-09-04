@@ -70,7 +70,6 @@ const LLM_WRITE: SimMeta = {
   validationErrors:      [],
   validationWarnings:    ['unused selector'],
   supportsRuntimeParams: true,
-  runtimeValidated:      false,
   conversationHistory:   [{ role: 'user', content: 'slower' }, { role: 'assistant', content: 'ok' }],
 };
 

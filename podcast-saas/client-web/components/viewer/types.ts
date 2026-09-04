@@ -277,6 +277,12 @@ export interface PlayerConfig {
    * measurement it judges is not a standard at all.
    */
   sim_lab_budget_ms?: Record<string, number>;
+  /**
+   * Total package weight (bytes) of each simulation's active revision, keyed by simulation id.
+   * The byte half of pool-residency and prepare-bound decisions: absent key = unmeasured
+   * (legacy revision without a weight report), never zero.
+   */
+  sim_weight_bytes?: Record<string, number>;
 }
 
 export interface TimelineSeg {

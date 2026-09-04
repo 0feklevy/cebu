@@ -241,3 +241,28 @@ describe('window-tier residency planner (audited defects: distant initial mount,
     expect(plan.keep.size).toBe(2);
   });
 });
+
+// ── poolWithinWeightBudget — the byte half of the tier decision (sim-review 2026-09-04, P1) ───
+
+import { poolWithinWeightBudget, SIM_POOL_WEIGHT_BUDGET_BYTES } from '../lib/simPool';
+
+describe('poolWithinWeightBudget', () => {
+  const spec = (key: string) => ({ key });
+
+  it('a light pooled set stays within budget (tier "all" keeps mounting up front)', () => {
+    expect(poolWithinWeightBudget([spec('a'), spec('b')], { a: 500_000, b: 2_000_000 })).toBe(true);
+  });
+
+  it('a byte-heavy set exceeds it — four 35MB packages must NOT mount at t=0', () => {
+    const w = { a: 35_000_000, b: 35_000_000, c: 35_000_000, d: 35_000_000 };
+    expect(poolWithinWeightBudget([spec('a'), spec('b'), spec('c'), spec('d')], w)).toBe(false);
+    // …while a single heavy package still fits: one 35MB mount is the product working.
+    expect(poolWithinWeightBudget([spec('a')], w)).toBe(true);
+  });
+
+  it('an unmeasured package counts 0 — absence is "no data", never a demotion', () => {
+    expect(poolWithinWeightBudget([spec('a'), spec('b')], {})).toBe(true);
+    expect(poolWithinWeightBudget([spec('a'), spec('b')], { a: SIM_POOL_WEIGHT_BUDGET_BYTES })).toBe(true);
+    expect(poolWithinWeightBudget([spec('a'), spec('b')], { a: SIM_POOL_WEIGHT_BUDGET_BYTES, b: 1 })).toBe(false);
+  });
+});

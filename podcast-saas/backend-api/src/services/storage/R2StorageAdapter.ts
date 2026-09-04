@@ -333,15 +333,34 @@ export class R2StorageAdapter implements StorageService {
   }
 
   getSimPublicUrl(path: string): string {
-    // Simulation static files are served directly from R2 public URL (no proxy needed —
-    // they load via iframe which uses allow-same-origin, and postMessage works cross-origin).
+    // Through the backend's /sim-public/* proxy, exactly like the Supabase and local adapters.
+    // The old direct-bucket answer ("no proxy needed — iframes work cross-origin") was wrong
+    // about what the proxy is FOR: it is where the sim CSP (frame-ancestors), the serve-time
+    // boot snippet, and the revision publication gate are applied. Direct bucket URLs skipped
+    // all three and made draft-revision bytes world-readable (sim-review 2026-09-04, P0).
+    //
+    // Poster renditions keep the direct-bucket fast path (mirrors SupabaseStorageAdapter):
+    // binary, content-addressed, immutable — the proxy added a 302 per tile and capped the
+    // cache at an hour.
+    if (/\/posters\/[^/]+\/(standard|compact)\.(png|webp|avif)$/.test(path)) {
+      return `${this.publicUrl}/${path}`;
+    }
+    return `${publicApiOrigin()}/sim-public/${path}`;
+  }
+
+  getSimAssetRedirectUrl(path: string): string {
+    // Where /sim-public 302s a binary sim asset AFTER its access checks passed. Cannot be
+    // getPublicUrl: R2's wraps everything in /hls-proxy/…, which 403s simulations/ keys.
     return `${this.publicUrl}/${path}`;
   }
 
-  /** The inverse of the two shapes above. See `publicUrlKeys.ts`. */
+  /** The inverse of the shapes above. See `publicUrlKeys.ts`. */
   keyFromPublicUrl(url: string | null | undefined): string | null {
     return keyFromPublicUrlAgainst(url, [
       `${publicApiOrigin().replace(/\/+$/, '')}/hls-proxy`,
+      // Sim URLs are now minted through the proxy; direct bucket URLs stay on the list so
+      // rows written before the P0 fix (and poster/asset URLs) still invert to their keys.
+      `${publicApiOrigin().replace(/\/+$/, '')}/sim-public`,
       this.publicUrl,
       this.legacyPublicUrl,
     ]);

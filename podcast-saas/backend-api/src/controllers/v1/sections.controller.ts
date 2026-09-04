@@ -1121,7 +1121,9 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
               validationErrors:   result.validationErrors,
               validationWarnings: result.validationWarnings,
               supportsRuntimeParams: true,
-              runtimeValidated:   false,
+              // runtimeValidated removed (sim-review 2026-09-04, P2): written `false` here since
+              // planVersion 7, promoted to true by nothing, read by nothing — an always-false
+              // claim is worse than no claim. Runtime proof lives in sim_revisions.proof_states.
               conversationHistory: result.conversationHistory,
             },
             simulation_url: result.sectionUrl,

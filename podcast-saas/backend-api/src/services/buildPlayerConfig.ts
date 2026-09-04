@@ -3,7 +3,7 @@ import { db } from '../db/index.js';
 import {
   projects, video_files, timeline_sections, image_files, audio_files, scenes,
   branch_sequences, branch_choice_points, branch_edges, playlists, simulations, sim_posters,
-  video_dubs,
+  video_dubs, sim_revisions,
 } from '../db/schema.js';
 import { eq, asc, inArray } from 'drizzle-orm';
 
@@ -506,6 +506,42 @@ export async function buildPlayerConfig(
     // server instead. The canary number is a property of the PACKAGE and of nobody's device, which
     // is what a standard has to be.
     if (lab !== null) simLabBudgets[simId] = lab;
+  }
+
+  // Per-package total weight from the ACTIVE revision's publish-time report. Until now
+  // `metadata.weight` was written at publication and read by nothing player-facing — so a 35MB
+  // package and a 500KB one were indistinguishable to pool residency and to the prepare failure
+  // bound (sim-review 2026-09-04, P1). Absent (legacy revision, no weight report) means
+  // "unmeasured", never 0 — the client only ever uses a weight it actually has.
+  const simWeightBytes: Record<string, number> = {};
+  {
+    const revToSim = new Map<string, string>();
+    for (const [simId, row] of simRows) {
+      if (typeof row.active_revision_id === 'string' && row.active_revision_id) {
+        revToSim.set(row.active_revision_id, simId);
+      }
+    }
+    if (revToSim.size > 0) {
+      // Failure here (or a test double without .select) yields an empty map, never a failed
+      // config — same posture as the fieldAggregates lookup above.
+      const revRows = await Promise.resolve()
+        .then(() => db
+          .select({ id: sim_revisions.id, metadata: sim_revisions.metadata })
+          .from(sim_revisions)
+          .where(inArray(sim_revisions.id, [...revToSim.keys()])))
+        .catch(() => [] as { id: string; metadata: unknown }[]);
+      for (const rev of revRows) {
+        // Tolerate the db/jsonb.ts double-encoding: a metadata stored as a jsonb STRING scalar
+        // comes back as the JSON text; parse it before reading the report.
+        let meta: unknown = rev.metadata;
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = null; } }
+        const total = (meta as { weight?: { totalBytes?: unknown } } | null)?.weight?.totalBytes;
+        const simId = revToSim.get(rev.id);
+        if (simId && typeof total === 'number' && Number.isFinite(total) && total > 0) {
+          simWeightBytes[simId] = total;
+        }
+      }
+    }
   }
 
   const packageRevisionFor = (simId: string | null, url: string | null): string | null => {
@@ -1113,6 +1149,10 @@ export async function buildPlayerConfig(
     // The canary number alone. Adaptive quality judges against this, never against the refined
     // lead time above — see the note at the emit site.
     sim_lab_budget_ms: simLabBudgets,
+    // Total package weight of each simulation's active revision — pool residency demotes the
+    // up-front-mount tier when the pooled set is byte-heavy, and the prepare failure bound
+    // extends for packages whose bytes justify it. Absent key = unmeasured, never zero.
+    sim_weight_bytes: simWeightBytes,
   };
 }
 
