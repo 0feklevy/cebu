@@ -68,7 +68,21 @@ for (const cut of edl.cuts) {
   cursor = start + dur;
 }
 const total = cursor;
-writeFileSync(join(WORK, 'timeline.json'), JSON.stringify({ film, total, timeline }, null, 2));
+// LIVE WINDOWS FOLLOW THE CUT. A window is the run of consecutive LIVE-WINDOW beats naming the same
+// sim, timed on the DERIVED timeline rather than the script's slot, so the seeded section
+// (seeding/build-template.mjs reads these), the music duck below and the picture agree to the frame.
+const windows = [];
+for (const t of timeline) {
+  const line = lines.find(l => l.scene === t.scene);
+  const kind = t.cut.kind ?? line?.kind ?? 'VIDEO';
+  const sim = line?.window ?? t.cut.window ?? null;
+  if (kind !== 'LIVE-WINDOW' || !sim) continue;
+  const end = Number((t.start + t.dur).toFixed(2));
+  const last = windows[windows.length - 1];
+  if (last && last.sim === sim && Math.abs(last.end - t.start) < 0.05) { last.end = end; last.scenes.push(t.scene); }
+  else windows.push({ sim, start: Number(t.start.toFixed(2)), end, scenes: [t.scene] });
+}
+writeFileSync(join(WORK, 'timeline.json'), JSON.stringify({ film, total, windows, timeline }, null, 2));
 
 // ── 3. per-scene video normalization → concat ─────────────────────────────────────────────────
 // CREATIVE-DIRECTION v3 R4: never clone a frame. A scene may carry `sources: [..]` (sub-cuts
@@ -110,14 +124,17 @@ const bed = join(KIT, 'music', BEDS[film]);
 const voScenes = timeline.filter(t => t.voFile);
 const inputs = ['-i', bed, ...voScenes.flatMap(t => ['-i', t.voFile])];
 // v3 grammar: the music CUTS DEAD while a live window is open (the sim carries the moment) and
-// comes back at the auto-return. Windows come from seeding/layout-v3.json for this film.
+// comes back at the auto-return. Windows are the cut's own (derived above); the layout's requested
+// windows are only the fallback for a film whose script carries no LIVE-WINDOW beats.
 const LAYOUT = JSON.parse(readFileSync(join(KIT, 'seeding/layout-v3.json'), 'utf8'));
-const windowsFor = (n) => {
+const layoutWindowsFor = (n) => {
   if (n === 1) return LAYOUT.demo.windows;
   if (n === 2) return LAYOUT.tutorial.windows;
   return (LAYOUT.niche.find((x) => x.film === n)?.windows) ?? [];
 };
-const wins = windowsFor(film).map((w) => w.window);
+const wins = windows.length
+  ? windows.map((w) => [w.start, w.end])
+  : layoutWindowsFor(film).map((w) => w.window);
 const duckExpr = wins.length
   ? `'${wins.map(([a, b]) => `between(t,${a},${b})`).join('+')}'`
   : null;

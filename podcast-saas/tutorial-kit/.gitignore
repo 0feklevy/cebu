@@ -11,3 +11,8 @@ music/*.wav
 narration/audio/
 narration/audio-scratch/
 seeding/.seed-env.local
+narration/audio-*/
+narration/audition*/
+seeding/proof/*.png
+# subagents run with this directory as cwd leave their scratch memory here — never repo material
+.claude/

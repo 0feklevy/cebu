@@ -1,0 +1,20 @@
+== LEGACY .glb (first GET) ==
+HTTP/1.1 200 OK
+accept-ranges: bytes
+content-length: 29719784
+== LEGACY .glb (repeat GET — what a browser could send: nothing to condition on?) ==
+HTTP/1.1 200 OK
+content-length: 29719784
+== LEGACY entry HTML ==
+HTTP/1.1 200 OK
+cache-control: no-cache
+content-length: 31086
+== REVISION entry + one package file ==
+revision entry: http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html
+HTTP/1.1 200 OK
+cache-control: no-cache, must-revalidate
+content-length: 29601
+revision glb: http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb
+HTTP/1.1 200 OK
+cache-control: public, max-age=31536000, immutable
+content-length: 29719784

@@ -1,0 +1,4600 @@
+{
+ "t0": 1788609910284,
+ "net": [
+  {
+   "ev": "req",
+   "t": 30,
+   "url": "http://localhost:3000/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 81,
+   "url": "http://localhost:3000/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+   "rt": "font",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/css/app/layout.css?v=1788609910324",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/css/app/projects/%5Bid%5D/editor/page.css?v=1788609910324",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/chunks/webpack.js?v=1788609910324",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/chunks/main-app.js?v=1788609910324",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/chunks/app-pages-internals.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/chunks/app/layout.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 86,
+   "url": "http://localhost:3000/_next/static/chunks/app/projects/%5Bid%5D/editor/page.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 103,
+   "url": "http://localhost:3000/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "48432",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 652,
+    "responseBodySize": 48432,
+    "responseHeadersSize": 966
+   },
+   "timing": {
+    "startTime": 1788609910360.6382,
+    "domainLookupStart": 0.071,
+    "domainLookupEnd": 0.079,
+    "connectStart": 0.079,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.377,
+    "requestStart": 0.456,
+    "responseStart": 15.005,
+    "responseEnd": 15.676
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 105,
+   "url": "http://localhost:3000/_next/static/css/app/layout.css?v=1788609910324",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 626,
+    "responseBodySize": 17656,
+    "responseHeadersSize": 1022
+   },
+   "timing": {
+    "startTime": 1788609910364.531,
+    "domainLookupStart": 0.068,
+    "domainLookupEnd": 0.072,
+    "connectStart": 0.072,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.972,
+    "requestStart": 1.018,
+    "responseStart": 12.814,
+    "responseEnd": 15.324
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 107,
+   "url": "http://localhost:3000/_next/static/css/app/projects/%5Bid%5D/editor/page.css?v=1788609910324",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 649,
+    "responseBodySize": 15906,
+    "responseHeadersSize": 1022
+   },
+   "timing": {
+    "startTime": 1788609910365.1528,
+    "domainLookupStart": 0.054,
+    "domainLookupEnd": 0.061,
+    "connectStart": 0.061,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.679,
+    "requestStart": 0.697,
+    "responseStart": 13.567,
+    "responseEnd": 16.962
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 108,
+   "url": "http://localhost:3000/_next/static/chunks/webpack.js?v=1788609910324",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 611,
+    "responseBodySize": 28662,
+    "responseHeadersSize": 1036
+   },
+   "timing": {
+    "startTime": 1788609910365.6309,
+    "domainLookupStart": 0.039,
+    "domainLookupEnd": 0.043,
+    "connectStart": 0.043,
+    "secureConnectionStart": -1,
+    "connectEnd": 3.519,
+    "requestStart": 3.652,
+    "responseStart": 12.981,
+    "responseEnd": 18.816
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 116,
+   "url": "http://localhost:3000/_next/static/chunks/app-pages-internals.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 623,
+    "responseBodySize": 65013,
+    "responseHeadersSize": 1036
+   },
+   "timing": {
+    "startTime": 1788609910369.0432,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 7.041,
+    "responseStart": 11.889,
+    "responseEnd": 27.394
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 116,
+   "url": "http://localhost:3000/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 726,
+    "responseBodySize": 8966,
+    "responseHeadersSize": 1145
+   },
+   "timing": {
+    "startTime": 1788609910313.874,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.108,
+    "responseStart": 42.884,
+    "responseEnd": 76.971
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 143,
+   "url": "http://localhost:3000/_next/static/chunks/app/layout.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 614,
+    "responseBodySize": 402327,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788609910375.999,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 3.787,
+    "responseStart": 11.162,
+    "responseEnd": 58.525
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 247,
+   "url": "http://localhost:3000/_next/static/chunks/main-app.js?v=1788609910324",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 612,
+    "responseBodySize": 1774685,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788609910365.7622,
+    "domainLookupStart": 0.022,
+    "domainLookupEnd": 0.026,
+    "connectStart": 0.026,
+    "secureConnectionStart": -1,
+    "connectEnd": 3.636,
+    "requestStart": 3.743,
+    "responseStart": 12.711,
+    "responseEnd": 154.513
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 407,
+   "url": "http://localhost:3000/_next/static/chunks/app/projects/%5Bid%5D/editor/page.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 637,
+    "responseBodySize": 3442933,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788609910379.713,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 1.731,
+    "responseStart": 10.512,
+    "responseEnd": 272.684
+   }
+  },
+  {
+   "ev": "req",
+   "t": 503,
+   "url": "http://localhost:3000/icon?1130ee2db19a675d",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 511,
+   "url": "http://localhost:8080/api/v1/platform/settings",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 517,
+   "url": "http://localhost:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake-api-key",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 519,
+   "url": "http://localhost:8080/api/v1/platform/settings",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "160",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 578,
+    "responseBodySize": 160,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788609910791.614,
+    "domainLookupStart": 0.064,
+    "domainLookupEnd": 0.073,
+    "connectStart": 0.073,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.423,
+    "requestStart": 0.459,
+    "responseStart": 6.71,
+    "responseEnd": 7.237
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 521,
+   "url": "http://localhost:3000/icon?1130ee2db19a675d",
+   "status": 200,
+   "cache": "no-cache, no-store",
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 645,
+    "responseBodySize": 1069,
+    "responseHeadersSize": 944
+   },
+   "timing": {
+    "startTime": 1788609910786.8518,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.12,
+    "responseStart": 13.877,
+    "responseEnd": 14.304
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 522,
+   "url": "http://localhost:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake-api-key",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 529,
+    "requestHeadersSize": 986,
+    "responseBodySize": 617,
+    "responseHeadersSize": 252
+   },
+   "timing": {
+    "startTime": 1788609910802.994,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.079,
+    "responseStart": 1.084,
+    "responseEnd": 2.76
+   }
+  },
+  {
+   "ev": "req",
+   "t": 525,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 525,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/videos",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 525,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 525,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor-state",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 525,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/avatar/circles",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 548,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "99",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1151,
+    "responseBodySize": 99,
+    "responseHeadersSize": 781
+   },
+   "timing": {
+    "startTime": 1788609910813.715,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.081,
+    "responseStart": 17.349,
+    "responseEnd": 22.207
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 552,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "1551",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1145,
+    "responseBodySize": 1551,
+    "responseHeadersSize": 783
+   },
+   "timing": {
+    "startTime": 1788609910810.467,
+    "domainLookupStart": 0,
+    "domainLookupEnd": 0,
+    "connectStart": 0,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.132,
+    "requestStart": 0.177,
+    "responseStart": 21.774,
+    "responseEnd": 23.492
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 552,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/videos",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "14191",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1152,
+    "responseBodySize": 14191,
+    "responseHeadersSize": 784
+   },
+   "timing": {
+    "startTime": 1788609910813.622,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.122,
+    "responseStart": 20.183,
+    "responseEnd": 25.005
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 565,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/avatar/circles",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "15",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1192,
+    "responseBodySize": 15,
+    "responseHeadersSize": 781
+   },
+   "timing": {
+    "startTime": 1788609910815.37,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.083,
+    "responseStart": 32.218,
+    "responseEnd": 38.6
+   }
+  },
+  {
+   "ev": "req",
+   "t": 568,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/markers",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 569,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor-state",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "36061",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1158,
+    "responseBodySize": 36061,
+    "responseHeadersSize": 784
+   },
+   "timing": {
+    "startTime": 1788609910813.279,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.079,
+    "responseStart": 38.425,
+    "responseEnd": 42.782
+   }
+  },
+  {
+   "ev": "req",
+   "t": 656,
+   "url": "http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161adb9c7a1c80.png",
+   "rt": "image",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 656,
+   "url": "http://localhost:3000/_next/static/chunks/_app-pages-browser_node_modules_pnpm_hls_js_1_6_16_node_modules_hls_js_dist_hls_mjs.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 656,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 656,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 656,
+   "url": "http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161adb9c7a1c80.png",
+   "err": "net::ERR_BLOCKED_BY_ORB"
+  },
+  {
+   "ev": "req",
+   "t": 668,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 674,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/markers",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "2",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1153,
+    "responseBodySize": 2,
+    "responseHeadersSize": 780
+   },
+   "timing": {
+    "startTime": 1788609910853.151,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.073,
+    "responseStart": 5.871,
+    "responseEnd": 6.717
+   }
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 680,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 681,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "126",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1159,
+    "responseBodySize": 126,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788609910940.709,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.119,
+    "responseStart": 8.745,
+    "responseEnd": 10.43
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 722,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 6530,
+    "responseHeadersSize": 833
+   },
+   "timing": {
+    "startTime": 1788609910963.31,
+    "domainLookupStart": 0.031,
+    "domainLookupEnd": 0.04,
+    "connectStart": 0.04,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.765,
+    "requestStart": 0.934,
+    "responseStart": 3.172,
+    "responseEnd": 3.582
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 724,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 4147,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609910963.872,
+    "domainLookupStart": 0.023,
+    "domainLookupEnd": 0.025,
+    "connectStart": 0.025,
+    "secureConnectionStart": -1,
+    "connectEnd": 1.134,
+    "requestStart": 1.15,
+    "responseStart": 3.321,
+    "responseEnd": 4.271
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 724,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 44207,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609910964.3438,
+    "domainLookupStart": 0.073,
+    "domainLookupEnd": 0.082,
+    "connectStart": 0.082,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.89,
+    "requestStart": 0.904,
+    "responseStart": 3.626,
+    "responseEnd": 4.94
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 724,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 814,
+    "responseBodySize": 14426,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609910964.884,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 1.805,
+    "responseStart": 4.512,
+    "responseEnd": 6.387
+   }
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 738,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 3682,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609910965.07,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 2.381,
+    "responseStart": 6.201,
+    "responseEnd": 8.376
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 738,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 485,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609910965.2021,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 2.949,
+    "responseStart": 6.976,
+    "responseEnd": 9.058
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 738,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 752,
+    "responseBodySize": 6152,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609910965.3062,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 4.468,
+    "responseStart": 8.147,
+    "responseEnd": 10.417
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 739,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 798,
+    "responseBodySize": 640466,
+    "responseHeadersSize": 849
+   },
+   "timing": {
+    "startTime": 1788609910963.184,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.323,
+    "responseStart": 2.66,
+    "responseEnd": 8.852
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 739,
+   "url": "http://localhost:3000/_next/static/chunks/_app-pages-browser_node_modules_pnpm_hls_js_1_6_16_node_modules_hls_js_dist_hls_mjs.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 687,
+    "responseBodySize": 803771,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788609910913.544,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.124,
+    "responseStart": 2.647,
+    "responseEnd": 78.728
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 740,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "126",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1159,
+    "responseBodySize": 126,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788609910941.016,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 8.545,
+    "responseStart": 19.616,
+    "responseEnd": 21.496
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 740,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "31086",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 797,
+    "responseBodySize": 31086,
+    "responseHeadersSize": 853
+   },
+   "timing": {
+    "startTime": 1788609910952.219,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.11,
+    "responseStart": 1.555,
+    "responseEnd": 2.658
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 740,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 800,
+    "responseBodySize": 568700,
+    "responseHeadersSize": 844
+   },
+   "timing": {
+    "startTime": 1788609910963.713,
+    "domainLookupStart": 0.025,
+    "domainLookupEnd": 0.026,
+    "connectStart": 0.026,
+    "secureConnectionStart": -1,
+    "connectEnd": 1.008,
+    "requestStart": 1.086,
+    "responseStart": 3.099,
+    "responseEnd": 9.348
+   }
+  },
+  {
+   "ev": "req",
+   "t": 814,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/master.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 814,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/master.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 831,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/360p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 832,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/360p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 832,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/master.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "437",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 672,
+    "responseBodySize": 437,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788609911099.5588,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.121,
+    "responseStart": 2.656,
+    "responseEnd": 5.614
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 833,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/master.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "437",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 672,
+    "responseBodySize": 437,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788609911097.903,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.064,
+    "responseStart": 2.153,
+    "responseEnd": 2.563
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 840,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/360p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "635",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 635,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788609911114.995,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.113,
+    "responseStart": 1.248,
+    "responseEnd": 1.92
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 840,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/360p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1099",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 1099,
+    "responseHeadersSize": 830
+   },
+   "timing": {
+    "startTime": 1788609911115.522,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.062,
+    "responseStart": 1.023,
+    "responseEnd": 1.285
+   }
+  },
+  {
+   "ev": "req",
+   "t": 933,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/360p/seg_000.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 934,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/360p/seg_000.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 940,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/360p/seg_000.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "269968",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 269968,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788609911217.8071,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.158,
+    "responseStart": 1.919,
+    "responseEnd": 3.383
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1082,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 805,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609910963.569,
+    "domainLookupStart": 0.032,
+    "domainLookupEnd": 0.034,
+    "connectStart": 0.034,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.978,
+    "requestStart": 1.196,
+    "responseStart": 2.436,
+    "responseEnd": 259.984
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1087,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/360p/seg_000.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "314900",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 314900,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788609911218.452,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.076,
+    "responseStart": 1.132,
+    "responseEnd": 2.264
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1088,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1094,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_000.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1095,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "635",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 635,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788609911371.9011,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.117,
+    "responseStart": 1.21,
+    "responseEnd": 1.613
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1097,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1100,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_001.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1101,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1099",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1099,
+    "responseHeadersSize": 830
+   },
+   "timing": {
+    "startTime": 1788609911380.398,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.184,
+    "responseStart": 2.256,
+    "responseEnd": 2.755
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1109,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_000.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1265428",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1265428,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911378.237,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.093,
+    "responseStart": 1.316,
+    "responseEnd": 6.266
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1120,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_001.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1991860",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1991860,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911383.765,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.176,
+    "responseStart": 2.481,
+    "responseEnd": 8.519
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1121,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_001.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1122,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_002.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1132,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_002.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "381264",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 381264,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788609911406.242,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.067,
+    "responseStart": 1.413,
+    "responseEnd": 5.485
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1143,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_003.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1144,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_001.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3172500",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 3172500,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911405.491,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.124,
+    "responseStart": 1.301,
+    "responseEnd": 10.604
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1145,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_002.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1148,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_004.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1149,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_003.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "338212",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 338212,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788609911427.593,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.117,
+    "responseStart": 1.152,
+    "responseEnd": 2.391
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1167,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_004.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1675644",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1675644,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911432.569,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.135,
+    "responseStart": 2.373,
+    "responseEnd": 10.267
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1190,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_002.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "2979424",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 2979424,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911429.177,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.133,
+    "responseStart": 0.976,
+    "responseEnd": 14.47
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1198,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_005.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1199,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_003.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1201,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1236,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_005.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1578448",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1578448,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911482.364,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.254,
+    "responseStart": 1.528,
+    "responseEnd": 20.822
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1247,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_003.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "2106916",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 2106916,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911483.452,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.08,
+    "responseStart": 1.015,
+    "responseEnd": 19.116
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1261,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 767,
+    "responseBodySize": 5492776,
+    "responseHeadersSize": 845
+   },
+   "timing": {
+    "startTime": 1788609911485.1948,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.265,
+    "responseStart": 3.872,
+    "responseEnd": 51.637
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1264,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_006.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1264,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_004.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1278,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_004.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1026480",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1026480,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911548.41,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.059,
+    "responseStart": 2.48,
+    "responseEnd": 8.073
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1300,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_006.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1792016",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1792016,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911547.8718,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.143,
+    "responseStart": 2.812,
+    "responseEnd": 10.223
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1301,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_005.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1302,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_007.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1319,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_006.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1319,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_005.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1286672",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1286672,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911585.2417,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.198,
+    "responseStart": 1.553,
+    "responseEnd": 5.021
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1320,
+   "url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/1080p/seg_007.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1143792",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1143792,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911585.8901,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.082,
+    "responseStart": 1.274,
+    "responseEnd": 4.321
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1328,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_006.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1236476",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1236476,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788609911601.9438,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.114,
+    "responseStart": 2.234,
+    "responseEnd": 5.631
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1328,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_007.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1334,
+   "url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/1080p/seg_007.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "715716",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 715716,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788609911612.013,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.138,
+    "responseStart": 1.065,
+    "responseEnd": 3.058
+   }
+  },
+  {
+   "ev": "fail",
+   "t": 1359,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1361,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1365,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1366,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1368,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1369,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1371,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1372,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1374,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1375,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1377,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1378,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1380,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 1393,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1393,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1395,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1395,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1397,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1399,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1401,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1451,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1456,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1458,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1462,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1462,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1463,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1476,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 1476,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1480,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1482,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1483,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1484,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1484,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 1488,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1489,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1492,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1492,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1495,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1496,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1498,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1543,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1546,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1547,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1550,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1559,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1561,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1562,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1565,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1601,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1608,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1609,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1613,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1613,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1616,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1617,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1623,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1625,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1635,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1635,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1643,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1647,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1651,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1655,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1657,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1665,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1667,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1672,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1674,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1678,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1681,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1763,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1767,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1771,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1774,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1778,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1780,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1782,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1784,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1791,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1793,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1801,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1803,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1890,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1892,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1894,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1896,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1899,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1902,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1959,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1961,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2038,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2040,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2041,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2044,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2044,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2046,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2051,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2055,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2080,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2083,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2143,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2146,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2146,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2149,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2150,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2154,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2155,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2157,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2167,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2170,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2205,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2207,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2207,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2210,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2211,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2213,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2215,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2217,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2240,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2244,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2244,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2246,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2248,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2250,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2271,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2274,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2289,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2291,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2292,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2294,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2296,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2298,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2298,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2301,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2304,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2306,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2327,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2329,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2332,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2334,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2446,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2451,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2470,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2473,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2475,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2477,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2479,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2481,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2482,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2484,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2485,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2488,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2489,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2491,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2491,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2494,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2494,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2498,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2499,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2502,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2502,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2505,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2506,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2508,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2508,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2511,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2511,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2513,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2514,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2516,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2517,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2518,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2581,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2584,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2584,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2587,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2587,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2587,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2590,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2590,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2590,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2593,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2593,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2593,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2596,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2596,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2596,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2597,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2598,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2598,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2599,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2607,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2607,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2608,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2608,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2611,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2611,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2614,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2615,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2616,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2617,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2620,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2620,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2622,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2623,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2625,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2626,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2627,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2628,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2630,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2631,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2632,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2633,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2635,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2635,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2638,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2638,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2640,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2641,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2642,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2643,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2645,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2646,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2647,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2682,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2684,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2690,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2692,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2752,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2755,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2756,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2759,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2761,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2763,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2769,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2772,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2774,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2776,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2829,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2836,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2836,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "fail",
+   "t": 2840,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2844,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2850,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2924,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2929,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2986,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2989,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/73e6f45e-2428-4f10-8576-de761336aa81.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3023,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3028,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3028,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3036,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3038,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3045,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3045,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3048,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3049,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3052,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3054,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3057,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3105,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3108,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3109,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 3114,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 3114,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 3119,
+   "url": "http://localhost:8080/video-raw/t/1789257600-8eb782db70768d4b20a8260e4af8e49c/videos/40671c25-3b51-4dc7-93fb-b7755d9ebede/7f9deffb-f788-4942-96d8-792680961cc0.mp4",
+   "status": 206,
+   "cache": null,
+   "enc": null,
+   "len": "60040",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 714,
+    "responseBodySize": 60040,
+    "responseHeadersSize": 801
+   },
+   "timing": {
+    "startTime": 1788609913398.751,
+    "domainLookupStart": 0.085,
+    "domainLookupEnd": 0.095,
+    "connectStart": 0.095,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.314,
+    "requestStart": 0.367,
+    "responseStart": 2.452,
+    "responseEnd": 2.982
+   }
+  },
+  {
+   "ev": "req",
+   "t": 6841,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6885,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 6886,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "31086",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 817,
+    "responseBodySize": 31086,
+    "responseHeadersSize": 853
+   },
+   "timing": {
+    "startTime": 1788609917126.12,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.128,
+    "responseStart": 0.996,
+    "responseEnd": 1.979
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6908,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 6530,
+    "responseHeadersSize": 833
+   },
+   "timing": {
+    "startTime": 1788609917168.395,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.108,
+    "responseStart": 1.784,
+    "responseEnd": 2.549
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6908,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 4147,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609917168.822,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.114,
+    "responseStart": 1.794,
+    "responseEnd": 2.866
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6908,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 485,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609917169.27,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 3.465,
+    "responseStart": 4.775,
+    "responseEnd": 5.87
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6908,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 814,
+    "responseBodySize": 14426,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609917169.1401,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 2.055,
+    "responseStart": 4.742,
+    "responseEnd": 6.044
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6908,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 3682,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609917169.2048,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 2.337,
+    "responseStart": 4.758,
+    "responseEnd": 6.055
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6909,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 752,
+    "responseBodySize": 6152,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609917169.344,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 3.464,
+    "responseStart": 4.782,
+    "responseEnd": 6.041
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6909,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 44207,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609917169.034,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.051,
+    "responseStart": 4.741,
+    "responseEnd": 6.029
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6909,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 798,
+    "responseBodySize": 640466,
+    "responseHeadersSize": 849
+   },
+   "timing": {
+    "startTime": 1788609917168.3198,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.229,
+    "responseStart": 2.119,
+    "responseEnd": 4.552
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6909,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 800,
+    "responseBodySize": 568700,
+    "responseHeadersSize": 844
+   },
+   "timing": {
+    "startTime": 1788609917168.678,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.046,
+    "responseStart": 1.846,
+    "responseEnd": 4.282
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 7268,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 805,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609917168.588,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.039,
+    "responseStart": 1.744,
+    "responseEnd": 257.947
+   }
+  },
+  {
+   "ev": "req",
+   "t": 7358,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 7382,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 767,
+    "responseBodySize": 5492776,
+    "responseHeadersSize": 845
+   },
+   "timing": {
+    "startTime": 1788609917642.1257,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.159,
+    "responseStart": 1.696,
+    "responseEnd": 17.21
+   }
+  },
+  {
+   "ev": "req",
+   "t": 8523,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 8540,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "27032",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 665,
+    "responseBodySize": 27032,
+    "responseHeadersSize": 496
+   },
+   "timing": {
+    "startTime": 1788609918806.7698,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.193,
+    "responseStart": 5.032,
+    "responseEnd": 5.654
+   }
+  },
+  {
+   "ev": "req",
+   "t": 8682,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/sections/d74bcc4b-c7d1-403e-9074-0330a51ea9cb/poster",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 8711,
+   "url": "http://localhost:8080/api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/sections/d74bcc4b-c7d1-403e-9074-0330a51ea9cb/poster",
+   "status": 201,
+   "cache": "no-store",
+   "enc": null,
+   "len": "141",
+   "sizes": {
+    "requestBodySize": 1615409,
+    "requestHeadersSize": 1256,
+    "responseBodySize": 141,
+    "responseHeadersSize": 787
+   },
+   "timing": {
+    "startTime": 1788609918931.483,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.068,
+    "responseStart": 62.709,
+    "responseEnd": 67.59
+   }
+  },
+  {
+   "ev": "req",
+   "t": 70464,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70500,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70500,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 70501,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 70503,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "31086",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 817,
+    "responseBodySize": 31086,
+    "responseHeadersSize": 853
+   },
+   "timing": {
+    "startTime": 1788609980748.053,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.126,
+    "responseStart": 5.741,
+    "responseEnd": 6.802
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70515,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 6530,
+    "responseHeadersSize": 833
+   },
+   "timing": {
+    "startTime": 1788609980784.4329,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.133,
+    "responseStart": 8.082,
+    "responseEnd": 8.75
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70517,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 4147,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609980784.897,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.045,
+    "responseStart": 9.276,
+    "responseEnd": 10.069
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70517,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 44207,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609980784.99,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.036,
+    "responseStart": 9.495,
+    "responseEnd": 10.395
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70523,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 803,
+    "responseBodySize": 485,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609980785.216,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 9.494,
+    "responseStart": 14.185,
+    "responseEnd": 15.249
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70523,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 813,
+    "responseBodySize": 3682,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609980785.1401,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 9.232,
+    "responseStart": 14.056,
+    "responseEnd": 15.359
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70527,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 800,
+    "responseBodySize": 568700,
+    "responseHeadersSize": 844
+   },
+   "timing": {
+    "startTime": 1788609980784.7969,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.044,
+    "responseStart": 9.151,
+    "responseEnd": 17.639
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70527,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 814,
+    "responseBodySize": 14426,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788609980785.068,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 8.035,
+    "responseStart": 14.913,
+    "responseEnd": 15.97
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70528,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 752,
+    "responseBodySize": 6152,
+    "responseHeadersSize": 847
+   },
+   "timing": {
+    "startTime": 1788609980785.271,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 14.468,
+    "responseStart": 17.8,
+    "responseEnd": 18.903
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70528,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 798,
+    "responseBodySize": 640466,
+    "responseHeadersSize": 849
+   },
+   "timing": {
+    "startTime": 1788609980784.3162,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.317,
+    "responseStart": 10.837,
+    "responseEnd": 17.962
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 70867,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 805,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 846
+   },
+   "timing": {
+    "startTime": 1788609980784.697,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.045,
+    "responseStart": 10.79,
+    "responseEnd": 225.137
+   }
+  },
+  {
+   "ev": "req",
+   "t": 70978,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 70993,
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 767,
+    "responseBodySize": 5492776,
+    "responseHeadersSize": 845
+   },
+   "timing": {
+    "startTime": 1788609981261.7239,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.151,
+    "responseStart": 1.374,
+    "responseEnd": 10.29
+   }
+  }
+ ],
+ "marks": [
+  {
+   "t": 1,
+   "ev": "auth-injected"
+  },
+  {
+   "t": 1,
+   "ev": "goto-editor:start"
+  },
+  {
+   "t": 78,
+   "ev": "framenavigated",
+   "url": "http://localhost:3000/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor"
+  },
+  {
+   "t": 113,
+   "ev": "goto-editor:dom"
+  },
+  {
+   "t": 505,
+   "ev": "framenavigated",
+   "url": "http://localhost:3000/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor"
+  },
+  {
+   "t": 666,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 677,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 6117,
+   "ev": "editor-settled"
+  },
+  {
+   "t": 6335,
+   "ev": "tour-skipped"
+  },
+  {
+   "t": 6839,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 6882,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 6885,
+   "ev": "open-attempt",
+   "via": "timeline-label"
+  },
+  {
+   "t": 7187,
+   "ev": "section-editor-open"
+  },
+  {
+   "t": 7566,
+   "ev": "first-paint-after-open",
+   "type": "SIM_PAINTED",
+   "wall": 1788609911115,
+   "perf": 802.2999999523163
+  },
+  {
+   "t": 7794,
+   "ev": "run-clicked"
+  },
+  {
+   "t": 67806,
+   "ev": "run-result",
+   "timeout": true
+  },
+  {
+   "t": 69554,
+   "ev": "section-editor-closed",
+   "via": "escape"
+  },
+  {
+   "t": 70461,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 70498,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 70501,
+   "ev": "open-attempt",
+   "via": "timeline-label"
+  },
+  {
+   "t": 70803,
+   "ev": "warm-section-editor-open",
+   "reopened": "timeline-label"
+  },
+  {
+   "t": 190883,
+   "ev": "warm-first-paint",
+   "timeout": true
+  }
+ ],
+ "consoleMsgs": [
+  {
+   "t": 345,
+   "type": "info",
+   "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  }
+ ]
+}

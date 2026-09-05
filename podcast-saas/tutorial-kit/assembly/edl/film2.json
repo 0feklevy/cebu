@@ -1,113 +1,19 @@
 {
   "film": 2,
-  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing. Scenes follow SCRIPT-2-TUTORIAL v3.1 (12 beats).",
   "cuts": [
-    {
-      "scene": "1",
-      "source": "f2-s1-pullback",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "reshoot": "the solar window in the DEMO project as the opener"
-    },
-    {
-      "scene": "2",
-      "source": "f2-s2a-new-project",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4"
-    },
-    {
-      "scene": "3",
-      "source": "f2-s2b-library-drop",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4"
-    },
-    {
-      "scene": "4",
-      "source": "f2-s2b-library-drop",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 14
-    },
-    {
-      "scene": "5",
-      "source": "f2-s3-mark-section",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4"
-    },
-    {
-      "scene": "6",
-      "source": "f2-s4-this-moment",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 12,
-      "reshoot": "card now titled 'Generate mini model' \u2014 reshoot after UI change"
-    },
-    {
-      "scene": "7",
-      "source": "f2-s4-this-moment",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 24,
-      "reshoot": "typing the prompt (new label)"
-    },
-    {
-      "scene": "8",
-      "source": "f2-s4-this-moment",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 40,
-      "reshoot": "toggles flip + Generate (new label)"
-    },
-    {
-      "scene": "9",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "10",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "11",
-      "source": "f2-s8-share",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4"
-    },
-    {
-      "scene": "12",
-      "source": "f2-s8-share",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 14
-    },
-    {
-      "scene": "13",
-      "source": "f2-s9-zoomout",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "reshoot": "tutorial project timeline with the solar window block"
-    },
-    {
-      "scene": "14",
-      "source": "f2-s9-zoomout",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "in": 6
-    }
+    { "scene": "1", "source": "f2-s1-pullback", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "reshoot": "the solar window in the DEMO project as the opener" },
+    { "scene": "2", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [ { "source": "f2-s2a-new-project", "mode": "fit" }, { "source": "f2-s2b-library-drop", "mode": "fit" } ] },
+    { "scene": "3", "source": "f2-s2b-library-drop", "mode": "fit", "kind": "VIDEO", "in": 8, "fallback": "captures/props/lesson-waves.mp4" },
+    { "scene": "4", "source": "f2-s3-mark-section", "mode": "fit", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4" },
+    { "scene": "5", "source": "f2-s4-this-moment", "mode": "fit", "kind": "VIDEO", "in": 0, "fallback": "captures/props/lesson-waves.mp4", "reshoot": "card opens: Simulation type → 'Generate mini model' card (new label)" },
+    { "scene": "6", "source": "f2-s4-this-moment", "mode": "fit", "kind": "VIDEO", "in": 3, "fallback": "captures/props/lesson-waves.mp4", "reshoot": "the prompt typed in sync (new label)" },
+    { "scene": "7", "source": "f2-s4-this-moment", "mode": "fit", "kind": "VIDEO", "in": 7.5, "fallback": "captures/props/lesson-waves.mp4", "reshoot": "both toggles flipped + Generate with AI (new label)" },
+    { "scene": "8", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "9", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "10", "source": "f2-s8-share", "mode": "fit", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4" },
+    { "scene": "11", "source": "f2-s9-zoomout", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "reshoot": "own project timeline with the solar window block" },
+    { "scene": "12", "source": "f2-s9-zoomout", "mode": "fit", "kind": "VIDEO", "in": 5, "fallback": "f4-s1-public-page" }
   ]
 }

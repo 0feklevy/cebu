@@ -1,79 +1,24 @@
 {
   "film": 1,
-  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing. Scenes follow SCRIPT-1-TEASER v3.1 (10 beats).",
   "cuts": [
-    {
-      "scene": "1",
-      "source": "f4-s1-public-page",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 6
-    },
-    {
-      "scene": "2",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "3",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "4",
-      "source": "f1-s3-ask-surface",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "in": 8,
-      "reshoot": "ask surface must actually open (Ask! \u2192 panel); pending ANAM/podcast ruling"
-    },
-    {
-      "scene": "5",
-      "source": "f4-s4-branching",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 29
-    },
-    {
-      "scene": "6",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "7",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "8",
-      "source": "f2-s2b-library-drop",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 10,
-      "note": "montage: 5 sub-cuts when reshoots land (drop \u2192 mark \u2192 Generate mini model typed + toggles \u2192 Generate \u2192 Share sheet)"
-    },
-    {
-      "scene": "9",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "10",
-      "source": "f1-s7-zoomout",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "in": 12,
-      "reshoot": "zoom-out on the v3 template with the doors glowing"
-    }
+    { "scene": "1", "source": "f4-s1-public-page", "mode": "fit", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4" },
+    { "scene": "2", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "3", "source": "f1-s3-return", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "in": 2, "reshoot": "the public page right after the kinesin window auto-returns: section marker lit on the progress bar, punch-in" },
+    { "scene": "4", "source": "f1-s3-ask-surface", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "reshoot": "ask surface must actually open (Ask! → panel); chips render" },
+    { "scene": "5", "source": "f4-s4-branching", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page" },
+    { "scene": "6", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "7", "source": "f1-s7-return", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "in": 5, "reshoot": "back on the public page after the solar window: Ask! button + section badge visible, cursor drifts" },
+    { "scene": "8", "kind": "VIDEO", "fallback": "f2-s2b-library-drop",
+      "sources": [
+        { "source": "montage-1-drop", "fallback": "f2-s2b-library-drop", "mode": "fit" },
+        { "source": "montage-2-mark", "fallback": "f2-s3-mark-section", "mode": "fit" },
+        { "source": "montage-3-card", "fallback": "f2-s4-this-moment", "mode": "fit", "in": 0 },
+        { "source": "montage-4-generate", "fallback": "f2-s4-this-moment", "mode": "fit", "in": 7.5 },
+        { "source": "montage-5-share", "fallback": "f2-s8-share", "mode": "fit" }
+      ],
+      "reshoot": "five ≈1.8s real shots: drop → mark → Generate mini model → Generate → Share sheet" },
+    { "scene": "9", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "10", "source": "f1-s7-zoomout", "mode": "fit", "kind": "VIDEO", "fallback": "f4-s1-public-page", "reshoot": "zoom-out on the v3 template with the doors glowing" }
   ]
 }

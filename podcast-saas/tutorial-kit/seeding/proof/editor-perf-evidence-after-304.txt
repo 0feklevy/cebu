@@ -1,0 +1,15 @@
+glb etag: W/"1c57ce8-1a0717a6e8b"
+== conditional GET legacy .glb (If-None-Match) ==
+HTTP/1.1 304 Not Modified
+cache-control: no-cache
+etag: W/"1c57ce8-1a0717a6e8b"
+downloaded_bytes=0 time=0.001570s
+== conditional GET legacy .glb (If-Modified-Since only) ==
+HTTP/1.1 304 Not Modified
+downloaded_bytes=0
+html etag: "1e542460958fe80531402c3c18c31dae8d911442"
+== conditional GET legacy entry HTML ==
+HTTP/1.1 304 Not Modified
+downloaded_bytes=0
+== full GET timing for comparison (.glb 200) ==
+downloaded_bytes=29719784 time=0.024121s

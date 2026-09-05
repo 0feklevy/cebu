@@ -2365,3 +2365,30 @@ deploys deserves one at least as much.
   of the sim serving path; layout-driven build-template v3; narration voice audition (free Edge
   neural for the review phase — owner ruling; ElevenLabs after sign-off); reference research →
   CREATIVE-DIRECTION-v3.md.
+
+## 2026-09-05 afternoon — v3 production: product defects fixed at the source, invitation layer, ElevenLabs
+- 🟢 BACKEND DEFECT FIXED (verified in code + tests): the section-generation prompt promised a
+  prelude (`_hidden/_hide/_restoreAll/_ivs/_listeners/_injected`) that neither bridge wrapper
+  declared — a body relying on it threw ReferenceError on activation and the viewer played the film
+  through the whole live window (2 of 6 generated bodies in the v3 build; the builder had only
+  gated + re-prompted around it). `BRIDGE_BODY_PRELUDE` now lives in the enclosing scope of both
+  `wrapBridgeMainBody` and `wrapBridgeCombined`, drained by the standard stopScript; prompt says so;
+  4 regression tests (prelude-reliant / own-var / template-const bodies; single + combined).
+- 🟢 EDITOR SIM LOADING PERF (agent, audited 21/22 DONE, the missing P2 measurement log added):
+  publish read-back parallelized (`mapWithLimit` 8-wide, one pass feeding both verifiers), upload
+  loops bounded-concurrent, sim-public serves ETag/Last-Modified + 304 (12/13 files cached on a
+  warm reopen); kinesin editor preview cold 0.45 s / warm 0.17 s. Report: tutorial-kit/EDITOR-PERF.md.
+- 🟢 VIEWER: window-invitation chip (`SimInviteChip`) — the section's imperative label ("Touch the
+  motor") in a quiet pill over a live window, two-pulse ring, hides on first touch (userInteraction)
+  or after 4.5 s, once per activation; verified live on the demo's first window. 4 unit tests.
+- 🟢 SEEDING BUILDER: windows follow the CUT (assembler writes LIVE-WINDOW beat times into
+  assembly/work/<film>/timeline.json; builder prefers them over the layout's estimate); demo doors =
+  "Make yours" (tutorial) + Viewer Superpowers + Drop In Anything, no "Watch again"; tutorial project
+  gets the library extras (F2 beat 3's "or one already in your Library" is true on camera).
+- 🟡 IN FLIGHT: ElevenLabs narration (owner's temporary one-day key, stored outside the repo; audition
+  → 48 lines), ElevenLabs Music beds + SFX pack, product-UI reshoots (12 shots), four-angle critique
+  panel (PM/sales delivered: MUST-FIX list in tutorial-kit/critique/round-3-pre/pm-sales.md).
+- 🔴 OPEN (from the PM/sales critique, to apply with the editor/script critique): F1 last line has no
+  CTA and says "doors" (a word no viewer knows); POV whiplash in F1 beats 5/7; kinesin hook sim's
+  Simple UI shows "ASSET PROOF · Teaching playback" (package-side); "I have no simulation" objection
+  unanswered; F4 opens with 6 s of nothing before its window.

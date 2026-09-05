@@ -1,0 +1,30 @@
+== LEGACY .glb (first GET) ==
+HTTP/1.1 200 OK
+accept-ranges: bytes
+cache-control: no-cache
+etag: W/"1c57ce8-1a0717a6e8b"
+last-modified: Sat, 05 Sep 2026 12:10:44 GMT
+content-length: 29719784
+== LEGACY .glb (repeat GET — what a browser could send: nothing to condition on?) ==
+HTTP/1.1 200 OK
+cache-control: no-cache
+etag: W/"1c57ce8-1a0717a6e8b"
+last-modified: Sat, 05 Sep 2026 12:10:44 GMT
+content-length: 29719784
+== LEGACY entry HTML ==
+HTTP/1.1 200 OK
+cache-control: no-cache
+etag: "1e542460958fe80531402c3c18c31dae8d911442"
+content-length: 31086
+== REVISION entry + one package file ==
+revision entry: http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94e4c807-4b74-4df2-8f99-567d7f2b66f3/package/index.html
+HTTP/1.1 200 OK
+cache-control: no-cache, must-revalidate
+etag: "53a5b5bceed5c8a3e9c36d30676c3fb606bf9729"
+content-length: 29601
+revision glb: http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94e4c807-4b74-4df2-8f99-567d7f2b66f3/package/models/kinesin-alembic-baked.glb
+HTTP/1.1 200 OK
+cache-control: public, max-age=31536000, immutable
+etag: W/"1c57ce8-1a0718d9be5"
+last-modified: Sat, 05 Sep 2026 12:31:41 GMT
+content-length: 29719784

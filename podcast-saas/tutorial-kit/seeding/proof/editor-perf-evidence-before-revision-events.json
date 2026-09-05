@@ -1,0 +1,3569 @@
+{
+ "t0": 1788611109012,
+ "net": [
+  {
+   "ev": "req",
+   "t": 6,
+   "url": "http://localhost:3000/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 67,
+   "url": "http://localhost:3000/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+   "rt": "font",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 67,
+   "url": "http://localhost:3000/_next/static/css/app/layout.css?v=1788611109037",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 67,
+   "url": "http://localhost:3000/_next/static/css/app/projects/%5Bid%5D/editor/page.css?v=1788611109037",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 68,
+   "url": "http://localhost:3000/_next/static/chunks/webpack.js?v=1788611109037",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 68,
+   "url": "http://localhost:3000/_next/static/chunks/main-app.js?v=1788611109037",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 68,
+   "url": "http://localhost:3000/_next/static/chunks/app-pages-internals.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 68,
+   "url": "http://localhost:3000/_next/static/chunks/app/layout.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 68,
+   "url": "http://localhost:3000/_next/static/chunks/app/projects/%5Bid%5D/editor/page.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 75,
+   "url": "http://localhost:3000/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 726,
+    "responseBodySize": 8966,
+    "responseHeadersSize": 1145
+   },
+   "timing": {
+    "startTime": 1788611109018.2642,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.124,
+    "responseStart": 46.858,
+    "responseEnd": 56.539
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 91,
+   "url": "http://localhost:3000/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "48432",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 652,
+    "responseBodySize": 48432,
+    "responseHeadersSize": 966
+   },
+   "timing": {
+    "startTime": 1788611109074.404,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.108,
+    "responseStart": 11.331,
+    "responseEnd": 13.844
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 94,
+   "url": "http://localhost:3000/_next/static/css/app/layout.css?v=1788611109037",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 626,
+    "responseBodySize": 17656,
+    "responseHeadersSize": 1022
+   },
+   "timing": {
+    "startTime": 1788611109074.481,
+    "domainLookupStart": 0.045,
+    "domainLookupEnd": 0.053,
+    "connectStart": 0.053,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.294,
+    "requestStart": 0.617,
+    "responseStart": 17.488,
+    "responseEnd": 23.509
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 95,
+   "url": "http://localhost:3000/_next/static/css/app/projects/%5Bid%5D/editor/page.css?v=1788611109037",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 649,
+    "responseBodySize": 15906,
+    "responseHeadersSize": 1022
+   },
+   "timing": {
+    "startTime": 1788611109075.0989,
+    "domainLookupStart": 0.057,
+    "domainLookupEnd": 0.063,
+    "connectStart": 0.063,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.311,
+    "requestStart": 0.324,
+    "responseStart": 22.524,
+    "responseEnd": 25.729
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 104,
+   "url": "http://localhost:3000/_next/static/chunks/webpack.js?v=1788611109037",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 611,
+    "responseBodySize": 28662,
+    "responseHeadersSize": 1036
+   },
+   "timing": {
+    "startTime": 1788611109078.647,
+    "domainLookupStart": 0.122,
+    "domainLookupEnd": 0.134,
+    "connectStart": 0.134,
+    "secureConnectionStart": -1,
+    "connectEnd": 3.173,
+    "requestStart": 5.136,
+    "responseStart": 18.829,
+    "responseEnd": 27.393
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 106,
+   "url": "http://localhost:3000/_next/static/chunks/app-pages-internals.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 623,
+    "responseBodySize": 65013,
+    "responseHeadersSize": 1036
+   },
+   "timing": {
+    "startTime": 1788611109081.6262,
+    "domainLookupStart": 0.066,
+    "domainLookupEnd": 0.073,
+    "connectStart": 0.073,
+    "secureConnectionStart": -1,
+    "connectEnd": 3.551,
+    "requestStart": 4.976,
+    "responseStart": 18.46,
+    "responseEnd": 33.07
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 138,
+   "url": "http://localhost:3000/_next/static/chunks/app/layout.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 614,
+    "responseBodySize": 402327,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788611109086.77,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.078,
+    "responseStart": 14.435,
+    "responseEnd": 72.456
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 242,
+   "url": "http://localhost:3000/_next/static/chunks/main-app.js?v=1788611109037",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 612,
+    "responseBodySize": 1774685,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788611109079.0688,
+    "domainLookupStart": 0.076,
+    "domainLookupEnd": 0.085,
+    "connectStart": 0.085,
+    "secureConnectionStart": -1,
+    "connectEnd": 2.814,
+    "requestStart": 4.768,
+    "responseStart": 19.49,
+    "responseEnd": 167.858
+   }
+  },
+  {
+   "ev": "req",
+   "t": 456,
+   "url": "http://localhost:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake-api-key",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 474,
+   "url": "http://localhost:9099/identitytoolkit.googleapis.com/v1/accounts:lookup?key=fake-api-key",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 529,
+    "requestHeadersSize": 986,
+    "responseBodySize": 617,
+    "responseHeadersSize": 252
+   },
+   "timing": {
+    "startTime": 1788611109469.115,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.095,
+    "responseStart": 2.389,
+    "responseEnd": 5.589
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 475,
+   "url": "http://localhost:3000/_next/static/chunks/app/projects/%5Bid%5D/editor/page.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 637,
+    "responseBodySize": 3442933,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788611109097.728,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.1,
+    "responseStart": 6.849,
+    "responseEnd": 389.767
+   }
+  },
+  {
+   "ev": "req",
+   "t": 566,
+   "url": "http://localhost:3000/icon?1130ee2db19a675d",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 576,
+   "url": "http://localhost:8080/api/v1/platform/settings",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 582,
+   "url": "http://localhost:8080/api/v1/platform/settings",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "160",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 578,
+    "responseBodySize": 160,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788611109582.368,
+    "domainLookupStart": 0.058,
+    "domainLookupEnd": 0.065,
+    "connectStart": 0.065,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.432,
+    "requestStart": 0.487,
+    "responseStart": 3.979,
+    "responseEnd": 4.474
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 582,
+   "url": "http://localhost:3000/icon?1130ee2db19a675d",
+   "status": 200,
+   "cache": "no-cache, no-store",
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 645,
+    "responseBodySize": 1069,
+    "responseHeadersSize": 944
+   },
+   "timing": {
+    "startTime": 1788611109577.517,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.143,
+    "responseStart": 12.947,
+    "responseEnd": 13.37
+   }
+  },
+  {
+   "ev": "req",
+   "t": 586,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 586,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/videos",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 586,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 586,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor-state",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 586,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/avatar/circles",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 597,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "99",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1151,
+    "responseBodySize": 99,
+    "responseHeadersSize": 781
+   },
+   "timing": {
+    "startTime": 1788611109599.5112,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.088,
+    "responseStart": 8.033,
+    "responseEnd": 9.802
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 600,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/avatar/circles",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "15",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1192,
+    "responseBodySize": 15,
+    "responseHeadersSize": 781
+   },
+   "timing": {
+    "startTime": 1788611109599.75,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.034,
+    "responseStart": 10.762,
+    "responseEnd": 12.599
+   }
+  },
+  {
+   "ev": "req",
+   "t": 607,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/markers",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 607,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/videos",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "6759",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1152,
+    "responseBodySize": 6759,
+    "responseHeadersSize": 783
+   },
+   "timing": {
+    "startTime": 1788611109599.246,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.066,
+    "responseStart": 14.764,
+    "responseEnd": 16.316
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 607,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "1566",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1145,
+    "responseBodySize": 1566,
+    "responseHeadersSize": 783
+   },
+   "timing": {
+    "startTime": 1788611109599.0952,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.362,
+    "responseStart": 15.731,
+    "responseEnd": 17.138
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 607,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor-state",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "21328",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1158,
+    "responseBodySize": 21328,
+    "responseHeadersSize": 784
+   },
+   "timing": {
+    "startTime": 1788611109599.551,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.064,
+    "responseStart": 16.752,
+    "responseEnd": 18.461
+   }
+  },
+  {
+   "ev": "req",
+   "t": 712,
+   "url": "http://localhost:3000/_next/static/chunks/_app-pages-browser_node_modules_pnpm_hls_js_1_6_16_node_modules_hls_js_dist_hls_mjs.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 714,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/index.html?dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 714,
+   "url": "http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161adb9c7a1c80.png",
+   "rt": "image",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 714,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 714,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 719,
+   "url": "http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161adb9c7a1c80.png",
+   "err": "net::ERR_BLOCKED_BY_ORB"
+  },
+  {
+   "ev": "req",
+   "t": 724,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 735,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/markers",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "2",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1153,
+    "responseBodySize": 2,
+    "responseHeadersSize": 780
+   },
+   "timing": {
+    "startTime": 1788611109619.157,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.086,
+    "responseStart": 5.54,
+    "responseEnd": 6.529
+   }
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 737,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 744,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 983,
+    "responseBodySize": 6530,
+    "responseHeadersSize": 885
+   },
+   "timing": {
+    "startTime": 1788611109748.702,
+    "domainLookupStart": 0.033,
+    "domainLookupEnd": 0.043,
+    "connectStart": 0.043,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.733,
+    "requestStart": 0.786,
+    "responseStart": 2.788,
+    "responseEnd": 3.315
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 744,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "126",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1159,
+    "responseBodySize": 126,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788611109726.56,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.068,
+    "responseStart": 6.374,
+    "responseEnd": 7.484
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 747,
+   "url": "http://localhost:3000/_next/static/chunks/_app-pages-browser_node_modules_pnpm_hls_js_1_6_16_node_modules_hls_js_dist_hls_mjs.js",
+   "status": 200,
+   "cache": "no-store, must-revalidate",
+   "enc": "gzip",
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 687,
+    "responseBodySize": 803771,
+    "responseHeadersSize": 1037
+   },
+   "timing": {
+    "startTime": 1788611109680.821,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.115,
+    "responseStart": 2.478,
+    "responseEnd": 65.506
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 776,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "126",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 1159,
+    "responseBodySize": 126,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788611109727.127,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 5.926,
+    "responseStart": 13.978,
+    "responseEnd": 15.572
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 777,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/index.html?dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "53179",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 797,
+    "responseBodySize": 53179,
+    "responseHeadersSize": 853
+   },
+   "timing": {
+    "startTime": 1788611109726.8738,
+    "domainLookupStart": 0.034,
+    "domainLookupEnd": 0.04,
+    "connectStart": 0.04,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.44,
+    "requestStart": 0.463,
+    "responseStart": 2.587,
+    "responseEnd": 3.58
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 777,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 973,
+    "responseBodySize": 4147,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611109749.372,
+    "domainLookupStart": 0.025,
+    "domainLookupEnd": 0.027,
+    "connectStart": 0.027,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.489,
+    "requestStart": 0.5,
+    "responseStart": 3.936,
+    "responseEnd": 5.176
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 777,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache, must-revalidate",
+   "enc": null,
+   "len": "29601",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 852,
+    "responseBodySize": 29601,
+    "responseHeadersSize": 870
+   },
+   "timing": {
+    "startTime": 1788611109737.03,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.102,
+    "responseStart": 0.753,
+    "responseEnd": 1.714
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 777,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 973,
+    "responseBodySize": 44207,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611109749.5408,
+    "domainLookupStart": 0.023,
+    "domainLookupEnd": 0.024,
+    "connectStart": 0.024,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.408,
+    "requestStart": 0.419,
+    "responseStart": 4.386,
+    "responseEnd": 5.552
+   }
+  },
+  {
+   "ev": "req",
+   "t": 818,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/master.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 984,
+    "responseBodySize": 14426,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611109749.71,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 2.167,
+    "responseStart": 6.154,
+    "responseEnd": 7.585
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 983,
+    "responseBodySize": 3682,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611109749.83,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 3.94,
+    "responseStart": 8.321,
+    "responseEnd": 9.793
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 973,
+    "responseBodySize": 485,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611109749.919,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 4.223,
+    "responseStart": 8.812,
+    "responseEnd": 10.327
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 922,
+    "responseBodySize": 6152,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611109750.0051,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 6.211,
+    "responseStart": 9.765,
+    "responseEnd": 11.291
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 832,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "84839",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 925,
+    "responseBodySize": 84839,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611109750.067,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 8.435,
+    "responseStart": 10.226,
+    "responseEnd": 11.787
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 832,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 968,
+    "responseBodySize": 640466,
+    "responseHeadersSize": 901
+   },
+   "timing": {
+    "startTime": 1788611109748.5771,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.364,
+    "responseStart": 2.611,
+    "responseEnd": 10.797
+   }
+  },
+  {
+   "ev": "req",
+   "t": 842,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 850,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 970,
+    "responseBodySize": 568700,
+    "responseHeadersSize": 896
+   },
+   "timing": {
+    "startTime": 1788611109749.154,
+    "domainLookupStart": 0.024,
+    "domainLookupEnd": 0.026,
+    "connectStart": 0.026,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.581,
+    "requestStart": 0.622,
+    "responseStart": 3.2,
+    "responseEnd": 11.128
+   }
+  },
+  {
+   "ev": "req",
+   "t": 851,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/360p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 853,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/master.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "437",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 672,
+    "responseBodySize": 437,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788611109831.114,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.123,
+    "responseStart": 1.397,
+    "responseEnd": 3.84
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 902,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/360p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "693",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 693,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788611109863.026,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.236,
+    "responseStart": 1.177,
+    "responseEnd": 1.9
+   }
+  },
+  {
+   "ev": "req",
+   "t": 988,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/360p/seg_000.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1022,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/360p/seg_000.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "274480",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 676,
+    "responseBodySize": 274480,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788611109999.79,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.111,
+    "responseStart": 2.397,
+    "responseEnd": 4.019
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1171,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 975,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611109749.0051,
+    "domainLookupStart": 0.026,
+    "domainLookupEnd": 0.029,
+    "connectStart": 0.029,
+    "secureConnectionStart": -1,
+    "connectEnd": 0.604,
+    "requestStart": 0.649,
+    "responseStart": 3.026,
+    "responseEnd": 296.888
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1171,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/index.m3u8",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1181,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_000.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1182,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/index.m3u8",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "693",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 693,
+    "responseHeadersSize": 829
+   },
+   "timing": {
+    "startTime": 1788611110181.6243,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.241,
+    "responseStart": 3.458,
+    "responseEnd": 4.168
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1198,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_000.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "1068216",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 1068216,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110192.8408,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.137,
+    "responseStart": 1.555,
+    "responseEnd": 3.938
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1200,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_001.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1202,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1229,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_001.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3382872",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 3382872,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110212.26,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.124,
+    "responseStart": 1.356,
+    "responseEnd": 8.027
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1246,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 937,
+    "responseBodySize": 5492776,
+    "responseHeadersSize": 897
+   },
+   "timing": {
+    "startTime": 1788611110215.055,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.402,
+    "responseStart": 1.642,
+    "responseEnd": 29.11
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1246,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_002.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1266,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_002.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "2992772",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 2992772,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110258.498,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.123,
+    "responseStart": 1.261,
+    "responseEnd": 6.114
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1267,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_003.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1295,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_004.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1296,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_003.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "2341164",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 2341164,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110278.894,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.133,
+    "responseStart": 1.499,
+    "responseEnd": 7.376
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 1302,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_004.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "777944",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 777944,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788611110306.45,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.134,
+    "responseStart": 2.417,
+    "responseEnd": 4.277
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1303,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_005.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1330,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_005.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "2035852",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 2035852,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110315.212,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.11,
+    "responseStart": 4.489,
+    "responseEnd": 19.725
+   }
+  },
+  {
+   "ev": "req",
+   "t": 1331,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_006.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1366,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_006.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3169492",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 3169492,
+    "responseHeadersSize": 814
+   },
+   "timing": {
+    "startTime": 1788611110343.5613,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.13,
+    "responseStart": 7.378,
+    "responseEnd": 24.216
+   }
+  },
+  {
+   "ev": "fail",
+   "t": 1385,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1389,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_007.ts",
+   "rt": "xhr",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 1390,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1392,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1395,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 1395,
+   "url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/1080p/seg_007.ts",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "641832",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 677,
+    "responseBodySize": 641832,
+    "responseHeadersSize": 813
+   },
+   "timing": {
+    "startTime": 1788611110401.446,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.136,
+    "responseStart": 1.427,
+    "responseEnd": 3.05
+   }
+  },
+  {
+   "ev": "fail",
+   "t": 1396,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1397,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1399,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1399,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1401,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1401,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1403,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1404,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1406,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1439,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1441,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1442,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1445,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1446,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1448,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1449,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1452,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1454,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1456,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1457,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1459,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1522,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1528,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1528,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1533,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1534,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1537,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1537,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1541,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1541,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1547,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1548,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1552,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1554,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1561,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1568,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1571,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1574,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1579,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1582,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1588,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1588,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1592,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1593,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1595,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1663,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1665,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1668,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1671,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1683,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1686,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1713,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1720,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1723,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1726,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1727,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1729,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1732,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1737,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1759,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1761,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1781,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1786,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1871,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1873,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1875,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1877,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1879,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1881,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1883,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1885,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1923,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1924,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1925,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1927,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1936,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 1939,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 1998,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2002,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2133,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2136,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2140,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2143,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2185,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2187,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2228,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2232,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2235,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2238,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2238,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2241,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2241,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2244,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2245,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2250,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2250,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2252,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2262,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2264,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2265,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fail",
+   "t": 2268,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "err": "net::ERR_ABORTED"
+  },
+  {
+   "ev": "req",
+   "t": 2271,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "rt": "media",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 2273,
+   "url": "http://localhost:8080/video-raw/t/1789257600-91c4edeb81f59a04b734ddcf9275d6f7/videos/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/05c227a5-747a-4e8d-9a8d-c1e80b71941e.mp4",
+   "status": 206,
+   "cache": null,
+   "enc": null,
+   "len": "50636",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 714,
+    "responseBodySize": 50636,
+    "responseHeadersSize": 801
+   },
+   "timing": {
+    "startTime": 1788611111282.9521,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.142,
+    "responseStart": 1.288,
+    "responseEnd": 1.692
+   }
+  },
+  {
+   "ev": "req",
+   "t": 2667,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 2671,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "27032",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 665,
+    "responseBodySize": 27032,
+    "responseHeadersSize": 496
+   },
+   "timing": {
+    "startTime": 1788611111678.187,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.342,
+    "responseStart": 1.859,
+    "responseEnd": 2.954
+   }
+  },
+  {
+   "ev": "req",
+   "t": 2735,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/poster",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 2746,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/poster",
+   "status": 201,
+   "cache": "no-store",
+   "enc": null,
+   "len": "141",
+   "sizes": {
+    "requestBodySize": 311780,
+    "requestHeadersSize": 1258,
+    "responseBodySize": 141,
+    "responseHeadersSize": 787
+   },
+   "timing": {
+    "startTime": 1788611111740.1772,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.056,
+    "responseStart": 17.345,
+    "responseEnd": 18.913
+   }
+  },
+  {
+   "ev": "req",
+   "t": 2779,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/index.html?dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 2784,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/vendor/matter.min.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 2786,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/index.html?dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": "53257",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 797,
+    "responseBodySize": 53257,
+    "responseHeadersSize": 853
+   },
+   "timing": {
+    "startTime": 1788611111791.428,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.16,
+    "responseStart": 1.418,
+    "responseEnd": 2.518
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 2787,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/vendor/matter.min.js",
+   "status": 200,
+   "cache": null,
+   "enc": null,
+   "len": "80807",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 766,
+    "responseBodySize": 80807,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788611111796.236,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.1,
+    "responseStart": 1.026,
+    "responseEnd": 1.48
+   }
+  },
+  {
+   "ev": "req",
+   "t": 4319,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 4320,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "status": 304,
+   "cache": "no-cache",
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 724,
+    "responseBodySize": -44,
+    "responseHeadersSize": 380
+   },
+   "timing": {
+    "startTime": 1788611113330.956,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.158,
+    "responseStart": 0.768,
+    "responseEnd": 1.191
+   }
+  },
+  {
+   "ev": "req",
+   "t": 4349,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/177324aa-fabe-45a4-9f29-d0518d5c3111/poster",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 4361,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/177324aa-fabe-45a4-9f29-d0518d5c3111/poster",
+   "status": 201,
+   "cache": "no-store",
+   "enc": null,
+   "len": "141",
+   "sizes": {
+    "requestBodySize": 53172,
+    "requestHeadersSize": 1257,
+    "responseBodySize": 141,
+    "responseHeadersSize": 787
+   },
+   "timing": {
+    "startTime": 1788611113360.351,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.062,
+    "responseStart": 11.374,
+    "responseEnd": 12.594
+   }
+  },
+  {
+   "ev": "req",
+   "t": 6774,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6813,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6813,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6813,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6813,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6814,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 6815,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 6819,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 491,
+    "responseBodySize": -901,
+    "responseHeadersSize": 901
+   },
+   "timing": {
+    "startTime": 1788611115823.598,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.047,
+    "responseEnd": 0.047
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6819,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 492,
+    "responseBodySize": -885,
+    "responseHeadersSize": 885
+   },
+   "timing": {
+    "startTime": 1788611115823.657,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.022,
+    "responseEnd": 0.022
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611115823.7988,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.027,
+    "responseEnd": 0.027
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611115823.838,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.017,
+    "responseEnd": 0.017
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 507,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611115823.865,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.021,
+    "responseEnd": 0.021
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 506,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611115823.894,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.023,
+    "responseEnd": 0.023
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -898,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611115823.925,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.024,
+    "responseEnd": 0.024
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 442,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611115823.958,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.018,
+    "responseEnd": 0.018
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "84839",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 445,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611115823.984,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.024,
+    "responseEnd": 0.024
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6820,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache, must-revalidate",
+   "enc": null,
+   "len": "29601",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 872,
+    "responseBodySize": 29601,
+    "responseHeadersSize": 870
+   },
+   "timing": {
+    "startTime": 1788611115787.0378,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.123,
+    "responseStart": 0.906,
+    "responseEnd": 1.844
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 6901,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 762,
+    "responseBodySize": -848,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788611115824.075,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.013,
+    "responseStart": 0.114,
+    "responseEnd": 0.786
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 7161,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 975,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611115823.9429,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.188,
+    "responseStart": 1.274,
+    "responseEnd": 230.286
+   }
+  },
+  {
+   "ev": "req",
+   "t": 7252,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 7260,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 729,
+    "responseBodySize": -849,
+    "responseHeadersSize": 849
+   },
+   "timing": {
+    "startTime": 1788611116264.802,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.039,
+    "responseStart": 0.095,
+    "responseEnd": 3.035
+   }
+  },
+  {
+   "ev": "req",
+   "t": 8432,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 8451,
+   "url": "http://localhost:8080/sim-authoring.js",
+   "status": 200,
+   "cache": "no-cache",
+   "enc": null,
+   "len": null,
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 839,
+    "responseBodySize": 0,
+    "responseHeadersSize": 336
+   },
+   "timing": {
+    "startTime": 1788611117444.009,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.149,
+    "responseStart": 0.966,
+    "responseEnd": 1.578
+   }
+  },
+  {
+   "ev": "req",
+   "t": 8633,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/sections/93e6b8fa-2742-4c96-8136-3c8cab52b1a0/poster",
+   "rt": "fetch",
+   "method": "POST"
+  },
+  {
+   "ev": "fin",
+   "t": 8638,
+   "url": "http://localhost:8080/api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/sections/93e6b8fa-2742-4c96-8136-3c8cab52b1a0/poster",
+   "status": 200,
+   "cache": "no-store",
+   "enc": null,
+   "len": "142",
+   "sizes": {
+    "requestBodySize": 1639269,
+    "requestHeadersSize": 1256,
+    "responseBodySize": 142,
+    "responseHeadersSize": 782
+   },
+   "timing": {
+    "startTime": 1788611117560.511,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.149,
+    "responseStart": 68.901,
+    "responseEnd": 74.339
+   }
+  },
+  {
+   "ev": "req",
+   "t": 27348,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "rt": "document",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27388,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27389,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "rt": "stylesheet",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27389,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27389,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "rt": "other",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27389,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27389,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27390,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27390,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27390,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27390,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "req",
+   "t": 27390,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "rt": "script",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-Ba7SNWhO.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "640466",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 491,
+    "responseBodySize": -901,
+    "responseHeadersSize": 901
+   },
+   "timing": {
+    "startTime": 1788611136399.125,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.065,
+    "responseEnd": 0.065
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/index-BEc1ofm6.css",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6530",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 492,
+    "responseBodySize": -885,
+    "responseHeadersSize": 885
+   },
+   "timing": {
+    "startTime": 1788611136399.212,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.024,
+    "responseEnd": 0.024
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/DyneinView-ED8R6B5c.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "4147",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611136399.383,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.024,
+    "responseEnd": 0.024
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/GLTFLoader-O_Z-mAuf.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "44207",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611136399.42,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.02,
+    "responseEnd": 0.02
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/KinesinBakedProofView-CBtbjpCJ.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "14426",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 507,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611136399.459,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.027,
+    "responseEnd": 0.027
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/MicrotubuleAssetView-BEQJ4Ne8.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "3682",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 506,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611136399.496,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.019,
+    "responseEnd": 0.019
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/assets/modelBytes-CEEGF-4C.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "485",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 496,
+    "responseBodySize": -898,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611136399.527,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.019,
+    "responseEnd": 0.019
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/sim.js",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "6152",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 442,
+    "responseBodySize": -899,
+    "responseHeadersSize": 899
+   },
+   "timing": {
+    "startTime": 1788611136399.558,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.02,
+    "responseEnd": 0.02
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/bridge.js?v=e624731a5fbf",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "84839",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 445,
+    "responseBodySize": -900,
+    "responseHeadersSize": 900
+   },
+   "timing": {
+    "startTime": 1788611136399.585,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": -1,
+    "responseStart": 0.017,
+    "responseEnd": 0.017
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27396,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16",
+   "status": 200,
+   "cache": "no-cache, must-revalidate",
+   "enc": null,
+   "len": "29601",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 872,
+    "responseBodySize": 29601,
+    "responseHeadersSize": 870
+   },
+   "timing": {
+    "startTime": 1788611136360.977,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.158,
+    "responseStart": 4.579,
+    "responseEnd": 5.804
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27406,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/microtubule-ring.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "568700",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 762,
+    "responseBodySize": -848,
+    "responseHeadersSize": 848
+   },
+   "timing": {
+    "startTime": 1788611136399.7349,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.013,
+    "responseStart": 0.138,
+    "responseEnd": 0.796
+   }
+  },
+  {
+   "ev": "fin",
+   "t": 27707,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/kinesin-alembic-baked.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "29719784",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 975,
+    "responseBodySize": 29719784,
+    "responseHeadersSize": 898
+   },
+   "timing": {
+    "startTime": 1788611136399.57,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.222,
+    "responseStart": 2.655,
+    "responseEnd": 209.622
+   }
+  },
+  {
+   "ev": "req",
+   "t": 27835,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "rt": "fetch",
+   "method": "GET"
+  },
+  {
+   "ev": "fin",
+   "t": 27843,
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/models/dynein-runtime.glb",
+   "status": 200,
+   "cache": "public, max-age=31536000, immutable",
+   "enc": null,
+   "len": "5492776",
+   "sizes": {
+    "requestBodySize": 0,
+    "requestHeadersSize": 729,
+    "responseBodySize": -849,
+    "responseHeadersSize": 849
+   },
+   "timing": {
+    "startTime": 1788611136847.105,
+    "domainLookupStart": -1,
+    "domainLookupEnd": -1,
+    "connectStart": -1,
+    "secureConnectionStart": -1,
+    "connectEnd": -1,
+    "requestStart": 0.044,
+    "responseStart": 0.1,
+    "responseEnd": 2.99
+   }
+  }
+ ],
+ "marks": [
+  {
+   "t": 1,
+   "ev": "auth-injected"
+  },
+  {
+   "t": 1,
+   "ev": "goto-editor:start"
+  },
+  {
+   "t": 59,
+   "ev": "framenavigated",
+   "url": "http://localhost:3000/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor"
+  },
+  {
+   "t": 98,
+   "ev": "goto-editor:dom"
+  },
+  {
+   "t": 569,
+   "ev": "framenavigated",
+   "url": "http://localhost:3000/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor"
+  },
+  {
+   "t": 712,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 723,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 728,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/index.html?dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 734,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 2776,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 2782,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/index.html?dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 6101,
+   "ev": "editor-settled"
+  },
+  {
+   "t": 6304,
+   "ev": "tour-skipped"
+  },
+  {
+   "t": 6772,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 6810,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 6817,
+   "ev": "open-attempt",
+   "via": "timeline-label"
+  },
+  {
+   "t": 7118,
+   "ev": "section-editor-open"
+  },
+  {
+   "t": 7445,
+   "ev": "first-paint-after-open",
+   "type": "SIM_PAINTED",
+   "wall": 1788611109930,
+   "perf": 913.8999998569489
+  },
+  {
+   "t": 10206,
+   "ev": "run-clicked"
+  },
+  {
+   "t": 25209,
+   "ev": "run-result",
+   "timeout": true
+  },
+  {
+   "t": 26464,
+   "ev": "section-editor-closed",
+   "via": "escape"
+  },
+  {
+   "t": 27346,
+   "ev": "frameattached",
+   "url": ""
+  },
+  {
+   "t": 27385,
+   "ev": "framenavigated",
+   "url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf&dpr=1&mem=16#simboot=%7B%22hide%22%3A%5B%5D%7D"
+  },
+  {
+   "t": 27391,
+   "ev": "open-attempt",
+   "via": "timeline-label"
+  },
+  {
+   "t": 27694,
+   "ev": "warm-section-editor-open",
+   "reopened": "timeline-label"
+  },
+  {
+   "t": 27828,
+   "ev": "warm-first-paint",
+   "type": "SIM_PAINTED",
+   "wall": 1788611136438,
+   "perf": 27422.699999809265
+  }
+ ],
+ "consoleMsgs": [
+  {
+   "t": 350,
+   "type": "info",
+   "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+   "t": 6775,
+   "type": "warning",
+   "text": "[sim] last generation {confidence: 0.92, provider: claude, model: claude-opus-4-8, warnings: Array(4)}"
+  },
+  {
+   "t": 6777,
+   "type": "warning",
+   "text": "[sim] last generation {confidence: 0.92, provider: claude, model: claude-opus-4-8, warnings: Array(4)}"
+  },
+  {
+   "t": 27349,
+   "type": "warning",
+   "text": "[sim] last generation {confidence: 0.92, provider: claude, model: claude-opus-4-8, warnings: Array(4)}"
+  },
+  {
+   "t": 27350,
+   "type": "warning",
+   "text": "[sim] last generation {confidence: 0.92, provider: claude, model: claude-opus-4-8, warnings: Array(4)}"
+  }
+ ]
+}

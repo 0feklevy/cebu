@@ -1,14 +1,18 @@
 {
-  "builtAt": "2026-09-05T09:39:41.312Z",
-  "finishedAt": "2026-09-05T09:44:31.059Z",
+  "version": 3,
+  "builtAt": "2026-09-05T12:10:43.514Z",
+  "finishedAt": "2026-09-05T12:43:47.788Z",
   "api": "http://127.0.0.1:8080",
   "appUrl": "http://localhost:3000",
+  "layoutFile": "seeding/layout-v3.json",
+  "layoutComment": "v3 experience layout — MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth — retime both together). Each window: sim key → { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }.",
+  "kinesin_note": "Kinesin embedded per owner instruction for the LOCAL review build; PUBLIC seeding still requires the CGTrader license clearance recorded in the kinesin project's STATUS.md.",
   "steps": [
     {
       "id": "preflight",
-      "title": "API + emulator reachable, assets present",
+      "title": "API + emulator reachable, layout read, assets present",
       "status": "done",
-      "detail": "film1=film1.SCRATCH.mp4; film2=film2.SCRATCH.mp4; films3-5=film3.SCRATCH.mp4,film4.SCRATCH.mp4,film5.SCRATCH.mp4; solar-system=zipped"
+      "detail": "layout=layout-v3.json projects=demo(film1=film1.mp4,3w) tutorial(film2=film2.SCRATCH.mp4,1w) heavy(film3=film3.SCRATCH.mp4,1w) powers(film4=film4.SCRATCH.mp4,1w) doors(film5=film5.SCRATCH.mp4,0w); sims=kinesin:ok,solarSystem:ok,murmuration:ok,galtonBoard:ok,fiveSpecies:ok,orbitLab:ok"
     },
     {
       "id": "cleanup",
@@ -17,100 +21,232 @@
       "detail": "playlists=1 projects=4 failures=0"
     },
     {
-      "id": "A0",
-      "title": "Demo project created",
+      "id": "P-demo-create",
+      "title": "Welcome to Flow Video: project created",
       "status": "done",
-      "detail": "40671c25-3b51-4dc7-93fb-b7755d9ebede"
+      "detail": "6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f"
     },
     {
-      "id": "A1",
-      "title": "Teaser (film1) uploaded, HLS ready",
+      "id": "P-demo-video",
+      "title": "Welcome to Flow Video: master film1 uploaded, HLS ready",
       "status": "done",
-      "detail": "film1.SCRATCH.mp4 · 72s · hls ok"
+      "detail": "film1.mp4 · 79.9s · hls ok"
     },
     {
-      "id": "A2",
-      "title": "Second timeline video (film2) uploaded, HLS ready",
+      "id": "P-demo-sims",
+      "title": "Welcome to Flow Video: 5 sim(s) in the library",
       "status": "done",
-      "detail": "film2.SCRATCH.mp4"
+      "detail": "kinesin=7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7 (2s); solarSystem=562fc5cd-a580-464b-bb4f-37aa6261324a (0s); murmuration=923eb4a6-927e-4aba-b44c-f6fc6b155256 (0s); galtonBoard=177324aa-fabe-45a4-9f29-d0518d5c3111 (0s); fiveSpecies=a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5 (0s)"
     },
     {
-      "id": "A3",
-      "title": "Sims uploaded to the project library",
+      "id": "P-demo-windows",
+      "title": "Welcome to Flow Video: 3 MID-ROLL window(s) on film1 (79.9s)",
       "status": "done",
-      "detail": "Murmuration 7adb6879-a58b-4c85-9804-e934c052254e; Orbit Lab 3465ae37-8961-4fdf-ab1f-98d76be0df1d; Solar System 948b8a95-7965-4364-ab40-742fa336459e"
+      "detail": "kinesin \"Touch the motor\" [4-15] 93e6b8fa-2742-4c96-8136-3c8cab52b1a0; solarSystem \"Fly to a planet\" [25-36] 7cf3db95-97ef-4846-b007-b0feba399430; murmuration \"Steer the flock\" [45-52] e8b3a30f-ff43-4bd7-9e96-7971524b90e8"
+    },
+    {
+      "id": "P-demo-publish",
+      "title": "Welcome to Flow Video: public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/PfoDYg7AMv9E4S5Y36xmow"
+    },
+    {
+      "id": "P-tutorial-create",
+      "title": "Make Yours — the basics: project created",
+      "status": "done",
+      "detail": "e6c36d52-ddff-4fae-a02f-57e7994da7fa"
+    },
+    {
+      "id": "P-tutorial-video",
+      "title": "Make Yours — the basics: master film2 uploaded, HLS ready",
+      "status": "done",
+      "detail": "film2.SCRATCH.mp4 · 133s · hls ok"
+    },
+    {
+      "id": "P-tutorial-sims",
+      "title": "Make Yours — the basics: 1 sim(s) in the library",
+      "status": "done",
+      "detail": "solarSystem=fc562e51-7c2a-4a43-b99c-d0359e2b56b4 (0s)"
+    },
+    {
+      "id": "P-tutorial-windows",
+      "title": "Make Yours — the basics: 1 MID-ROLL window(s) on film2 (133s)",
+      "status": "done",
+      "detail": "solarSystem \"It's live — touch it\" [58-70] 2719494d-a463-4a4c-a5c9-14a594c67742"
+    },
+    {
+      "id": "P-tutorial-publish",
+      "title": "Make Yours — the basics: public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/SlMaRW0bPfc1vm9_RDC1Xg"
+    },
+    {
+      "id": "P-heavy-create",
+      "title": "Drop In Anything: project created",
+      "status": "done",
+      "detail": "92e3477f-0f4c-4c7d-9ba4-435a97874fb3"
+    },
+    {
+      "id": "P-heavy-video",
+      "title": "Drop In Anything: master film3 uploaded, HLS ready",
+      "status": "done",
+      "detail": "film3.SCRATCH.mp4 · 78s · hls ok"
+    },
+    {
+      "id": "P-heavy-sims",
+      "title": "Drop In Anything: 1 sim(s) in the library",
+      "status": "done",
+      "detail": "kinesin=03316ac6-1e7f-4d25-8f24-388a804be0f6 (2s)"
+    },
+    {
+      "id": "P-heavy-windows",
+      "title": "Drop In Anything: 1 MID-ROLL window(s) on film3 (78s)",
+      "status": "done",
+      "detail": "kinesin \"Your package, live\" [32-44] a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc"
+    },
+    {
+      "id": "P-heavy-publish",
+      "title": "Drop In Anything: public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/93GZ-zn48YzuPCBGcpLzEQ"
+    },
+    {
+      "id": "P-powers-create",
+      "title": "Viewer Superpowers: project created",
+      "status": "done",
+      "detail": "847330d3-035f-4d0b-87ee-966efd49fc34"
+    },
+    {
+      "id": "P-powers-video",
+      "title": "Viewer Superpowers: master film4 uploaded, HLS ready",
+      "status": "done",
+      "detail": "film4.SCRATCH.mp4 · 72s · hls ok"
+    },
+    {
+      "id": "P-powers-sims",
+      "title": "Viewer Superpowers: 1 sim(s) in the library",
+      "status": "done",
+      "detail": "orbitLab=50a253ac-d3d0-4b78-a453-5c0cf95de990 (0s)"
+    },
+    {
+      "id": "P-powers-windows",
+      "title": "Viewer Superpowers: 1 MID-ROLL window(s) on film4 (72s)",
+      "status": "done",
+      "detail": "orbitLab \"Launch a planet\" [6-18] 664478fa-7ff5-424b-95b2-733383545d76"
+    },
+    {
+      "id": "P-powers-publish",
+      "title": "Viewer Superpowers: public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/qpFZMdQsay6X8cxb85QQYw"
+    },
+    {
+      "id": "P-doors-create",
+      "title": "One Link, Three Doors: project created",
+      "status": "done",
+      "detail": "1985a638-09f4-4e95-b07f-501905846721"
+    },
+    {
+      "id": "P-doors-video",
+      "title": "One Link, Three Doors: master film5 uploaded, HLS ready",
+      "status": "done",
+      "detail": "film5.SCRATCH.mp4 · 64s · hls ok"
+    },
+    {
+      "id": "P-doors-windows",
+      "title": "One Link, Three Doors: no windows in the layout (film only)",
+      "status": "done",
+      "detail": "timeline is clean by design"
+    },
+    {
+      "id": "P-doors-publish",
+      "title": "One Link, Three Doors: public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/1A5v9ULp4TpmPPHEfXtiNA"
+    },
+    {
+      "id": "G-demo-kinesin",
+      "title": "This-moment generated (demo · kinesin \"Touch the motor\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf"
+    },
+    {
+      "id": "G-demo-solarSystem",
+      "title": "This-moment generated (demo · solarSystem \"Fly to a planet\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-ebd2-40ba-bd09-fbf1cb497e02/package/index.html?section=7cf3db95-97ef-4846-b007-b0feba399430&v=4d57554ad367"
+    },
+    {
+      "id": "G-demo-murmuration",
+      "title": "This-moment generated (demo · murmuration \"Steer the flock\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76aa-4a50-b381-0313d16940f1/package/index.html?section=e8b3a30f-ff43-4bd7-9e96-7971524b90e8&v=10bc53c697fd"
+    },
+    {
+      "id": "G-tutorial-solarSystem",
+      "title": "This-moment generated (tutorial · solarSystem \"It's live — touch it\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/0e9eeb8c-957d-42fd-81c9-24e4d86730fa/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=6f05bca55ce8"
+    },
+    {
+      "id": "G-heavy-kinesin",
+      "title": "This-moment generated (heavy · kinesin \"Your package, live\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/56c56c5e-fe3d-4045-bff0-d3c4fe0b138b/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=5d559ac9c8de"
+    },
+    {
+      "id": "G-powers-orbitLab",
+      "title": "This-moment generated (powers · orbitLab \"Launch a planet\")",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-7165-4605-916f-e1d417af5c66/package/index.html?section=664478fa-7ff5-424b-95b2-733383545d76&v=186d68d82efa"
+    },
+    {
+      "id": "POSTER-demo-kinesin",
+      "title": "Poster captured+stored (demo · kinesin, after repair)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "POSTER-demo-solarSystem",
+      "title": "Poster captured+stored (demo · solarSystem)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "POSTER-demo-murmuration",
+      "title": "Poster captured+stored (demo · murmuration)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "POSTER-tutorial-solarSystem",
+      "title": "Poster captured+stored (tutorial · solarSystem, after repair)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "POSTER-heavy-kinesin",
+      "title": "Poster captured+stored (heavy · kinesin, after repair)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "POSTER-powers-orbitLab",
+      "title": "Poster captured+stored (powers · orbitLab)",
+      "status": "done",
+      "detail": "stored"
     },
     {
       "id": "A4",
-      "title": "Image (waves-diagram) + audio (sting-ambient) uploaded",
+      "title": "Demo LIBRARY: image (waves-diagram) + audio (sting-ambient) + sim extras — no sections",
       "status": "done",
-      "detail": "image=dfab3af9-0b2f-40ae-9b2d-eb3563b0c647 audio=81fff102-7887-41be-b9d0-5ef3dce63ea0 (8s)"
-    },
-    {
-      "id": "A5a",
-      "title": "Sim sections created",
-      "status": "done",
-      "detail": "#1 Murmuration [72-102] 15046722-b870-4c36-8ec7-c0fc1db3b4b8 (teaser post-roll); #2 Solar System [133-163] 8190f228-e58f-4725-a0af-a96a721d8818; #3 Orbit Lab [163-188] ae5f127d-4d14-46f0-a0b9-d1edf05a85c6; #4 Galton Board [188-213] e9d314a9-f89e-4d2c-b2bd-e48b917b4d47 — tail anchored to film2 post-roll"
-    },
-    {
-      "id": "A5-gen-murmuration",
-      "title": "This-moment generated (murmuration)",
-      "status": "done",
-      "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/revisions/8809a646-a658-4d73-ac81-9dadd0e9a9a2/package/index.html?section=15046722-b870-4c36-8ec7-c0fc1db3b4b8&v=2048d9140617"
-    },
-    {
-      "id": "A5-gen-sim2",
-      "title": "This-moment generated (sim2)",
-      "status": "done",
-      "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/948b8a95-7965-4364-ab40-742fa336459e/revisions/586e7ed3-5c50-4093-8bcf-20e4df251920/package/index.html?section=8190f228-e58f-4725-a0af-a96a721d8818&v=e9f4d03cc63a"
-    },
-    {
-      "id": "A5-gen-orbit",
-      "title": "This-moment generated (orbit)",
-      "status": "done",
-      "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/3465ae37-8961-4fdf-ab1f-98d76be0df1d/revisions/21b5f066-83ef-451a-b4ea-51d5d26ce967/package/index.html?section=ae5f127d-4d14-46f0-a0b9-d1edf05a85c6&v=9bafd52d8297"
-    },
-    {
-      "id": "A5-gen-galton",
-      "title": "This-moment generated (galton)",
-      "status": "done",
-      "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/0e2e9cd1-be80-437f-a4dd-238290d182c1/revisions/51b74ca9-b404-42a5-a612-ddd1590031fb/package/index.html?section=e9d314a9-f89e-4d2c-b2bd-e48b917b4d47&v=0202448926ee"
-    },
-    {
-      "id": "A6",
-      "title": "Image section (drift) + A2 ambient sting placed",
-      "status": "done",
-      "detail": "image@30s for 6s (b3cdc5e5-54e7-47cd-9ba9-3e191d5be803); sting@64s for 8s (d6d5ac09-25a2-4846-afa2-18916b0b4182) — audio.controller insert-cutaway"
-    },
-    {
-      "id": "B-heavy",
-      "title": "Niche project \"The Heavy Simulation\"",
-      "status": "done",
-      "detail": "d9ff6f08-abb4-466c-99ee-6a62aa82e449 · film3.SCRATCH.mp4"
-    },
-    {
-      "id": "B-powers",
-      "title": "Niche project \"Viewer Superpowers\"",
-      "status": "done",
-      "detail": "b089fc49-006e-465a-9413-1fd2d97232be · film4.SCRATCH.mp4"
-    },
-    {
-      "id": "B-doors",
-      "title": "Niche project \"One Link, Three Doors\"",
-      "status": "done",
-      "detail": "f32c26e6-a122-4502-808f-9edaf25aa4de · film5.SCRATCH.mp4"
+      "detail": "image=c95f0130-ea65-47c9-9475-4fb5bd73d36e audio=1894efde-a53b-446c-97f9-cd886b5df03b (8s); extras: galtonBoard=177324aa-fabe-45a4-9f29-d0518d5c3111, fiveSpecies=a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5"
     },
     {
       "id": "A7",
-      "title": "Branching choice created headlessly (What next? -> 3 doors + replay)",
+      "title": "Demo choice doors at the END (What next? -> 3 niche doors + Watch again)",
       "status": "done",
-      "detail": "cp=f7e1a86e-469f-416b-99a1-68563fafff37; issues=[]"
-    },
-    {
-      "id": "A8-share",
-      "title": "Demo public + share link",
-      "status": "done",
-      "detail": "http://localhost:3000/v/VzSkG9CuzDruEqbZI8MSvQ"
+      "detail": "cp=c6de0269-842d-4795-bcba-e39ba8d85b44; edges=4; issues=[]"
     },
     {
       "id": "A8-permalink",
@@ -122,374 +258,1777 @@
       "id": "A8-podcast",
       "title": "Podcast (audio) edition built",
       "status": "done",
-      "detail": "duration_ms=205021"
+      "detail": "duration_ms=79904"
     },
     {
       "id": "C",
-      "title": "Playlist \"Welcome to Flow Video\" (4 items, shared, public via slug)",
+      "title": "Playlist \"Welcome to Flow Video\" (demo, tutorial, heavy, powers, doors)",
       "status": "done",
-      "detail": "5b17a08a-6bc4-4081-a612-741bcca8384a · items=4 · http://localhost:3000/pl/yqYjoDS8kEKTBh8VNfigLA · permalink=http://localhost:3000/welcome-to-flow-video"
-    },
-    {
-      "id": "A5-poster-murmuration",
-      "title": "Poster captured+stored (murmuration)",
-      "status": "done",
-      "detail": "stored"
-    },
-    {
-      "id": "A5-poster-sim2",
-      "title": "Poster captured+stored (Solar System)",
-      "status": "done",
-      "detail": "stored"
-    },
-    {
-      "id": "A5-poster-orbit",
-      "title": "Poster captured+stored (Orbit Lab)",
-      "status": "done",
-      "detail": "stored"
-    },
-    {
-      "id": "A5-poster-galton",
-      "title": "Poster captured+stored (Galton Board)",
-      "status": "done",
-      "detail": "stored"
+      "detail": "901595d2-4c4c-4b93-8cac-e8d6906ac0f0 · items=5 · http://localhost:3000/pl/BDeJnUgdF5RwdoPzSe7e7g · permalink=http://localhost:3000/welcome-to-flow-video"
     },
     {
       "id": "D2",
-      "title": "Viewer screenshots captured",
+      "title": "Mid-roll viewer verification (6 windows across 4 projects)",
       "status": "done",
-      "detail": "proof/viewer-1-teaser.png, proof/viewer-2-sim-section.png"
+      "detail": "demo/kinesin: +4s=1vis@6.89s first@6.89s exit=0vis@16.82s → proof/midroll-kinesin.png; demo/solarSystem: +4s=1vis@27.9s first@27.9s exit=0vis@37.73s → proof/midroll-solarSystem.png; demo/murmuration: +4s=1vis@47.89s first@47.89s exit=0vis@53.68s → proof/midroll-murmuration.png; tutorial/solarSystem: +4s=1vis@60.91s first@60.91s exit=0vis@71.73s → proof/midroll-tutorial-solarSystem.png; heavy/kinesin: +4s=1vis@34.91s first@34.91s exit=0vis@45.81s → proof/midroll-heavy-kinesin.png; powers/orbitLab: +4s=1vis@8.91s first@8.91s exit=0vis@19.67s → proof/midroll-powers-orbitLab.png"
+    },
+    {
+      "id": "GATE-demo-solarSystem",
+      "title": "Served bridge body declares what it uses (demo · solarSystem)",
+      "status": "done",
+      "detail": "3516 chars"
+    },
+    {
+      "id": "GATE-demo-kinesin",
+      "title": "Served bridge body declares what it uses (demo · kinesin)",
+      "status": "done",
+      "detail": "4293 chars"
+    },
+    {
+      "id": "GATE-demo-murmuration",
+      "title": "Served bridge body declares what it uses (demo · murmuration)",
+      "status": "done",
+      "detail": "3673 chars"
+    },
+    {
+      "id": "GATE-powers-orbitLab",
+      "title": "Served bridge body declares what it uses (powers · orbitLab)",
+      "status": "done",
+      "detail": "3145 chars"
+    },
+    {
+      "id": "GATE-tutorial-solarSystem",
+      "title": "Served bridge body declares what it uses (tutorial · solarSystem)",
+      "status": "done",
+      "detail": "3944 chars"
+    },
+    {
+      "id": "GATE-heavy-kinesin",
+      "title": "Served bridge body declares what it uses (heavy · kinesin)",
+      "status": "done",
+      "detail": "5225 chars"
     }
   ],
   "previousRunCleanup": {
     "playlists": [
-      "c0dc3414-b6d5-438f-be89-459fa74db1bd"
+      "5b17a08a-6bc4-4081-a612-741bcca8384a"
     ],
     "projects": [
-      "7bcf4c08-e94b-4c04-8d2e-ce9228a3b4fc",
-      "0d4e0d35-8c85-4c9c-96b2-e71d32a6ad16",
-      "29e74f94-3187-45c3-9615-8a8f3618eb3b",
-      "8d588f02-c6ce-4a64-a1c7-acb61323d321"
+      "40671c25-3b51-4dc7-93fb-b7755d9ebede",
+      "d9ff6f08-abb4-466c-99ee-6a62aa82e449",
+      "b089fc49-006e-465a-9413-1fd2d97232be",
+      "f32c26e6-a122-4502-808f-9edaf25aa4de"
     ],
     "failures": []
   },
+  "createdProjectIds": [
+    "6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f",
+    "e6c36d52-ddff-4fae-a02f-57e7994da7fa",
+    "92e3477f-0f4c-4c7d-9ba4-435a97874fb3",
+    "847330d3-035f-4d0b-87ee-966efd49fc34",
+    "1985a638-09f4-4e95-b07f-501905846721"
+  ],
   "demo": {
-    "projectId": "40671c25-3b51-4dc7-93fb-b7755d9ebede",
+    "kind": "demo",
+    "key": "demo",
     "title": "Welcome to Flow Video",
-    "videos": {
-      "film1": {
-        "id": "cd4e309b-543b-4df8-9f6a-9572f92373f0",
-        "source": "film1.SCRATCH.mp4",
-        "hls_url": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/master.m3u8",
-        "duration_sec": 72
-      },
-      "film2": {
-        "id": "a8b749d0-9f07-4aa6-8fff-6611b3149ebb",
-        "source": "film2.SCRATCH.mp4",
-        "hls_url": "http://localhost:8080/hls-public/t/1789257600-bc5dea376e343c16106554a74c91e1fb/hls/a8b749d0-9f07-4aa6-8fff-6611b3149ebb/mto6z4wo/master.m3u8",
-        "duration_sec": 133
-      }
+    "topic": "Touch this video. Steer a flock, fly to a planet, scrub a molecular motor — live, inside the film.",
+    "master": "film1",
+    "projectId": "6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f",
+    "video": {
+      "id": "ba75dc2b-6a59-4b62-9170-e571806aabde",
+      "source": "film1.mp4",
+      "hls_url": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/master.m3u8",
+      "duration_sec": 79.9
     },
     "sims": {
-      "murmuration": {
-        "id": "7adb6879-a58b-4c85-9804-e934c052254e",
-        "name": "Murmuration",
-        "entry_file": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/index.html"
-      },
-      "orbitLab": {
-        "id": "3465ae37-8961-4fdf-ab1f-98d76be0df1d",
-        "name": "Orbit Lab",
-        "entry_file": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/3465ae37-8961-4fdf-ab1f-98d76be0df1d/index.html"
-      },
-      "galtonBoard": {
-        "id": "0e2e9cd1-be80-437f-a4dd-238290d182c1",
-        "name": "Galton Board",
-        "entry_file": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/0e2e9cd1-be80-437f-a4dd-238290d182c1/index.html"
-      },
-      "fiveSpecies": {
-        "id": "452e4af6-424b-4550-b30b-2dae4441a501",
-        "name": "5 Species Battle",
-        "entry_file": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/452e4af6-424b-4550-b30b-2dae4441a501/index.html"
+      "kinesin": {
+        "key": "kinesin",
+        "id": "7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7",
+        "name": "Kinesin / Dynein motors",
+        "entry_file": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/index.html",
+        "ready_after_ms": 2353
       },
       "solarSystem": {
-        "id": "948b8a95-7965-4364-ab40-742fa336459e",
+        "key": "solarSystem",
+        "id": "562fc5cd-a580-464b-bb4f-37aa6261324a",
         "name": "Solar System",
-        "entry_file": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/948b8a95-7965-4364-ab40-742fa336459e/index.html"
-      }
-    },
-    "sections": {
+        "entry_file": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/index.html",
+        "ready_after_ms": 322
+      },
       "murmuration": {
-        "id": "15046722-b870-4c36-8ec7-c0fc1db3b4b8",
-        "simulation_id": "7adb6879-a58b-4c85-9804-e934c052254e",
-        "start_sec": 72,
-        "end_sec": 102,
-        "prompt": "Let viewers steer the flock — cohesion, speed, and a scatter button",
-        "simulation_url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/revisions/8809a646-a658-4d73-ac81-9dadd0e9a9a2/package/index.html?section=15046722-b870-4c36-8ec7-c0fc1db3b4b8&v=2048d9140617",
-        "generated": true,
-        "url_carries_section_param": true
+        "key": "murmuration",
+        "id": "923eb4a6-927e-4aba-b44c-f6fc6b155256",
+        "name": "Murmuration",
+        "entry_file": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/index.html",
+        "ready_after_ms": 27
       },
-      "sim2": {
-        "id": "8190f228-e58f-4725-a0af-a96a721d8818",
-        "sim": "Solar System",
-        "simulation_id": "948b8a95-7965-4364-ab40-742fa336459e",
-        "start_sec": 133,
-        "end_sec": 163,
-        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
-        "anchored_to": "film2",
-        "simulation_url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/948b8a95-7965-4364-ab40-742fa336459e/revisions/586e7ed3-5c50-4093-8bcf-20e4df251920/package/index.html?section=8190f228-e58f-4725-a0af-a96a721d8818&v=e9f4d03cc63a",
-        "generated": true,
-        "url_carries_section_param": true
+      "galtonBoard": {
+        "key": "galtonBoard",
+        "id": "177324aa-fabe-45a4-9f29-d0518d5c3111",
+        "name": "Galton Board",
+        "entry_file": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/index.html",
+        "ready_after_ms": 32
       },
-      "orbit": {
-        "id": "ae5f127d-4d14-46f0-a0b9-d1edf05a85c6",
-        "simulation_id": "3465ae37-8961-4fdf-ab1f-98d76be0df1d",
-        "start_sec": 163,
-        "end_sec": 188,
-        "prompt": "Let viewers launch planets and watch the forces pull them into orbit",
-        "anchored_to": "film2",
-        "simulation_url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/3465ae37-8961-4fdf-ab1f-98d76be0df1d/revisions/21b5f066-83ef-451a-b4ea-51d5d26ce967/package/index.html?section=ae5f127d-4d14-46f0-a0b9-d1edf05a85c6&v=9bafd52d8297",
-        "generated": true,
-        "url_carries_section_param": true
-      },
-      "galton": {
-        "id": "e9d314a9-f89e-4d2c-b2bd-e48b917b4d47",
-        "simulation_id": "0e2e9cd1-be80-437f-a4dd-238290d182c1",
-        "start_sec": 188,
-        "end_sec": 213,
-        "prompt": "Let viewers drop balls and watch the bell curve build itself",
-        "anchored_to": "film2",
-        "simulation_url": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/0e2e9cd1-be80-437f-a4dd-238290d182c1/revisions/51b74ca9-b404-42a5-a612-ddd1590031fb/package/index.html?section=e9d314a9-f89e-4d2c-b2bd-e48b917b4d47&v=0202448926ee",
-        "generated": true,
-        "url_carries_section_param": true
-      },
-      "image": {
-        "id": "b3cdc5e5-54e7-47cd-9ba9-3e191d5be803",
-        "image_id": "dfab3af9-0b2f-40ae-9b2d-eb3563b0c647",
-        "global_offset_sec": 30,
-        "duration_sec": 6,
-        "camera_movement": "drift"
-      },
-      "sting": {
-        "id": "d6d5ac09-25a2-4846-afa2-18916b0b4182",
-        "audio_id": "81fff102-7887-41be-b9d0-5ef3dce63ea0",
-        "global_offset_sec": 64,
-        "duration_sec": 8,
-        "track": "audio"
+      "fiveSpecies": {
+        "key": "fiveSpecies",
+        "id": "a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5",
+        "name": "5 Species Battle",
+        "entry_file": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/index.html",
+        "ready_after_ms": 32
       }
     },
+    "windows": [
+      {
+        "sim": "kinesin",
+        "label": "Touch the motor",
+        "prompt": "Let viewers scrub the walking cycle and orbit the camera",
+        "simpleUI": true,
+        "requested": [
+          4,
+          15
+        ],
+        "start_sec": 4,
+        "end_sec": 15,
+        "clamped": false,
+        "warnings": [],
+        "sectionId": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0",
+        "simulation_id": "7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7",
+        "generated": true,
+        "simulation_url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-7460-4e38-95b9-50e86f132160/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=01cf202be588",
+        "url_carries_section_param": true,
+        "poster": {
+          "outcome": "stored",
+          "identity": "69d0a992bbb2dcf6__93e6b8fa-2742-4c96-8136-3c8cab52b1a0__2fdf23aa8a73852e__wide__high",
+          "proof": "proof/poster-demo-kinesin.png",
+          "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-7460-4e38-95b9-50e86f132160/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=01cf202be588"
+        },
+        "gate": {
+          "ok": true,
+          "missing": [],
+          "bodyLen": 4293,
+          "reason": null
+        },
+        "promptRestored": true,
+        "externalRefinement": {
+          "prompt": "Show dynein carrying cargo toward the cell center while viewers control its speed",
+          "generatedAt": "2026-09-05T12:35:20.431Z",
+          "turns": 3
+        }
+      },
+      {
+        "sim": "solarSystem",
+        "label": "Fly to a planet",
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "requested": [
+          25,
+          36
+        ],
+        "start_sec": 25,
+        "end_sec": 36,
+        "clamped": false,
+        "warnings": [],
+        "sectionId": "7cf3db95-97ef-4846-b007-b0feba399430",
+        "simulation_id": "562fc5cd-a580-464b-bb4f-37aa6261324a",
+        "generated": true,
+        "simulation_url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-ebd2-40ba-bd09-fbf1cb497e02/package/index.html?section=7cf3db95-97ef-4846-b007-b0feba399430&v=4d57554ad367",
+        "url_carries_section_param": true,
+        "poster": {
+          "outcome": "stored",
+          "identity": "b8ced998601800d7__7cf3db95-97ef-4846-b007-b0feba399430__2fdf23aa8a73852e__wide__high",
+          "proof": "proof/poster-demo-solarSystem.png",
+          "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-ebd2-40ba-bd09-fbf1cb497e02/package/index.html?section=7cf3db95-97ef-4846-b007-b0feba399430&v=4d57554ad367"
+        },
+        "gate": {
+          "ok": true,
+          "missing": [],
+          "bodyLen": 3516,
+          "reason": null
+        }
+      },
+      {
+        "sim": "murmuration",
+        "label": "Steer the flock",
+        "prompt": "Let viewers steer the flock — cohesion, speed, and a scatter button",
+        "simpleUI": true,
+        "requested": [
+          45,
+          52
+        ],
+        "start_sec": 45,
+        "end_sec": 52,
+        "clamped": false,
+        "warnings": [],
+        "sectionId": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8",
+        "simulation_id": "923eb4a6-927e-4aba-b44c-f6fc6b155256",
+        "generated": true,
+        "simulation_url": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76aa-4a50-b381-0313d16940f1/package/index.html?section=e8b3a30f-ff43-4bd7-9e96-7971524b90e8&v=10bc53c697fd",
+        "url_carries_section_param": true,
+        "poster": {
+          "outcome": "stored",
+          "identity": "c465c8897b00135e__e8b3a30f-ff43-4bd7-9e96-7971524b90e8__2fdf23aa8a73852e__wide__high",
+          "proof": "proof/poster-demo-murmuration.png",
+          "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76aa-4a50-b381-0313d16940f1/package/index.html?section=e8b3a30f-ff43-4bd7-9e96-7971524b90e8&v=10bc53c697fd"
+        },
+        "gate": {
+          "ok": true,
+          "missing": [],
+          "bodyLen": 3673,
+          "reason": null
+        }
+      }
+    ],
+    "shareToken": "PfoDYg7AMv9E4S5Y36xmow",
+    "shareUrl": "http://localhost:3000/v/PfoDYg7AMv9E4S5Y36xmow",
+    "imageId": "c95f0130-ea65-47c9-9475-4fb5bd73d36e",
+    "audioId": "1894efde-a53b-446c-97f9-cd886b5df03b",
+    "audioDurationSec": 8,
     "branching": {
-      "sequence_id": "dc4c2d58-f36d-4f02-b9c4-0d4a1c9e5f85",
-      "choice_point_id": "f7e1a86e-469f-416b-99a1-68563fafff37",
+      "sequence_id": "644bcca3-0caf-4698-986e-3c70a0a29209",
+      "choice_point_id": "c6de0269-842d-4795-bcba-e39ba8d85b44",
       "edges": [
         {
-          "id": "b626ddcd-8bdd-4b4e-ae2d-73b04d46be1b",
-          "label": "The Heavy Simulation",
-          "destination_type": "project"
+          "id": "96d9ea9c-29c2-4a97-a7c9-0c12ecef91f2",
+          "label": "Drop In Anything",
+          "destination_type": "project",
+          "dest_project_id": "92e3477f-0f4c-4c7d-9ba4-435a97874fb3"
         },
         {
-          "id": "83468510-5e2b-43ae-8045-b18c71a99fa4",
+          "id": "7120596c-8058-481e-a9f2-83f13aa0af99",
           "label": "Viewer Superpowers",
-          "destination_type": "project"
+          "destination_type": "project",
+          "dest_project_id": "847330d3-035f-4d0b-87ee-966efd49fc34"
         },
         {
-          "id": "a11f78f5-770a-4110-9aa7-98ca7070535a",
+          "id": "3f55dca4-a68e-4825-8394-9433607f33ac",
           "label": "One Link, Three Doors",
-          "destination_type": "project"
+          "destination_type": "project",
+          "dest_project_id": "1985a638-09f4-4e95-b07f-501905846721"
         },
         {
-          "id": "a6a1fadb-7f64-4080-8d4e-16365e4ebb20",
+          "id": "22d120de-0951-4704-b38d-3ba5e2f61fc6",
           "label": "Watch again",
-          "destination_type": "restart"
+          "destination_type": "restart",
+          "dest_project_id": null
         }
       ],
-      "validation_issues": [],
-      "viewer_caveat": "flat overlays (image/sting) are not rendered by the branching viewer today — see notes[]"
+      "validation_issues": []
     },
-    "imageId": "dfab3af9-0b2f-40ae-9b2d-eb3563b0c647",
-    "audioId": "81fff102-7887-41be-b9d0-5ef3dce63ea0",
-    "audioDurationSec": 8,
-    "shareToken": "VzSkG9CuzDruEqbZI8MSvQ",
-    "shareUrl": "http://localhost:3000/v/VzSkG9CuzDruEqbZI8MSvQ",
     "permalink": "http://localhost:3000/welcome-flow-video",
     "permalinkSlug": "welcome-flow-video",
     "audioEdition": {
       "status": "ready",
-      "duration_ms": 205021
+      "duration_ms": 79904
     }
+  },
+  "tutorial": {
+    "kind": "tutorial",
+    "key": "tutorial",
+    "title": "Make Yours — the basics",
+    "topic": "Make yours: upload footage, drop a simulation into the library, describe the moment, generate — the basics, with the result live in the film.",
+    "master": "film2",
+    "projectId": "e6c36d52-ddff-4fae-a02f-57e7994da7fa",
+    "video": {
+      "id": "2a3c8779-b21e-4343-ba63-2bd60080096f",
+      "source": "film2.SCRATCH.mp4",
+      "hls_url": "http://localhost:8080/hls-public/t/1789257600-b8dcd01da4374755f28b4f52c0556316/hls/2a3c8779-b21e-4343-ba63-2bd60080096f/mtocddnt/master.m3u8",
+      "duration_sec": 133
+    },
+    "sims": {
+      "solarSystem": {
+        "key": "solarSystem",
+        "id": "fc562e51-7c2a-4a43-b99c-d0359e2b56b4",
+        "name": "Solar System",
+        "entry_file": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/index.html",
+        "ready_after_ms": 38
+      }
+    },
+    "windows": [
+      {
+        "sim": "solarSystem",
+        "label": "It's live — touch it",
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "requested": [
+          58,
+          70
+        ],
+        "start_sec": 58,
+        "end_sec": 70,
+        "clamped": false,
+        "warnings": [],
+        "sectionId": "2719494d-a463-4a4c-a5c9-14a594c67742",
+        "simulation_id": "fc562e51-7c2a-4a43-b99c-d0359e2b56b4",
+        "generated": true,
+        "simulation_url": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e13c-446d-8cb4-3b24a2eed4b5/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=16880d4cfb12",
+        "url_carries_section_param": true,
+        "poster": {
+          "outcome": "stored",
+          "identity": "9719fadd5949a472__2719494d-a463-4a4c-a5c9-14a594c67742__2fdf23aa8a73852e__wide__high",
+          "proof": "proof/poster-tutorial-solarSystem.png",
+          "captured_from": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e13c-446d-8cb4-3b24a2eed4b5/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=16880d4cfb12"
+        },
+        "gate": {
+          "ok": true,
+          "missing": [],
+          "bodyLen": 3944,
+          "reason": null
+        },
+        "promptRestored": true
+      }
+    ],
+    "shareToken": "SlMaRW0bPfc1vm9_RDC1Xg",
+    "shareUrl": "http://localhost:3000/v/SlMaRW0bPfc1vm9_RDC1Xg"
   },
   "niche": [
     {
+      "kind": "niche",
       "key": "heavy",
-      "projectId": "d9ff6f08-abb4-466c-99ee-6a62aa82e449",
-      "title": "The Heavy Simulation",
+      "title": "Drop In Anything",
+      "topic": "You have your own simulation or interactive content? Drop it in, describe the moment, generate — it goes live for your viewers.",
+      "master": "film3",
+      "projectId": "92e3477f-0f4c-4c7d-9ba4-435a97874fb3",
       "video": {
-        "id": "4bdf5d7e-b3e8-4fb8-91c1-5b3d4f0bf34b",
+        "id": "c8f76947-8ab8-4f6f-aedd-5b0aca0f5c52",
         "source": "film3.SCRATCH.mp4",
-        "hls_url": "http://localhost:8080/hls-public/t/1789257600-29dab173640b1aee489dee2b061817b1/hls/4bdf5d7e-b3e8-4fb8-91c1-5b3d4f0bf34b/mto717i3/master.m3u8",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-51398a42a1e6f3842c67baefa2b1a5f1/hls/c8f76947-8ab8-4f6f-aedd-5b0aca0f5c52/mtoce5s2/master.m3u8",
         "duration_sec": 78
       },
-      "shareUrl": "http://localhost:3000/v/EtM302XZyNE-mCE20QbsfA",
-      "shareToken": "EtM302XZyNE-mCE20QbsfA"
+      "sims": {
+        "kinesin": {
+          "key": "kinesin",
+          "id": "03316ac6-1e7f-4d25-8f24-388a804be0f6",
+          "name": "Kinesin / Dynein motors",
+          "entry_file": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/index.html",
+          "ready_after_ms": 2309
+        }
+      },
+      "windows": [
+        {
+          "sim": "kinesin",
+          "label": "Your package, live",
+          "prompt": "Let viewers scrub the walking cycle and switch motors",
+          "simpleUI": true,
+          "requested": [
+            32,
+            44
+          ],
+          "start_sec": 32,
+          "end_sec": 44,
+          "clamped": false,
+          "warnings": [],
+          "sectionId": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc",
+          "simulation_id": "03316ac6-1e7f-4d25-8f24-388a804be0f6",
+          "generated": true,
+          "simulation_url": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d8a-43fe-b4d9-d5adeb46f76c/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=962f3986264d",
+          "url_carries_section_param": true,
+          "poster": {
+            "outcome": "stored",
+            "identity": "72ea22155ebc03da__a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc__2fdf23aa8a73852e__wide__high",
+            "proof": "proof/poster-heavy-kinesin.png",
+            "captured_from": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d8a-43fe-b4d9-d5adeb46f76c/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=962f3986264d"
+          },
+          "gate": {
+            "ok": true,
+            "missing": [],
+            "bodyLen": 5225,
+            "reason": null
+          },
+          "promptRestored": true
+        }
+      ],
+      "shareToken": "93GZ-zn48YzuPCBGcpLzEQ",
+      "shareUrl": "http://localhost:3000/v/93GZ-zn48YzuPCBGcpLzEQ"
     },
     {
+      "kind": "niche",
       "key": "powers",
-      "projectId": "b089fc49-006e-465a-9413-1fd2d97232be",
       "title": "Viewer Superpowers",
+      "topic": "What viewers can do inside a Flow Video: touch live simulations, ask at any moment, choose the path, watch it their way.",
+      "master": "film4",
+      "projectId": "847330d3-035f-4d0b-87ee-966efd49fc34",
       "video": {
-        "id": "3800ea22-631e-4720-a0d3-b3cd95a9f6e5",
+        "id": "8399486a-5610-4525-9b96-a44c91996049",
         "source": "film4.SCRATCH.mp4",
-        "hls_url": "http://localhost:8080/hls-public/t/1789257600-407b71368adcc437478b43d59a344e81/hls/3800ea22-631e-4720-a0d3-b3cd95a9f6e5/mto71ut3/master.m3u8",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-1107007392d3e1dc82c6a0006898a569/hls/8399486a-5610-4525-9b96-a44c91996049/mtocem6h/master.m3u8",
         "duration_sec": 72
       },
-      "shareUrl": "http://localhost:3000/v/UhyhDL_2S2Bg1nUnM4qFeA",
-      "shareToken": "UhyhDL_2S2Bg1nUnM4qFeA"
+      "sims": {
+        "orbitLab": {
+          "key": "orbitLab",
+          "id": "50a253ac-d3d0-4b78-a453-5c0cf95de990",
+          "name": "Orbit Lab",
+          "entry_file": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/index.html",
+          "ready_after_ms": 23
+        }
+      },
+      "windows": [
+        {
+          "sim": "orbitLab",
+          "label": "Launch a planet",
+          "prompt": "Let viewers launch planets and watch the forces pull them into orbit",
+          "simpleUI": true,
+          "requested": [
+            6,
+            18
+          ],
+          "start_sec": 6,
+          "end_sec": 18,
+          "clamped": false,
+          "warnings": [],
+          "sectionId": "664478fa-7ff5-424b-95b2-733383545d76",
+          "simulation_id": "50a253ac-d3d0-4b78-a453-5c0cf95de990",
+          "generated": true,
+          "simulation_url": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-7165-4605-916f-e1d417af5c66/package/index.html?section=664478fa-7ff5-424b-95b2-733383545d76&v=186d68d82efa",
+          "url_carries_section_param": true,
+          "poster": {
+            "outcome": "stored",
+            "identity": "0da167ad6abcb255__664478fa-7ff5-424b-95b2-733383545d76__2fdf23aa8a73852e__wide__high",
+            "proof": "proof/poster-powers-orbitLab.png",
+            "captured_from": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-7165-4605-916f-e1d417af5c66/package/index.html?section=664478fa-7ff5-424b-95b2-733383545d76&v=186d68d82efa"
+          },
+          "gate": {
+            "ok": true,
+            "missing": [],
+            "bodyLen": 3145,
+            "reason": null
+          }
+        }
+      ],
+      "shareToken": "qpFZMdQsay6X8cxb85QQYw",
+      "shareUrl": "http://localhost:3000/v/qpFZMdQsay6X8cxb85QQYw"
     },
     {
+      "kind": "niche",
       "key": "doors",
-      "projectId": "f32c26e6-a122-4502-808f-9edaf25aa4de",
       "title": "One Link, Three Doors",
+      "topic": "Share, collaborate, control access: one permalink, invited collaborators, and access control for a film.",
+      "master": "film5",
+      "projectId": "1985a638-09f4-4e95-b07f-501905846721",
       "video": {
-        "id": "84c5ec3e-c618-4018-8f85-d9f2bd489cd8",
+        "id": "559cc9b4-c3be-4a26-b4db-2114a8718a48",
         "source": "film5.SCRATCH.mp4",
-        "hls_url": "http://localhost:8080/hls-public/t/1789257600-da45d3dcb8df2bfc62c9c7f81faabfdd/hls/84c5ec3e-c618-4018-8f85-d9f2bd489cd8/mto72fum/master.m3u8",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-b55bcde190cef73d794b0588704d4995/hls/559cc9b4-c3be-4a26-b4db-2114a8718a48/mtocf0pe/master.m3u8",
         "duration_sec": 64
       },
-      "shareUrl": "http://localhost:3000/v/36a2hcSpRBDwPE_Y0YsKMA",
-      "shareToken": "36a2hcSpRBDwPE_Y0YsKMA"
+      "sims": {},
+      "windows": [],
+      "shareToken": "1A5v9ULp4TpmPPHEfXtiNA",
+      "shareUrl": "http://localhost:3000/v/1A5v9ULp4TpmPPHEfXtiNA"
     }
   ],
   "playlist": {
-    "id": "5b17a08a-6bc4-4081-a612-741bcca8384a",
+    "id": "901595d2-4c4c-4b93-8cac-e8d6906ac0f0",
     "title": "Welcome to Flow Video",
     "items": [
       {
         "position": 0,
-        "project_id": "40671c25-3b51-4dc7-93fb-b7755d9ebede",
+        "project_id": "6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f",
         "title": "Welcome to Flow Video"
       },
       {
         "position": 1,
-        "project_id": "d9ff6f08-abb4-466c-99ee-6a62aa82e449",
-        "title": "The Heavy Simulation"
+        "project_id": "e6c36d52-ddff-4fae-a02f-57e7994da7fa",
+        "title": "Make Yours — the basics"
       },
       {
         "position": 2,
-        "project_id": "b089fc49-006e-465a-9413-1fd2d97232be",
-        "title": "Viewer Superpowers"
+        "project_id": "92e3477f-0f4c-4c7d-9ba4-435a97874fb3",
+        "title": "Drop In Anything"
       },
       {
         "position": 3,
-        "project_id": "f32c26e6-a122-4502-808f-9edaf25aa4de",
+        "project_id": "847330d3-035f-4d0b-87ee-966efd49fc34",
+        "title": "Viewer Superpowers"
+      },
+      {
+        "position": 4,
+        "project_id": "1985a638-09f4-4e95-b07f-501905846721",
         "title": "One Link, Three Doors"
       }
     ],
-    "shareToken": "yqYjoDS8kEKTBh8VNfigLA",
-    "shareUrl": "http://localhost:3000/pl/yqYjoDS8kEKTBh8VNfigLA",
+    "shareToken": "BDeJnUgdF5RwdoPzSe7e7g",
+    "shareUrl": "http://localhost:3000/pl/BDeJnUgdF5RwdoPzSe7e7g",
     "permalinkUrl": "http://localhost:3000/welcome-to-flow-video",
     "slug": "welcome-to-flow-video"
   },
   "verification": {
     "asserts": [
       {
-        "name": "public share config responds 200",
+        "name": "demo: public share config responds 200",
         "ok": true,
         "detail": "status=200"
       },
       {
-        "name": "video HLS url present",
+        "name": "demo: video HLS url present",
         "ok": true,
-        "detail": "http://localhost:8080/hls-public/t/1789257600-1be7ad010df9731cca6c5ea93803dd5a/hls/cd4e309b-543b-4df8-9f6a-9572f92373f0/mto6yojm/master.m3u8"
+        "detail": "http://localhost:8080/hls-public/t/1789257600-d6504debedf45023f9a825dd3aa5e7c7/hls/ba75dc2b-6a59-4b62-9170-e571806aabde/mtoccx5u/master.m3u8"
       },
       {
-        "name": "two sim sections present",
-        "ok": false,
-        "detail": "found 1"
-      },
-      {
-        "name": "sim sections carry simulation_url",
-        "ok": false,
-        "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/revisions/8809a646-a658-4d73-ac81-9dadd0e9a9a2/package/index.html?section=15046722-b870-4c36-8ec7-c0fc1db3b4b8&v=2048d9140617"
-      },
-      {
-        "name": "sim sections carry poster_url",
-        "ok": false,
-        "detail": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/posters/00a18bb29fe1f542__15046722-b870-4c36-8ec7-c0fc1db3b4b8__2fdf23aa8a73852e__wide__high/standard.png"
-      },
-      {
-        "name": "image section present (image_overlays)",
+        "name": "demo: no post-roll sim sections (all start before the film ends)",
         "ok": true,
-        "detail": "{\"id\":\"b3cdc5e5-54e7-47cd-9ba9-3e191d5be803\",\"image_url\":\"http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161a"
+        "detail": "Touch the motor[4-15], Fly to a planet[25-36], Steer the flock[45-52]"
       },
       {
-        "name": "audio cutaway present (audio_cutaways)",
+        "name": "demo: sim section count matches the layout's placed windows",
         "ok": true,
-        "detail": "{\"id\":\"d6d5ac09-25a2-4846-afa2-18916b0b4182\",\"audio_url\":\"http://localhost:8080/local-storage/blobs/3f/a3/3fa3b4c3700fb05321c326f3b2d3f60f8b231b63c798bf7bb4d61b"
+        "detail": "config=3 layout=3"
       },
       {
-        "name": "branching block present with a choice point",
+        "name": "demo · kinesin [4-15]: section present in public config",
+        "ok": true,
+        "detail": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0 [4-15]"
+      },
+      {
+        "name": "demo · kinesin: window matches [4-15]",
+        "ok": true,
+        "detail": "[4-15]"
+      },
+      {
+        "name": "demo · kinesin: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-7460-4e38-95b9-50e86f132160/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=01cf202be588"
+      },
+      {
+        "name": "demo · kinesin: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/posters/69d0a992bbb2dcf6__93e6b8fa-2742-4c96-8136-3c8cab52b1a0__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "demo · solarSystem [25-36]: section present in public config",
+        "ok": true,
+        "detail": "7cf3db95-97ef-4846-b007-b0feba399430 [25-36]"
+      },
+      {
+        "name": "demo · solarSystem: window matches [25-36]",
+        "ok": true,
+        "detail": "[25-36]"
+      },
+      {
+        "name": "demo · solarSystem: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-ebd2-40ba-bd09-fbf1cb497e02/package/index.html?section=7cf3db95-97ef-4846-b007-b0feba399430&v=4d57554ad367"
+      },
+      {
+        "name": "demo · solarSystem: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/posters/b8ced998601800d7__7cf3db95-97ef-4846-b007-b0feba399430__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "demo · murmuration [45-52]: section present in public config",
+        "ok": true,
+        "detail": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8 [45-52]"
+      },
+      {
+        "name": "demo · murmuration: window matches [45-52]",
+        "ok": true,
+        "detail": "[45-52]"
+      },
+      {
+        "name": "demo · murmuration: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76aa-4a50-b381-0313d16940f1/package/index.html?section=e8b3a30f-ff43-4bd7-9e96-7971524b90e8&v=10bc53c697fd"
+      },
+      {
+        "name": "demo · murmuration: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/posters/c465c8897b00135e__e8b3a30f-ff43-4bd7-9e96-7971524b90e8__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "demo: branching block present with a choice point",
         "ok": true,
         "detail": "edges=4"
       },
       {
-        "name": "choice edges enabled (3 doors + replay)",
+        "name": "demo: choice edges enabled (3 doors + replay)",
         "ok": true,
-        "detail": "The Heavy Simulation:ok, Viewer Superpowers:ok, One Link, Three Doors:ok, Watch again:ok"
+        "detail": "Drop In Anything:ok, Viewer Superpowers:ok, One Link, Three Doors:ok, Watch again:ok"
       },
       {
-        "name": "permalink /config responds 200",
+        "name": "demo: doors point at the three niche projects",
         "ok": true,
-        "detail": "GET /api/v1/public/permalink/welcome-flow-video/config -> 200"
+        "detail": "Drop In Anything->project, Viewer Superpowers->project, One Link, Three Doors->project, Watch again->restart"
       },
       {
-        "name": "playlist share config has 4 items",
+        "name": "demo: permalink /welcome-flow-video config responds 200",
         "ok": true,
-        "detail": "status=200 items=4"
-      }
-    ],
-    "screenshots": [
-      {
-        "what": "t=teaser playing",
-        "path": "proof/viewer-1-teaser.png",
-        "url": "http://localhost:3000/v/VzSkG9CuzDruEqbZI8MSvQ"
+        "detail": "-> 200"
       },
       {
-        "what": "post-roll sim section engaged",
-        "path": "proof/viewer-2-sim-section.png",
-        "url": "http://localhost:3000/v/VzSkG9CuzDruEqbZI8MSvQ"
+        "name": "tutorial: public share config responds 200",
+        "ok": true,
+        "detail": "status=200"
+      },
+      {
+        "name": "tutorial: video HLS url present",
+        "ok": true,
+        "detail": "http://localhost:8080/hls-public/t/1789257600-b8dcd01da4374755f28b4f52c0556316/hls/2a3c8779-b21e-4343-ba63-2bd60080096f/mtocddnt/master.m3u8"
+      },
+      {
+        "name": "tutorial: no post-roll sim sections (all start before the film ends)",
+        "ok": true,
+        "detail": "It's live — touch it[58-70]"
+      },
+      {
+        "name": "tutorial: sim section count matches the layout's placed windows",
+        "ok": true,
+        "detail": "config=1 layout=1"
+      },
+      {
+        "name": "tutorial · solarSystem [58-70]: section present in public config",
+        "ok": true,
+        "detail": "2719494d-a463-4a4c-a5c9-14a594c67742 [58-70]"
+      },
+      {
+        "name": "tutorial · solarSystem: window matches [58-70]",
+        "ok": true,
+        "detail": "[58-70]"
+      },
+      {
+        "name": "tutorial · solarSystem: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e13c-446d-8cb4-3b24a2eed4b5/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=16880d4cfb12"
+      },
+      {
+        "name": "tutorial · solarSystem: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/posters/9719fadd5949a472__2719494d-a463-4a4c-a5c9-14a594c67742__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "heavy: public share config responds 200",
+        "ok": true,
+        "detail": "status=200"
+      },
+      {
+        "name": "heavy: video HLS url present",
+        "ok": true,
+        "detail": "http://localhost:8080/hls-public/t/1789257600-51398a42a1e6f3842c67baefa2b1a5f1/hls/c8f76947-8ab8-4f6f-aedd-5b0aca0f5c52/mtoce5s2/master.m3u8"
+      },
+      {
+        "name": "heavy: no post-roll sim sections (all start before the film ends)",
+        "ok": true,
+        "detail": "Your package, live[32-44]"
+      },
+      {
+        "name": "heavy: sim section count matches the layout's placed windows",
+        "ok": true,
+        "detail": "config=1 layout=1"
+      },
+      {
+        "name": "heavy · kinesin [32-44]: section present in public config",
+        "ok": true,
+        "detail": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc [32-44]"
+      },
+      {
+        "name": "heavy · kinesin: window matches [32-44]",
+        "ok": true,
+        "detail": "[32-44]"
+      },
+      {
+        "name": "heavy · kinesin: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d8a-43fe-b4d9-d5adeb46f76c/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=962f3986264d"
+      },
+      {
+        "name": "heavy · kinesin: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/posters/72ea22155ebc03da__a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "powers: public share config responds 200",
+        "ok": true,
+        "detail": "status=200"
+      },
+      {
+        "name": "powers: video HLS url present",
+        "ok": true,
+        "detail": "http://localhost:8080/hls-public/t/1789257600-1107007392d3e1dc82c6a0006898a569/hls/8399486a-5610-4525-9b96-a44c91996049/mtocem6h/master.m3u8"
+      },
+      {
+        "name": "powers: no post-roll sim sections (all start before the film ends)",
+        "ok": true,
+        "detail": "Launch a planet[6-18]"
+      },
+      {
+        "name": "powers: sim section count matches the layout's placed windows",
+        "ok": true,
+        "detail": "config=1 layout=1"
+      },
+      {
+        "name": "powers · orbitLab [6-18]: section present in public config",
+        "ok": true,
+        "detail": "664478fa-7ff5-424b-95b2-733383545d76 [6-18]"
+      },
+      {
+        "name": "powers · orbitLab: window matches [6-18]",
+        "ok": true,
+        "detail": "[6-18]"
+      },
+      {
+        "name": "powers · orbitLab: simulation_url present (generated)",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-7165-4605-916f-e1d417af5c66/package/index.html?section=664478fa-7ff5-424b-95b2-733383545d76&v=186d68d82efa"
+      },
+      {
+        "name": "powers · orbitLab: poster_url stored",
+        "ok": true,
+        "detail": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/posters/0da167ad6abcb255__664478fa-7ff5-424b-95b2-733383545d76__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "doors: public share config responds 200",
+        "ok": true,
+        "detail": "status=200"
+      },
+      {
+        "name": "doors: video HLS url present",
+        "ok": true,
+        "detail": "http://localhost:8080/hls-public/t/1789257600-b55bcde190cef73d794b0588704d4995/hls/559cc9b4-c3be-4a26-b4db-2114a8718a48/mtocf0pe/master.m3u8"
+      },
+      {
+        "name": "doors: no post-roll sim sections (all start before the film ends)",
+        "ok": true,
+        "detail": "no sim sections"
+      },
+      {
+        "name": "doors: sim section count matches the layout's placed windows",
+        "ok": true,
+        "detail": "config=0 layout=0"
+      },
+      {
+        "name": "playlist: share config has 5 items",
+        "ok": true,
+        "detail": "status=200 items=5"
+      },
+      {
+        "name": "playlist: order is demo, tutorial, heavy, powers, doors",
+        "ok": true,
+        "detail": "demo > tutorial > heavy > powers > doors"
+      },
+      {
+        "name": "demo · kinesin [4-15]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=6.89s paused=false visibleIframes=1/3"
+      },
+      {
+        "name": "demo · kinesin: auto-exit past 15s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=16.82s paused=false visibleIframes=0/3"
+      },
+      {
+        "name": "demo · kinesin: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "17 telemetry events, activate=true reveal=true"
+      },
+      {
+        "name": "demo · solarSystem [25-36]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=27.9s paused=false visibleIframes=1/3"
+      },
+      {
+        "name": "demo · solarSystem: auto-exit past 36s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=37.73s paused=false visibleIframes=0/3"
+      },
+      {
+        "name": "demo · solarSystem: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "8 telemetry events, activate=true reveal=true"
+      },
+      {
+        "name": "demo · murmuration [45-52]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=47.89s paused=false visibleIframes=1/3"
+      },
+      {
+        "name": "demo · murmuration: auto-exit past 52s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=53.68s paused=false visibleIframes=0/3"
+      },
+      {
+        "name": "demo · murmuration: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "8 telemetry events, activate=true reveal=true"
+      },
+      {
+        "name": "tutorial · solarSystem [58-70]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=60.91s paused=false visibleIframes=1/1"
+      },
+      {
+        "name": "tutorial · solarSystem: auto-exit past 70s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=71.73s paused=false visibleIframes=0/1"
+      },
+      {
+        "name": "tutorial · solarSystem: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "9 telemetry events, activate=true reveal=true"
+      },
+      {
+        "name": "heavy · kinesin [32-44]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=34.91s paused=false visibleIframes=1/1"
+      },
+      {
+        "name": "heavy · kinesin: auto-exit past 44s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=45.81s paused=false visibleIframes=0/1"
+      },
+      {
+        "name": "heavy · kinesin: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "9 telemetry events, activate=true reveal=true"
+      },
+      {
+        "name": "powers · orbitLab [6-18]: presented MID-ROLL at +4s (exactly one sim iframe at opacity 1, video playing)",
+        "ok": true,
+        "detail": "t=8.91s paused=false visibleIframes=1/1"
+      },
+      {
+        "name": "powers · orbitLab: auto-exit past 18s (all sim iframes at opacity 0, video still playing)",
+        "ok": true,
+        "detail": "t=19.67s paused=false visibleIframes=0/1"
+      },
+      {
+        "name": "powers · orbitLab: no script-error/script-missing reported by the sim runtime",
+        "ok": true,
+        "detail": "9 telemetry events, activate=true reveal=true"
       }
     ],
     "posters": [
       {
-        "key": "murmuration",
-        "sectionId": "15046722-b870-4c36-8ec7-c0fc1db3b4b8",
+        "project": "demo",
+        "sim": "kinesin",
+        "sectionId": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0",
         "outcome": "stored",
-        "identity": "00a18bb29fe1f542__15046722-b870-4c36-8ec7-c0fc1db3b4b8__2fdf23aa8a73852e__wide__high",
-        "proof": "proof/poster-murmuration.png",
-        "captured_from": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/7adb6879-a58b-4c85-9804-e934c052254e/revisions/8809a646-a658-4d73-ac81-9dadd0e9a9a2/package/index.html?section=15046722-b870-4c36-8ec7-c0fc1db3b4b8&v=2048d9140617"
+        "identity": "f6eccfe1607a5518__93e6b8fa-2742-4c96-8136-3c8cab52b1a0__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-demo-kinesin.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/379b665b-82fa-480e-8148-326f93243d4a/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=e624731a5fbf"
       },
       {
-        "key": "sim2",
-        "sectionId": "8190f228-e58f-4725-a0af-a96a721d8818",
+        "project": "demo",
+        "sim": "solarSystem",
+        "sectionId": "7cf3db95-97ef-4846-b007-b0feba399430",
         "outcome": "stored",
-        "identity": "b135be0ca62a6c2b__8190f228-e58f-4725-a0af-a96a721d8818__2fdf23aa8a73852e__wide__high",
-        "proof": "proof/poster-sim2.png",
-        "captured_from": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/948b8a95-7965-4364-ab40-742fa336459e/revisions/586e7ed3-5c50-4093-8bcf-20e4df251920/package/index.html?section=8190f228-e58f-4725-a0af-a96a721d8818&v=e9f4d03cc63a"
+        "identity": "b8ced998601800d7__7cf3db95-97ef-4846-b007-b0feba399430__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-demo-solarSystem.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-ebd2-40ba-bd09-fbf1cb497e02/package/index.html?section=7cf3db95-97ef-4846-b007-b0feba399430&v=4d57554ad367"
       },
       {
-        "key": "orbit",
-        "sectionId": "ae5f127d-4d14-46f0-a0b9-d1edf05a85c6",
+        "project": "demo",
+        "sim": "murmuration",
+        "sectionId": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8",
         "outcome": "stored",
-        "identity": "2b3a9672c493adf5__ae5f127d-4d14-46f0-a0b9-d1edf05a85c6__2fdf23aa8a73852e__wide__high",
-        "proof": "proof/poster-orbit.png",
-        "captured_from": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/3465ae37-8961-4fdf-ab1f-98d76be0df1d/revisions/21b5f066-83ef-451a-b4ea-51d5d26ce967/package/index.html?section=ae5f127d-4d14-46f0-a0b9-d1edf05a85c6&v=9bafd52d8297"
+        "identity": "c465c8897b00135e__e8b3a30f-ff43-4bd7-9e96-7971524b90e8__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-demo-murmuration.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76aa-4a50-b381-0313d16940f1/package/index.html?section=e8b3a30f-ff43-4bd7-9e96-7971524b90e8&v=10bc53c697fd"
       },
       {
-        "key": "galton",
-        "sectionId": "e9d314a9-f89e-4d2c-b2bd-e48b917b4d47",
+        "project": "tutorial",
+        "sim": "solarSystem",
+        "sectionId": "2719494d-a463-4a4c-a5c9-14a594c67742",
         "outcome": "stored",
-        "identity": "d6a6c3ec92b0296d__e9d314a9-f89e-4d2c-b2bd-e48b917b4d47__2fdf23aa8a73852e__wide__high",
-        "proof": "proof/poster-galton.png",
-        "captured_from": "http://localhost:8080/sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/0e2e9cd1-be80-437f-a4dd-238290d182c1/revisions/51b74ca9-b404-42a5-a612-ddd1590031fb/package/index.html?section=e9d314a9-f89e-4d2c-b2bd-e48b917b4d47&v=0202448926ee"
+        "identity": "7e3689669c2404b3__2719494d-a463-4a4c-a5c9-14a594c67742__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-tutorial-solarSystem.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/0e9eeb8c-957d-42fd-81c9-24e4d86730fa/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=6f05bca55ce8"
+      },
+      {
+        "project": "heavy",
+        "sim": "kinesin",
+        "sectionId": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc",
+        "outcome": "stored",
+        "identity": "a63a1b02cf9dccae__a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-heavy-kinesin.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/56c56c5e-fe3d-4045-bff0-d3c4fe0b138b/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=5d559ac9c8de"
+      },
+      {
+        "project": "powers",
+        "sim": "orbitLab",
+        "sectionId": "664478fa-7ff5-424b-95b2-733383545d76",
+        "outcome": "stored",
+        "identity": "0da167ad6abcb255__664478fa-7ff5-424b-95b2-733383545d76__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-powers-orbitLab.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-7165-4605-916f-e1d417af5c66/package/index.html?section=664478fa-7ff5-424b-95b2-733383545d76&v=186d68d82efa"
+      },
+      {
+        "project": "demo",
+        "sim": "kinesin",
+        "sectionId": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0",
+        "outcome": "stored",
+        "identity": "69d0a992bbb2dcf6__93e6b8fa-2742-4c96-8136-3c8cab52b1a0__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-demo-kinesin.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-7460-4e38-95b9-50e86f132160/package/index.html?section=93e6b8fa-2742-4c96-8136-3c8cab52b1a0&v=01cf202be588"
+      },
+      {
+        "project": "tutorial",
+        "sim": "solarSystem",
+        "sectionId": "2719494d-a463-4a4c-a5c9-14a594c67742",
+        "outcome": "stored",
+        "identity": "9719fadd5949a472__2719494d-a463-4a4c-a5c9-14a594c67742__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-tutorial-solarSystem.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e13c-446d-8cb4-3b24a2eed4b5/package/index.html?section=2719494d-a463-4a4c-a5c9-14a594c67742&v=16880d4cfb12"
+      },
+      {
+        "project": "heavy",
+        "sim": "kinesin",
+        "sectionId": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc",
+        "outcome": "stored",
+        "identity": "72ea22155ebc03da__a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-heavy-kinesin.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d8a-43fe-b4d9-d5adeb46f76c/package/index.html?section=a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc&v=962f3986264d"
+      }
+    ],
+    "midroll": [
+      {
+        "project": "demo",
+        "sim": "kinesin",
+        "sectionId": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0",
+        "window": [
+          4,
+          15
+        ],
+        "seekTo": 3,
+        "sampleAt4s": {
+          "videoTime": 6.89,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 6.89,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 16.82,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 7160,
+            "event": "sim-painted"
+          },
+          {
+            "t": 7160,
+            "event": "reveal",
+            "unmeasured": true
+          },
+          {
+            "t": 7163,
+            "event": "sim-ready",
+            "dynamic": true,
+            "dispatch": "dynamic",
+            "policies": [
+              "ui",
+              "automation"
+            ]
+          },
+          {
+            "t": 7946,
+            "event": "activate",
+            "section": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0"
+          },
+          {
+            "t": 7947,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 7947,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 7948,
+            "event": "apply-hold",
+            "script": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 8251,
+            "event": "script-applied",
+            "script": "93e6b8fa-2742-4c96-8136-3c8cab52b1a0"
+          },
+          {
+            "t": 8251,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0,
+            "totalMs": 303.90000009536743,
+            "applyMs": null
+          },
+          {
+            "t": 8252,
+            "event": "sim-painted"
+          },
+          {
+            "t": 8252,
+            "event": "reveal",
+            "unmeasured": true
+          },
+          {
+            "t": 19149,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 19429,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-kinesin.png",
+        "proofExit": "proof/midroll-kinesin-exit.png",
+        "pageErrors": []
+      },
+      {
+        "project": "demo",
+        "sim": "solarSystem",
+        "sectionId": "7cf3db95-97ef-4846-b007-b0feba399430",
+        "window": [
+          25,
+          36
+        ],
+        "seekTo": 24,
+        "sampleAt4s": {
+          "videoTime": 27.9,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+          ],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 27.9,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+          ],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 37.73,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 22228,
+            "event": "activate",
+            "section": "7cf3db95-97ef-4846-b007-b0feba399430"
+          },
+          {
+            "t": 22228,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 22228,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 22230,
+            "event": "apply-hold",
+            "script": "7cf3db95-97ef-4846-b007-b0feba399430",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 22242,
+            "event": "script-applied",
+            "script": "7cf3db95-97ef-4846-b007-b0feba399430"
+          },
+          {
+            "t": 22242,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0,
+            "totalMs": 12.5,
+            "applyMs": null
+          },
+          {
+            "t": 33118,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 33399,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-solarSystem.png",
+        "proofExit": "proof/midroll-solarSystem-exit.png",
+        "pageErrors": []
+      },
+      {
+        "project": "demo",
+        "sim": "murmuration",
+        "sectionId": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8",
+        "window": [
+          45,
+          52
+        ],
+        "seekTo": 44,
+        "sampleAt4s": {
+          "videoTime": 47.89,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+          ],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 47.89,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+          ],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 53.68,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 3,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/16e51d56-74"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/562fc5cd-a580-464b-bb4f-37aa6261324a/revisions/ad497763-eb"
+            },
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/923eb4a6-927e-4aba-b44c-f6fc6b155256/revisions/360f4de9-76"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 36196,
+            "event": "activate",
+            "section": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8"
+          },
+          {
+            "t": 36196,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 36196,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 36197,
+            "event": "apply-hold",
+            "script": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 36214,
+            "event": "script-applied",
+            "script": "e8b3a30f-ff43-4bd7-9e96-7971524b90e8"
+          },
+          {
+            "t": 36214,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0.10000014305114746,
+            "totalMs": 17.800000190734863,
+            "applyMs": null
+          },
+          {
+            "t": 43102,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 43383,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-murmuration.png",
+        "proofExit": "proof/midroll-murmuration-exit.png",
+        "pageErrors": []
+      },
+      {
+        "project": "tutorial",
+        "sim": "solarSystem",
+        "sectionId": "2719494d-a463-4a4c-a5c9-14a594c67742",
+        "window": [
+          58,
+          70
+        ],
+        "seekTo": 57,
+        "sampleAt4s": {
+          "videoTime": 60.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e1"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e1"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 60.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e1"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e1"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 71.73,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/e6c36d52-ddff-4fae-a02f-57e7994da7fa/fc562e51-7c2a-4a43-b99c-d0359e2b56b4/revisions/287f4994-e1"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 8064,
+            "event": "activate",
+            "section": "2719494d-a463-4a4c-a5c9-14a594c67742"
+          },
+          {
+            "t": 8064,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 8064,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 8065,
+            "event": "apply-hold",
+            "script": "2719494d-a463-4a4c-a5c9-14a594c67742",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 8078,
+            "event": "script-applied",
+            "script": "2719494d-a463-4a4c-a5c9-14a594c67742"
+          },
+          {
+            "t": 8079,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0,
+            "totalMs": 14,
+            "applyMs": null
+          },
+          {
+            "t": 20017,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 20298,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-tutorial-solarSystem.png",
+        "proofExit": "proof/midroll-tutorial-solarSystem-exit.png",
+        "pageErrors": []
+      },
+      {
+        "project": "heavy",
+        "sim": "kinesin",
+        "sectionId": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc",
+        "window": [
+          32,
+          44
+        ],
+        "seekTo": 31,
+        "sampleAt4s": {
+          "videoTime": 34.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 34.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 45.81,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/92e3477f-0f4c-4c7d-9ba4-435a97874fb3/03316ac6-1e7f-4d25-8f24-388a804be0f6/revisions/c644481b-7d"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 7763,
+            "event": "activate",
+            "section": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc"
+          },
+          {
+            "t": 7764,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 7764,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 7765,
+            "event": "apply-hold",
+            "script": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 7858,
+            "event": "script-applied",
+            "script": "a5044ed5-89ee-40d7-aa8d-86e1eee9b3fc"
+          },
+          {
+            "t": 7858,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0,
+            "totalMs": 94.20000004768372,
+            "applyMs": null
+          },
+          {
+            "t": 19982,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 20263,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-heavy-kinesin.png",
+        "proofExit": "proof/midroll-heavy-kinesin-exit.png",
+        "pageErrors": []
+      },
+      {
+        "project": "powers",
+        "sim": "orbitLab",
+        "sectionId": "664478fa-7ff5-424b-95b2-733383545d76",
+        "window": [
+          6,
+          18
+        ],
+        "seekTo": 5,
+        "sampleAt4s": {
+          "videoTime": 8.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-71"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-71"
+            }
+          ]
+        },
+        "firstVisible": {
+          "videoTime": 8.91,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 1,
+          "visibleSrcs": [
+            "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-71"
+          ],
+          "iframes": [
+            {
+              "own": 1,
+              "effective": 1,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-71"
+            }
+          ]
+        },
+        "afterEnd": {
+          "videoTime": 19.67,
+          "paused": false,
+          "ended": false,
+          "readyState": 4,
+          "totalIframes": 1,
+          "visibleIframes": 0,
+          "visibleSrcs": [],
+          "iframes": [
+            {
+              "own": 0,
+              "effective": 0,
+              "w": 1280,
+              "src": "http://localhost:8080/sim-public/simulations/847330d3-035f-4d0b-87ee-966efd49fc34/50a253ac-d3d0-4b78-a453-5c0cf95de990/revisions/5d97058c-71"
+            }
+          ]
+        },
+        "scriptError": null,
+        "telemetry": [
+          {
+            "t": 8048,
+            "event": "activate",
+            "section": "664478fa-7ff5-424b-95b2-733383545d76"
+          },
+          {
+            "t": 8048,
+            "event": "package-ack-capability",
+            "capable": true
+          },
+          {
+            "t": 8049,
+            "event": "modern-declined",
+            "packageClass": "legacy-opaque"
+          },
+          {
+            "t": 8050,
+            "event": "apply-hold",
+            "script": "664478fa-7ff5-424b-95b2-733383545d76",
+            "decision": "await-ack",
+            "capability": "capable",
+            "firstActivation": true
+          },
+          {
+            "t": 8060,
+            "event": "script-applied",
+            "script": "664478fa-7ff5-424b-95b2-733383545d76"
+          },
+          {
+            "t": 8060,
+            "event": "reveal",
+            "dispatchMs": 0,
+            "prepareMs": null,
+            "turnaroundMs": null,
+            "presentMs": null,
+            "revealMs": 0,
+            "totalMs": 10.600000143051147,
+            "applyMs": null
+          },
+          {
+            "t": 20001,
+            "event": "deactivate",
+            "teardown": true
+          },
+          {
+            "t": 20282,
+            "event": "deferred-stop"
+          }
+        ],
+        "proof": "proof/midroll-powers-orbitLab.png",
+        "proofExit": "proof/midroll-powers-orbitLab-exit.png",
+        "pageErrors": []
       }
     ]
   },
@@ -497,7 +2036,13 @@
     "POST /api/v1/projects validates via shared CreateProjectSchema (shared/src/types/project.ts:38): only {topic,...}; a \"name\" key is silently stripped — the project title is set with PATCH /api/v1/projects/:id {title} (projects.controller.ts:200).",
     "The podcast edition route is /api/v1/projects/:id/audio-edition (audioEdition.controller.ts:71,129), not .../audio; POST returns 202 and the same GET is the status poll.",
     "Sim-section posters are CLIENT-captured: POST /api/v1/projects/:id/sections/:sid/poster with PNG renditions of exactly POSTER_SIZES[aspect] (simulations.controller.ts:221, shared/src/sim/posterIdentity.ts:52) — this builder captures them with headless Chrome from the section's served sim URL.",
-    "Branching IS creatable headlessly (branch.controller.ts: sequences/choice-points/edges), BUT the current viewer disables flat overlays (image/b-roll/audio cutaways) whenever a branching block exists — client-web/components/viewer/useProjectPlayer.ts:2467,2517,2559 (\"flat overlays disabled in branching mode (Phase 2)\"). The image section + A2 sting are therefore present in the config/editor but not rendered by the branching viewer today; keep or drop the choice graph at capture time.",
-    "A post-roll sim section (start_sec >= host duration - 0.05) is entered from onEnded (useProjectPlayer.ts:3233-3247); \"Back to video\" from it returns to the START of the same segment (useProjectPlayer.ts:2070). With film2 absent, section 2 sits at [end+30,end+60] on the teaser and is reachable by scrubbing; a re-run with film2 re-anchors the layout."
-  ]
+    "MID-ROLL sim sections (start_sec < host duration) are entered from the timeupdate tick when the playhead crosses start_sec, the video KEEPS PLAYING underneath the revealed frame (client-web/components/viewer/useProjectPlayer.ts:2119), and the section auto-exits through deactivateSim({exitToVideo:true}) when the playhead leaves [start_sec,end_sec) (useProjectPlayer.ts:1930-1944). Only a section with start_sec >= duration-0.05 is post-roll (pauses the video, shows Back-to-video) — this build creates none.",
+    "A mid-roll frame is revealed only once the pool document has PAINTED (bounded hold SIM_PAINT_DEADLINE_MS=1200 then the stored poster covers while waiting) — so a window that opens a few seconds into a cold film races the package boot; the verification below records the measured first-visible time per window.",
+    "Branching IS creatable headlessly (branch.controller.ts: sequences/choice-points/edges). The image + A2 sting live in the demo LIBRARY only (owner: keep the timeline clean) — no image/audio sections are created, so the branching viewer's flat-overlay limitation is moot for this build.",
+    "Section rows are validated by timelineSectionViolations (shared/src/timeline/sectionShape.ts:260): 0 <= start_sec < end_sec <= MAX_TIMELINE_SEC; a main-track row is positioned by its host video + start_sec and carries no anchor. Nothing rejects a window that overruns the film, so this builder clamps end_sec <= duration-0.5 itself and refuses a window that starts past the film.",
+    "SHARED STACK: the template projects can be edited from the editor while a build/repair runs (2026-09-05: demo/kinesin was refined twice from outside the builder, mid-repair). The row sync therefore restores ONLY the builder's own fix prompt; any other divergence from the layout is recorded on the window as `externalRefinement` and left live. A FULL re-run recreates every project (PREV_RUN cleanup) and would discard such edits — check `externalRefinement` in this file before re-running.",
+    "BACKEND DEFECT (found by the v3 verification, 2026-09-05): the generation prompt (SimulationService.ts BRIDGE_GENERATION_SYSTEM_PROMPT, template + rule 25 \"Use _hide()\") promises a SCRIPTS.main prelude declaring _hidden/_hide/_restoreAll/_ivs/_listeners/_injected, but wrapBridgeMainBody and buildSectionEntry splice the LLM body in bare — nothing declares them. A body that relies on the prelude throws \"ReferenceError: _hidden is not defined\" on activation (SimRuntimeClient posts script-error) and the viewer plays the film through the whole window. 2 of 6 first-pass bodies did. Mitigation in this builder only: GATE-* checks the served bridge entry statically, repairs through a refinement turn of the real generate endpoint (an unchanged prompt is canReuse'd — sections.controller.ts:1065), restores the owner's prompt on the row, re-captures the poster; the viewer pass records the runtime's own telemetry (?simdebug=1) per window. The fix belongs in the backend wrapper or prompt, not here."
+  ],
+  "repairedAt": "2026-09-05T12:41:55.351Z",
+  "verifiedAt": "2026-09-05T12:41:05.623Z"
 }

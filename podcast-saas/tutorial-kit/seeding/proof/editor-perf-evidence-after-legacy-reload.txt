@@ -1,0 +1,2 @@
+first load : {"full":13,"bytes":36533119,"s304":0,"cached":0} 36.5MB
+reload     : {"full":1,"bytes":29719784,"s304":1,"cached":11} 29.7MB
