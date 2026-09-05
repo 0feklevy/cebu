@@ -1200,6 +1200,11 @@ export async function registerSectionsRoutes(app: FastifyInstance): Promise<void
         sendEvent('done', { section: await servedSection(ctx.project.id, updated) });
       }
     } catch (err) {
+      // The REAL failure must reach the log before it collapses into a friendly message — a
+      // generation that dies unlogged is undiagnosable from the outside (the Galton package
+      // failed for days as "simplify your prompt" while the actual exception evaporated here).
+      logger.warn({ err: String(err), sectionId: ctx.section.id, simulationId: ctx.section.simulation_id },
+        'sim generation failed');
       if (timedOut) {
         sendEvent('error', { error: 'Generation timed out. Please try again.', errorType: 'generation_error' });
       } else if (!controller.signal.aborted) {
