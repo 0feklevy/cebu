@@ -2388,7 +2388,24 @@ deploys deserves one at least as much.
 - 🟡 IN FLIGHT: ElevenLabs narration (owner's temporary one-day key, stored outside the repo; audition
   → 48 lines), ElevenLabs Music beds + SFX pack, product-UI reshoots (12 shots), four-angle critique
   panel (PM/sales delivered: MUST-FIX list in tutorial-kit/critique/round-3-pre/pm-sales.md).
-- 🔴 OPEN (from the PM/sales critique, to apply with the editor/script critique): F1 last line has no
-  CTA and says "doors" (a word no viewer knows); POV whiplash in F1 beats 5/7; kinesin hook sim's
-  Simple UI shows "ASSET PROOF · Teaching playback" (package-side); "I have no simulation" objection
-  unanswered; F4 opens with 6 s of nothing before its window.
+- 🟢 CRITIQUE ROUND 3 CLOSED (four panels, reports in tutorial-kit/critique/round-3-pre/): scripts
+  rewritten to v3.3 — the CTA lands ("Your turn."), the word "doors" is gone, POV whiplash fixed,
+  the "I have no simulation" objection answered, F4's window moved to [3,15]; and three surfaces the
+  product does NOT have were removed (the Ask panel is a voice-only avatar call — no chips, no text
+  box; collaborators and access live in Settings, not the share sheet; there is no dub to switch to).
+- 🟢 THE FILMS' REAL DEFECT, found by looking at a contact sheet rather than at the plan: ~23 of the
+  teaser's 61 seconds were PURE BLACK. Live-window beats sat on a black plate because the product's
+  live simulation covers them — true in the viewer, false in the MP4 the owner actually reviews.
+  Each window now sits on a recording of that same simulation being driven. The guard that should
+  have caught it had an exemption for exactly the plate that was black; the exemption is gone and
+  the measure is frame flatness over the full range (a starfield is dark AND has content; a page-load
+  flash is bright AND has none).
+- 🟢 AUDIO REBUILT with the owner's temporary key (expires 2026-09-06): ElevenLabs narration (Liam,
+  48 lines, uniform −24 LUFS — linear gain cannot put 18 dB-crest speech at −19 under a −3 dBTP
+  ceiling, so the film's voice bus does the levelling), five ElevenLabs music beds, an SFX pack.
+  Films master −16.2…−18.0 LUFS at −2 dBTP with LRA 3–5, and the music goes behind a low-pass in a
+  window instead of cutting dead — the film IS still running under the simulation. Verified on the
+  delivered file: level drops inside each window, riser lifts into the return, film comes back.
+- 🟡 OWNER ACTIONS: (1) the ask-surface shot needs working avatar credentials on the local stack —
+  the session is refused ~0.6 s after the click and the capture director will not film the failure
+  card; (2) production template publish + flag enable remain the deliberate operator step.
