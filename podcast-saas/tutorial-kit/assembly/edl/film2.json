@@ -1,64 +1,113 @@
 {
   "film": 2,
-  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
   "cuts": [
     {
       "scene": "1",
       "source": "f2-s1-pullback",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
       "mode": "fit",
-      "placeholder": "pullback shot round 2"
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "reshoot": "the solar window in the DEMO project as the opener"
     },
     {
       "scene": "2",
-      "source": "f2-s2b-library-drop",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f2-s2a-new-project",
       "mode": "fit",
-      "note": "s2a-new-project prepends when split cuts land"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4"
     },
     {
       "scene": "3",
-      "source": "f2-s3-mark-section",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "source": "f2-s2b-library-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4"
     },
     {
       "scene": "4",
-      "source": "f2-s4-this-moment",
+      "source": "f2-s2b-library-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "in": 14
     },
     {
       "scene": "5",
-      "source": "f2-s5-preview-run",
-      "fallback": "captures/footage/wave-lab-broll.webm",
-      "mode": "fit"
+      "source": "f2-s3-mark-section",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4"
     },
     {
       "scene": "6",
-      "source": "f2-s6-layers",
+      "source": "f2-s4-this-moment",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "in": 12,
+      "reshoot": "card now titled 'Generate mini model' \u2014 reshoot after UI change"
     },
     {
       "scene": "7",
-      "source": "f2-s7-settings",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f2-s4-this-moment",
       "mode": "fit",
-      "placeholder": "settings 4-cards shot round 2"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 24,
+      "reshoot": "typing the prompt (new label)"
     },
     {
       "scene": "8",
-      "source": "f2-s8-share",
+      "source": "f2-s4-this-moment",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "in": 40,
+      "reshoot": "toggles flip + Generate (new label)"
     },
     {
       "scene": "9",
-      "source": "f2-s9-zoomout",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
+    },
+    {
+      "scene": "10",
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
+    },
+    {
+      "scene": "11",
+      "source": "f2-s8-share",
       "mode": "fit",
-      "placeholder": "meta zoom-out needs demo project (round 2)"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "12",
+      "source": "f2-s8-share",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 14
+    },
+    {
+      "scene": "13",
+      "source": "f2-s9-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "reshoot": "tutorial project timeline with the solar window block"
+    },
+    {
+      "scene": "14",
+      "source": "f2-s9-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 6
     }
   ]
 }

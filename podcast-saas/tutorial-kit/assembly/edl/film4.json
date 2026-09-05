@@ -1,67 +1,97 @@
 {
   "film": 4,
-  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
   "cuts": [
     {
       "scene": "1",
       "source": "f4-s1-public-page",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
       "mode": "fit",
-      "placeholder": "round 2"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 2
     },
     {
       "scene": "2",
-      "source": "f4-s2-orbit-touch",
-      "fallback": "captures/footage/wave-lab-broll.webm",
-      "mode": "fit",
-      "placeholder": "orbit-lab touch shot round 2"
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
     },
     {
-      "scene": "3a",
-      "source": "f1-s3-ask-surface",
+      "scene": "3",
+      "source": "assembly/plates/under-window.mp4",
       "mode": "loop",
-      "placeholder": "ask surface round 2",
-      "in": 3
-    },
-    {
-      "scene": "3b",
-      "source": "f4-s2-orbit-touch",
-      "slot": [
-        22,
-        33
-      ],
-      "mode": "loop",
-      "placeholder": "same",
-      "in": 12
-    },
-    {
-      "scene": "3c",
-      "source": "f4-s2-orbit-touch",
-      "mode": "loop",
-      "placeholder": "same",
-      "in": 24
+      "kind": "LIVE-WINDOW"
     },
     {
       "scene": "4",
-      "source": "f4-s4-branching",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f1-s3-ask-surface",
       "mode": "fit",
-      "placeholder": "round 2"
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 6,
+      "reshoot": "ask surface opens"
     },
     {
       "scene": "5",
-      "source": "f5-s5-phone",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f1-s3-ask-surface",
       "mode": "fit",
-      "placeholder": "smart-crop + languages round 2",
-      "in": 5
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 12,
+      "slot": [
+        22,
+        28
+      ],
+      "reshoot": "real exchange pending audio key"
     },
     {
       "scene": "6",
-      "source": "f4-s6-fourgrid",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "source": "f1-s3-ask-surface",
       "mode": "fit",
-      "placeholder": "four-up grid composite round 2"
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 18
+    },
+    {
+      "scene": "7",
+      "source": "f4-s4-branching",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 29
+    },
+    {
+      "scene": "8",
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 6
+    },
+    {
+      "scene": "9",
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 12,
+      "reshoot": "Audio language menu + CC toggle"
+    },
+    {
+      "scene": "10",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 10
+    },
+    {
+      "scene": "11",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 16
     }
   ]
 }

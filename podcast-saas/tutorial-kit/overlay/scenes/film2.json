@@ -1,11 +1,23 @@
 {
   "film": 2,
-  "title": "Tutorial — Make Yours",
-  "comment": "DRAFT timings from SCRIPT-2-TUTORIAL.md v2 t-column; re-time after TTS. Scene 9 (1:53–2:12) opens on the meta zoom-out, then the end card carries to the close.",
-  "total": 132,
+  "title": "Tutorial \u2014 Make Yours (v3)",
+  "total": 96,
   "scenes": [
-    { "id": "f2-end-card", "type": "end-card", "t0": 113, "dur": 19,
-      "props": { "ground": "card", "line": "Change one word.",
-                 "primary": "Edit this section", "secondary": "New project" } }
-  ]
+    {
+      "id": "f2-end-card",
+      "type": "end-card",
+      "t0": 90,
+      "dur": 6,
+      "anchorScene": "14",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Change one word.",
+        "primary": "Edit this section",
+        "secondary": "New project"
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
 }

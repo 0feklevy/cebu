@@ -1,10 +1,22 @@
 {
   "film": 5,
-  "title": "Niche — One Link, Three Doors",
-  "comment": "DRAFT timings from SCRIPT-5-SHARE.md t-column; re-time after TTS. Scene 6 (0:56–1:04).",
-  "total": 64,
+  "title": "One Link, Three Doors (v3)",
+  "total": 45,
   "scenes": [
-    { "id": "f5-end-card", "type": "end-card", "t0": 56, "dur": 8,
-      "props": { "ground": "card", "line": "Ship yours.", "primary": "Create link" } }
-  ]
+    {
+      "id": "f5-end-card",
+      "type": "end-card",
+      "t0": 39,
+      "dur": 6,
+      "anchorScene": "7",
+      "anchorOffset": 0.4,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Ship yours.",
+        "primary": "Create link"
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
 }

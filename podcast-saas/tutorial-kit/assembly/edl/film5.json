@@ -1,49 +1,62 @@
 {
   "film": 5,
-  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
   "cuts": [
     {
       "scene": "1",
-      "source": "f5-s1-editor-pause",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f2-s8-share",
       "mode": "fit",
-      "placeholder": "round 2"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 1
     },
     {
       "scene": "2",
       "source": "f2-s8-share",
-      "fallback": "captures/props/lesson-waves.mp4",
       "mode": "fit",
-      "note": "share sheet reuse"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 4
     },
     {
       "scene": "3",
-      "source": "f5-s3-permalink",
-      "fallback": "captures/props/lesson-waves.mp4",
+      "source": "f2-s8-share",
       "mode": "fit",
-      "placeholder": "round 2"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 14
     },
     {
       "scene": "4",
       "source": "f5-s4-collab-access",
-      "fallback": "captures/props/lesson-waves.mp4",
       "mode": "fit",
-      "placeholder": "round 2"
+      "kind": "VIDEO",
+      "fallback": "f2-s8-share",
+      "reshoot": "Collaborators invite + Access modes"
     },
     {
       "scene": "5",
-      "source": "f5-s5-two-frames",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "source": "f5-s4-collab-access",
       "mode": "fit",
-      "placeholder": "laptop+phone composite round 2"
+      "kind": "VIDEO",
+      "fallback": "f2-s8-share",
+      "in": 8
     },
     {
       "scene": "6",
-      "source": "f5-s6-endcard-ground",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
-      "mode": "loop",
-      "in": 4,
-      "padAfter": 1.0
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 4
+    },
+    {
+      "scene": "7",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 12
     }
   ]
 }

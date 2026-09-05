@@ -1,44 +1,68 @@
 {
   "film": 3,
-  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
   "cuts": [
     {
       "scene": "1",
-      "source": "captures/footage/k1-beauty-clean.mp4",
+      "source": "f3-s2-heavy-drop",
       "mode": "fit",
-      "in": 1
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 1,
+      "note": "the folder/zip beat \u2014 reshoot as Finder\u2192zip\u2192drop if time"
     },
     {
       "scene": "2",
       "source": "f3-s2-heavy-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "in": 8
     },
     {
       "scene": "3",
       "source": "f3-s3-simple-ui",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "reshoot": "Generate mini model label"
     },
     {
       "scene": "4",
-      "source": "f3-s4-iteration",
+      "source": "f3-s3-simple-ui",
+      "mode": "fit",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "mode": "fit"
+      "in": 14,
+      "reshoot": "toggles + Generate (new label)"
     },
     {
       "scene": "5",
-      "source": "f3-s5-noloading",
-      "fallback": "captures/footage/k2-viewer.webm",
+      "source": "f3-s4-iteration",
       "mode": "fit",
-      "placeholder": "present-gating viewer capture round 2"
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "follow-up typed into Generate mini model"
     },
     {
       "scene": "6",
-      "source": "captures/footage/k1-beauty-clean.mp4",
+      "source": "assembly/plates/under-window.mp4",
       "mode": "loop",
-      "in": 6,
-      "padAfter": 1.0
+      "kind": "LIVE-WINDOW"
+    },
+    {
+      "scene": "7",
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
+    },
+    {
+      "scene": "8",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 4
     }
   ]
 }

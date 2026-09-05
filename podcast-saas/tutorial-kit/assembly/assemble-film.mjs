@@ -102,8 +102,22 @@ const BEDS = { 1: 'bed-teaser.wav', 2: 'bed-tutorial.wav', 3: 'bed-heavy.wav', 4
 const bed = join(KIT, 'music', BEDS[film]);
 const voScenes = timeline.filter(t => t.voFile);
 const inputs = ['-i', bed, ...voScenes.flatMap(t => ['-i', t.voFile])];
+// v3 grammar: the music CUTS DEAD while a live window is open (the sim carries the moment) and
+// comes back at the auto-return. Windows come from seeding/layout-v3.json for this film.
+const LAYOUT = JSON.parse(readFileSync(join(KIT, 'seeding/layout-v3.json'), 'utf8'));
+const windowsFor = (n) => {
+  if (n === 1) return LAYOUT.demo.windows;
+  if (n === 2) return LAYOUT.tutorial.windows;
+  return (LAYOUT.niche.find((x) => x.film === n)?.windows) ?? [];
+};
+const wins = windowsFor(film).map((w) => w.window);
+const duckExpr = wins.length
+  ? `'${wins.map(([a, b]) => `between(t,${a},${b})`).join('+')}'`
+  : null;
 const fc = [];
-fc.push(`[0:a]atrim=0:${total},afade=t=out:st=${(total - 2).toFixed(2)}:d=2[bed]`);
+fc.push(`[0:a]atrim=0:${total}` +
+  (duckExpr ? `,volume=eval=frame:volume='1-0.97*min(1,${duckExpr.slice(1, -1)})'` : '') +
+  `,afade=t=out:st=${(total - 1.2).toFixed(2)}:d=1.2[bed]`);
 voScenes.forEach((t, i) => {
   fc.push(`[${i + 1}:a]adelay=${Math.round(t.start * 1000)}:all=1[vo${i}]`);
 });

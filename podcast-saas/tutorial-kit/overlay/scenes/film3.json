@@ -1,13 +1,22 @@
 {
   "film": 3,
-  "title": "Niche — The Heavy Simulation",
-  "comment": "DRAFT timings from SCRIPT-3-HEAVY-SIM.md t-column; re-time after TTS. The chip captions the poster→live present-gating beat (scene 5, 0:52–1:08); bottom-left keeps it off the sim's center action.",
-  "total": 78,
+  "title": "Drop In Anything (v3)",
+  "total": 51,
   "scenes": [
-    { "id": "f3-no-loading", "type": "caption-chip", "t0": 52, "dur": 5.5,
-      "props": { "text": "no loading, by design", "position": "bottom-left" } },
-    { "id": "f3-end-card", "type": "end-card", "t0": 68, "dur": 10,
-      "props": { "ground": "card", "line": "Heavy is welcome here.",
-                 "primary": "Add a simulation" } }
-  ]
+    {
+      "id": "f3-end-card",
+      "type": "end-card",
+      "t0": 44,
+      "dur": 7,
+      "anchorScene": "8",
+      "anchorOffset": 0.6,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Drop yours in.",
+        "primary": "Add a simulation"
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
 }

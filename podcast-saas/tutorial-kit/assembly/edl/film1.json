@@ -1,82 +1,79 @@
 {
   "film": 1,
-  "note": "scene \u2192 visual source. source = capture-manifest shot id OR a path relative to tutorial-kit/. Entries marked placeholder swap for real shots as the capture campaign lands them.",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
   "cuts": [
     {
       "scene": "1",
-      "source": "captures/footage/k1-beauty-clean.mp4",
+      "source": "f4-s1-public-page",
       "mode": "fit",
-      "in": 2
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 6
     },
     {
       "scene": "2",
-      "source": "captures/footage/k2-viewer.webm",
-      "mode": "fit",
-      "in": 1
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
     },
     {
-      "scene": "3a",
-      "source": "f1-s3-ask-surface",
-      "mode": "fit",
-      "placeholder": "ask EXCHANGE ships with the TTS key; surface shot meanwhile",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
-      "in": 4
-    },
-    {
-      "scene": "3b",
-      "source": "f4-s2-orbit-touch",
-      "slot": [
-        17,
-        25
-      ],
-      "mode": "fit",
-      "placeholder": "real spoken exchange pending key",
-      "in": 16
-    },
-    {
-      "scene": "3c",
-      "source": "f4-s2-orbit-touch",
-      "mode": "fit",
-      "placeholder": "same",
-      "in": 26
+      "scene": "3",
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
     },
     {
       "scene": "4",
-      "source": "f4-s4-branching",
+      "source": "f1-s3-ask-surface",
       "mode": "fit",
-      "placeholder": "viewer branching shot pending",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 14
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 8,
+      "reshoot": "ask surface must actually open (Ask! \u2192 panel); pending ANAM/podcast ruling"
     },
     {
       "scene": "5",
-      "source": "f5-s5-phone",
+      "source": "f4-s4-branching",
       "mode": "fit",
-      "placeholder": "smart-crop composite pending",
+      "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
-      "in": 6,
-      "note": "vertical phone visual until the smart-crop split composite lands"
+      "in": 29
     },
     {
       "scene": "6",
-      "source": "f2-s2b-library-drop",
-      "mode": "fit",
-      "placeholder": "montage becomes 5 sub-cuts when shots land",
-      "fallback": "captures/props/lesson-waves.mp4"
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
     },
     {
       "scene": "7",
-      "source": "f1-s7-zoomout",
-      "mode": "fit",
-      "placeholder": "demo-project timeline shot pending",
-      "fallback": "captures/footage/murmuration-lesson.mp4"
+      "source": "assembly/plates/under-window.mp4",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW"
     },
     {
       "scene": "8",
-      "source": "captures/footage/murmuration3d-lesson.webm",
+      "source": "f2-s2b-library-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 10,
+      "note": "montage: 5 sub-cuts when reshoots land (drop \u2192 mark \u2192 Generate mini model typed + toggles \u2192 Generate \u2192 Share sheet)"
+    },
+    {
+      "scene": "9",
+      "source": "assembly/plates/under-window.mp4",
       "mode": "loop",
-      "in": 8,
-      "padAfter": 1.2
+      "kind": "LIVE-WINDOW"
+    },
+    {
+      "scene": "10",
+      "source": "f1-s7-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "in": 12,
+      "reshoot": "zoom-out on the v3 template with the doors glowing"
     }
   ]
 }

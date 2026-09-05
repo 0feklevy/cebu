@@ -1,31 +1,48 @@
-# Film 2 — TUTORIAL · "Make Yours" · v2.1 (G1-post CLEAR) · target ~2:12 · American English
-Voice direction: the same voice as the teaser, but a notch calmer — a friend showing you their
-favorite tool. Direct address ("you"), zero filler, every noun is a REAL UI label.
-Every scene names its UI anchors so captures can be re-shot when the interface changes.
+# Film 2 — TUTORIAL · "Make Yours" · v3 (owner reset) · target ~1:36 · American English
 
-v2 changes (G1-pre panel): the built sim is the **Solar System** (owner steer: the realistic flagship embed example) — the
-same section that exists in the seeded project (Orbit Lab + Galton Board are further live
-sections there, so every sim the films touch is genuinely in the viewer's hands), so scene 9's "built exactly this way" is TRUE (kinesin builds belong to niche
-film 3) · "in about two minutes" reworded to viewing-time · "no code" anxiety answered where the
-zip appears · Settings cut to FOUR cards (Languages → film 4; Collaborators → film 5) · the end
-CTA is the under-a-minute aha ("Edit this section — change one word"), New project secondary ·
-handover promises only what works on the cloned rows (prompt edit, sim swap, generate).
+v3 after the owner rejected v2: faster, rhythmic, zero lecture. Its OWN project now (not the
+teaser's timeline). Five build beats, one live proof, one CTA — nothing else. The demo's thesis
+for creators, on camera with rhythm: **the sims have buttons; in Generate mini model you WRITE
+what to change, FLIP Simple UI + Auto Script, hit Generate — and the LIVE window proves it.**
+(Product rename applied: the section card formerly "This moment" is now **Generate mini model**,
+no star on the card title; "1 · Describe it", both toggles, and **✦ Generate with AI** unchanged.)
 
-| # | t | NARRATION (verbatim TTS input) | ON SCREEN (capture spec + UI anchors) |
-|---|---|---|---|
-| 1 | 0:00–0:08 | You just met a living simulation. Here's the whole build — start to share — in the next two minutes. | Pull back from the live Murmuration section into the editor. Anchor: `/projects/[id]/editor`. Read works whether or not the viewer actually touched it. |
-| 2 | 0:08–0:20 | New project, name it, create. Your Library's on the right, timeline below. Drop everything in at once — footage, images, audio, even a whole simulation as a zip. It sorts itself. | Home → **New project** → title → **Create project**. Then a multi-file drag onto **Library**: overlay "Drop to add to the Library · Videos · simulation .zip · images · audio — sorted automatically"; toast "Added …". Anchors: `HomeHero` New project btn; Library drop overlay. |
-| 3 | 0:20–0:32 | Your video sits on V-one. Now the move that changes everything: drag across the moment you want to come alive. That marks a section. | Timeline: cursor DRAGS across **V1** over the clip → a section block appears → **Edit Section** opens. Anchors: V1 lane; section block badge `SIM`. |
-| 4 | 0:32–1:00 | Pick Simulation, choose your package. This Solar System came in with that drop — a real three-D solar system, and it's just a folder of files. No code. Now tell it what this moment is for: type what your viewer should see and touch. Flip on Simple UI — it hides every control that doesn't matter. Flip on Auto Script — it animates the demonstration for viewers who just watch. Hit Generate with AI. | **Edit Section** → type **Simulation** → dropdown picks the **Solar System** package → card **"This moment"** → typing in **1 · Describe it** (real prompt, VERBATIM the seeded section's stored prompt: "Give viewers the planets — let them speed up time and fly to any world") → toggles **Simple UI** ("Hides irrelevant controls") + **Auto Script** ("Animates demonstration") → button **✦ Generate with AI**. 28s — let the typing breathe. Anchors: sec-sim-select, sec-sim-prompt, the two switches, sec-sim-generate. |
-| 5 | 1:00–1:10 | Watch the Preview: the AI wired your simulation to this exact moment. Viewers get just the controls you chose — nothing else in their way. | Right panel **Preview** tab → **Run** → the Solar System plays with minimal UI (time-lapse + focus only), the cinematic tour sweeping. Anchor: Preview/Files tabs, Run/Stop. |
-| 6 | 1:10–1:24 | Layer it up: b-roll on V-two — generate it from a prompt if you don't have footage. Music on A-two. Images with camera moves. And "Follow user decisions" branches the story on your viewers' choices. | Fast cuts: **Show all layers** → **Generate B-Roll** prompt box → a sound card dragged to **A2** → image section w/ **Camera Movement: Zoom In** → **Follow user decisions** modal, one choice point. |
-| 7 | 1:24–1:38 | Settings finishes it: generate your title and thumbnail with AI. Give the video an avatar your viewers can question. Smart Crop keeps phones upright — the frame follows your speaker. Then decide who can watch. Done. | **Video settings**, FOUR cards ≈ 3.5s each: **Details → ✦ Generate with AI** · **Thumbnail → Generate AI thumbnail** · **Interactive overlays → Ask-the-Avatar persona** · **Smart Crop → Recrop** then **Access** select in the same breath. |
-| 8 | 1:38–1:54 | Hit Share. Pick your address. That one link is the whole experience — the interactive video, a podcast version that answers voice questions, even your asset library as its own page. | **Create link** → **Share this video** sheet → **Public page** tab → permalink typed + **Publish at this address** → the three addresses: Video `/slug`, Podcast `/slug/audio` (**Create podcast**), Library `/slug/library`. |
-| 9 | 1:54–2:12 | And this project — the one you're inside right now — was built exactly this way. That solar system below? You just watched it get built. It's yours now: change one word of the prompt, hit Generate, and watch it obey. Then ship your own. | Zoom out: THIS project's own timeline in the editor (meta shot) — both films + the sim sections visible as blocks; the Solar System block pulses. End card: **"Change one word."** primary button **"Edit this section"** (deep-link to the Solar System section's This-moment prompt); secondary, small: "New project". CAPTURE RULE: the prompt typed on camera in S4 must be VERBATIM the seeded section's stored prompt, so "you just watched it get built" stays literally true. |
+THE GRAMMAR: sims never appear as footage — the built sim appears ONCE, as a mid-roll LIVE
+WINDOW (real interactive sim on top, film + narration continue under, auto-return). VIDEO beats
+are narration + fast REAL UI captures.
 
-Word count ≈ 318 → ~2:08 at calm pace.
-HONESTY RULES: never claim AI generates the video/script at project creation (it doesn't);
-never claim sims can be generated from a prompt (they're uploaded packages — AI writes the
-bridge); never promise interactive sims inside an exported MP4 (they export as stills — the
-interactivity lives at the shared link); the handover names only actions that work in the
-seeded clone (prompt edit → Generate, sim swap). Dubbing/Languages live in film 4, not here.
+WINDOW MAP: solarSystem [58,70] → sync layout-v3.json (tutorial.windows).
+
+Voice: same narrator as the teaser, a half-notch calmer but still moving — a friend who's done
+this a hundred times. ~150 wpm bursts; "…" and " — " are performed pauses. 201 words → ~80s
+spoken inside 96s.
+Music: warm confident groove (~96 BPM, original bed) under the build; thins to pads while the
+prompt is typed (beat 7); CUTS at the window open; riser on return; soft hit on "Generate."
+
+| # | t | KIND | NARRATION (verbatim TTS input) | ON SCREEN |
+|---|---|---|---|---|
+| 1 | 0:00–0:06 | VIDEO | Remember the solar system? You're about to build it — start to share. No code. Watch. | Cold open on the editor, timeline empty and waiting. Anchor: `/projects/[id]/editor`. (Line lands whether or not they touched the teaser's window.) |
+| 2 | 0:06–0:13 | VIDEO | New project. Name it. Create. | Home → **New project** → title typed → **Create project** → the empty editor blooms. Anchors: HomeHero New project btn. |
+| 3 | 0:13–0:20 | VIDEO | Now drop everything in at once — footage, images, audio… and a whole simulation, as one zip. | One multi-file drag onto **Library**; overlay "Drop to add to the Library · Videos · simulation .zip · images · audio — sorted automatically". |
+| 4 | 0:20–0:26 | VIDEO | It sorts itself. That zip? Just a folder somebody built. You never touch code. | Toast "Added …"; Library populates; the simulation package card lands last, distinct. |
+| 5 | 0:26–0:34 | VIDEO | Find the moment your video should come alive… and drag across it. That's a section. | Timeline: cursor DRAGS across **V1** over the clip → section block appears (badge `SIM`) → **Edit Section** opens. |
+| 6 | 0:34–0:42 | VIDEO | Pick Simulation. Choose your package. Open Generate mini model — and tell it, in plain words, what this moment's for: | **Edit Section** → type **Simulation** → dropdown picks the **Solar System** package → the **Generate mini model** card fills frame; cursor lands in **1 · Describe it**. |
+| 7 | 0:42–0:50 | VIDEO | Give viewers the planets — let them speed up time and fly to any world. | The prompt TYPED IN SYNC with the narration, VERBATIM the seeded section's stored prompt (capture rule: word-for-word, so beat 13's claim stays literally true). Typing breathes; music thins. |
+| 8 | 0:50–0:58 | VIDEO | Two switches. Simple UI — just the buttons you choose. Auto Script — it performs for the ones who only watch. …Generate. | **Simple UI** ("Hides irrelevant controls") flipped ON — click. **Auto Script** ("Animates demonstration") flipped ON — click. Punch pause… **✦ Generate with AI**. Generation runs. The flip-flip-hit is the film's drum fill. |
+| 9 | 0:58–1:04 | LIVE-WINDOW solarSystem | Done. And here's the part no other tool does… that's not a preview. It's live — touch it. | WINDOW OPENS t=58 (label chip "It's live — touch it"): the EXACT sim just generated mounts on top of the film, minimal UI. Music out; room tone; the viewer's hand takes over. |
+| 10 | 1:04–1:10 | LIVE-WINDOW solarSystem (cont.) | Tap a planet. Spin up time. Your viewers get exactly this — nothing in their way. | Fly-to on tap; time-speed slider; only the chosen buttons exist. AUTO-RETURN t=70 — riser, back to the film. |
+| 11 | 1:10–1:17 | VIDEO | Hit Create link. One link is the whole experience — video, a podcast that answers voice questions, your library. | **Create link** → **Share this video** sheet → the three rows: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`; cursor taps each as named. |
+| 12 | 1:17–1:23 | VIDEO | Claim your address… and publish. | **Public page** tab → permalink typed → **Publish at this address** → the live URL copied. |
+| 13 | 1:23–1:30 | VIDEO | This project? Already yours. The solar system below sits on your timeline right now. | Zoom out, meta shot: THIS project's own editor timeline — the film block + the Solar System section block, pulsing. |
+| 14 | 1:30–1:36 | VIDEO | Change one word of the prompt. Hit Generate… and watch it obey. | End card: **"Change one word."** Primary button **"Edit this section"** (deep-link to the Solar System section's Generate mini model card); secondary, small: "New project". |
+
+Beat discipline: 14 beats, none over 8s. Five build beats (create → drop → mark → describe+flip+
+generate → share) + one live proof + one CTA. The thesis beat (6–8) is write → flip → flip → hit.
+
+HONESTY RULES (non-negotiable): never claim AI generates the video/script at project creation
+(it doesn't); never claim sims are generated from a prompt (they're uploaded packages — the AI
+writes the bridge and the mini model around YOUR files); never promise interactive sims inside an
+exported MP4 (they export as stills — interactivity lives at the shared link); the S7 prompt is
+VERBATIM the seeded section's stored prompt; the CTA names only actions verified in the seeded
+clone (prompt edit → Generate, sim swap). Dubbing/Languages belong to film 4; Collaborators/
+Access to film 5.

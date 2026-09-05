@@ -1,18 +1,32 @@
-# Film 5 — NICHE · "One Link, Three Doors" · v2 (G2 panel fixes) · target ~64s · American English
-Distribution: what publishing actually gives you. Calm, practical, zero hype — the closer film
-for a creator who's already convinced and wants to ship.
+# Film 5 — NICHE · "One Link, Three Doors" · v3 (owner reset) · target ~45s · American English
 
-| # | t | NARRATION (verbatim TTS input) | ON SCREEN (capture spec + UI anchors) |
-|---|---|---|---|
-| 1 | 0:00–0:06 | You built it. Let's ship it — one link, three doors. | The finished project in the editor, confident pause on the timeline. |
-| 2 | 0:06–0:19 | Hit Create link. Your video gets a public page. Same link, slash audio — a podcast that answers voice questions. Slash library — every asset, browsable. | **Create link** → **Share this video** sheet → the three rows: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. Cursor hovers each row as it's named. |
-| 3 | 0:20–0:32 | Want it memorable? Pick your own address and publish there. That's the link you put on a slide, in a bio, on a syllabus. | **Public page** tab → permalink typed → **Publish at this address** → the published URL copied; a quick real load of the public page. |
-| 4 | 0:32–0:44 | Working with a team? Invite collaborators — they edit, you stay the owner. And Access decides who watches: everyone, anyone holding your link — or just you. | **Collaborators** section → invite by email → role visible. Then **Access** select toggled between its modes. Anchors: CollaboratorsSection; Access card in Video settings. FRAME RULE: crop above the Access header line mentioning price — no money on camera. |
-| 5 | 0:44–0:56 | Viewers need nothing — no app, no account, no download. The link is the product: interactive on day one, on any screen. | The public page loading on laptop + phone frames side by side (real captures); the sim section touched once on each. |
-| 6 | 0:56–1:04 | Build once. Share one link. Teach everywhere. | End card: **"Ship yours."** button: "Create link". |
+v3 after the owner rejected v2: tighter — 64s → 45s, every beat a door. Calm is allowed here,
+slow is not. The closer film for a creator who's convinced and wants to ship.
 
-Word count ≈ 124 → ~50s spoken in ~64s.
-HONESTY: no pricing/monetization claims (Access controls WHO watches; money is not in this film);
-"no account" is true for public visibility — the capture uses a public project; if an access mode
-requiring sign-in is shown in scene 4, the narration keeps "or just the people you choose" (true)
-and never says "always no account".
+THE GRAMMAR: no live windows in this film (deliberate — layout-v3 "doors" has none); it's pure
+narration + fast REAL UI captures of the share surfaces. The proof-of-life beat is the public
+page loading for real.
+
+WINDOW MAP: none → layout-v3.json (niche key "doors", windows: []).
+
+Voice: same narrator — steady, certain, hands-in-pockets. ~150 wpm bursts; "…" and " — " are
+performed pauses. 82 words → ~33s spoken inside 45s.
+Music: calm closing groove (original bed), a small lift at each door named, resolves on the
+brand line.
+
+| # | t | KIND | NARRATION (verbatim TTS input) | ON SCREEN |
+|---|---|---|---|---|
+| 1 | 0:00–0:05 | VIDEO | It's built. It's gorgeous. …Ship it. | The finished project in the editor — one confident hold on the timeline. |
+| 2 | 0:05–0:13 | VIDEO | Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable. | **Create link** → **Share this video** sheet → the three rows, cursor tapping each AS IT'S NAMED: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. |
+| 3 | 0:13–0:20 | VIDEO | Claim your address, and publish. That's the link for the slide, the bio, the syllabus. | **Public page** tab → permalink typed → **Publish at this address** → URL copied → a quick REAL load of the public page. |
+| 4 | 0:20–0:27 | VIDEO | Got a team? Invite them. They edit — you stay the owner. | **Collaborators** section → invite by email → role visible. Anchor: CollaboratorsSection. |
+| 5 | 0:27–0:33 | VIDEO | And Access decides who watches. Everyone… link-holders… or just you. | **Access** select toggled through its modes, in Video settings. FRAME RULE: crop above the Access header line mentioning price — no money on camera. |
+| 6 | 0:33–0:39 | VIDEO | Publish public, and viewers need nothing. No app. No account. No download. | The public page loading on laptop + phone frames side by side (REAL captures); a sim section touched once on each — alive on both. |
+| 7 | 0:39–0:45 | VIDEO | Build once. Share one link. Teach everywhere. — Flow Video. | End card: **"Ship yours."** Button: **"Create link"**. |
+
+Beat discipline: 7 beats, none over 8s; a new door or surface every beat.
+
+HONESTY RULES (non-negotiable): no pricing/monetization claims (Access controls WHO watches;
+money stays off camera — frame rule in beat 5); "viewers need nothing" is explicitly bound to
+PUBLISH PUBLIC (true for public visibility; never said as an always); the beat-6 loads are real
+device captures, sim touched live on each.

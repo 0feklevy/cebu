@@ -1,18 +1,13 @@
 {
   "film": 1,
-  "title": "Teaser — Touch This Video",
-  "comment": "Cues are ANCHORED to script scenes; assemble-film.mjs re-times t0/dur from the derived timeline (anchorScene + anchorOffset; holdToSceneEnd pins a cue to its scene's end). The close composites OVER the live murmuration (ground:chroma); the lockup lands when the narrator says the brand. No button — the handoff down-timeline IS the CTA.",
-  "total": 78,
+  "title": "Teaser — Touch This Video (v3)",
+  "comment": "v3: NO logo intro (the film opens as an ordinary-video trap). Live windows are the PRODUCT's own sections (label chips come from the player), so the film layer stays out of their way. Only the close is composited: end line + ▼ over the zoom-out, lockup landing on the spoken brand. Cues anchor to script beats; assembly re-times.",
+  "total": 58,
   "scenes": [
-    { "id": "f1-logo-intro", "type": "logo-intro", "t0": 0, "dur": 3.2,
-      "anchorScene": "1", "anchorOffset": 0, "props": {} },
-    { "id": "f1-smart-crop", "type": "caption-chip", "t0": 38.5, "dur": 5.5,
-      "anchorScene": "5", "anchorOffset": 0.4,
-      "props": { "text": "Smart Crop", "position": "bottom-center" } },
-    { "id": "f1-end-card", "type": "end-card", "t0": 70, "dur": 8,
-      "anchorScene": "8", "anchorOffset": 0, "holdToSceneEnd": true,
-      "props": { "ground": "chroma", "line": "The flock below is live.", "arrow": true } },
-    { "id": "f1-logo-outro", "type": "logo-outro", "t0": 73.5, "dur": 4.5,
-      "anchorScene": "8", "anchorOffset": 1.6, "holdToSceneEnd": true, "props": {} }
+    { "id": "f1-end-card", "type": "end-card", "t0": 52, "dur": 6,
+      "anchorScene": "10", "anchorOffset": 0, "holdToSceneEnd": true,
+      "props": { "ground": "chroma", "line": "The doors below are live.", "arrow": true } },
+    { "id": "f1-logo-outro", "type": "logo-outro", "t0": 55, "dur": 3,
+      "anchorScene": "10", "anchorOffset": 2.4, "holdToSceneEnd": true, "props": {} }
   ]
 }

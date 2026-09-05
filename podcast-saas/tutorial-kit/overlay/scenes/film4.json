@@ -1,12 +1,32 @@
 {
   "film": 4,
-  "title": "Niche — Viewer Superpowers",
-  "comment": "DRAFT timings from SCRIPT-4-VIEWER-POWERS.md t-column; re-time after TTS. Scene 6 (1:02–1:12): the four labels stamp sequentially over the 2×2 composite of real captures (chroma ground), then the opaque end card closes. Script names no button for this film. Total stretches ~5s past the 72s target to give the card its beat — flagged for the re-time pass.",
-  "total": 77,
+  "title": "Viewer Superpowers (v3)",
+  "total": 57,
   "scenes": [
-    { "id": "f4-grid", "type": "four-grid-labels", "t0": 62, "dur": 7,
-      "props": { "labels": ["Touch", "Ask", "Choose", "Their way"], "numbered": true, "stagger": 0.55 } },
-    { "id": "f4-end-card", "type": "end-card", "t0": 69, "dur": 8,
-      "props": { "ground": "card", "line": "Four powers. One link." } }
-  ]
+    {
+      "id": "f4-grid",
+      "type": "four-grid-labels",
+      "t0": 49,
+      "dur": 5,
+      "anchorScene": "10",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {}
+    },
+    {
+      "id": "f4-end-card",
+      "type": "end-card",
+      "t0": 54,
+      "dur": 3,
+      "anchorScene": "11",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Four powers. One link.",
+        "arrow": true
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
 }
