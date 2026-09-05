@@ -1059,11 +1059,17 @@ async function syncWindowsFromRows(jobs) {
  * the settled row, and merged rather than assigned.
  */
 async function applyHideLists(jobs) {
+  // There is no GET for a single section — only the project's list (same read syncWindowsFromRows
+  // uses), so rows are fetched once per project.
+  const rowsByProject = new Map();
   for (const { rec, w } of jobs) {
     const hide = (SPECS.find((sp) => sp.key === rec.key)?.windows ?? []).find((x) => x.sim === w.sim)?.uiHide;
     if (!hide?.length || !w.sectionId) continue;
     try {
-      const row = await jOk('GET', `/api/v1/projects/${rec.projectId}/sections/${w.sectionId}`, undefined, `read ${rec.key}/${w.sim}`);
+      if (!rowsByProject.has(rec.projectId)) {
+        rowsByProject.set(rec.projectId, await jOk('GET', `/api/v1/projects/${rec.projectId}/sections`, undefined, 'list sections'));
+      }
+      const row = rowsByProject.get(rec.projectId).find((x) => x.id === w.sectionId);
       const meta = row?.sim_meta && typeof row.sim_meta === 'object' ? row.sim_meta : {};
       const already = Array.isArray(meta.uiControls?.hide) && meta.uiControls.hide.length === hide.length;
       if (already) continue;
