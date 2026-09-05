@@ -86,6 +86,27 @@ const clipPath = (l) => join(voDir, `f${film}-s${l.scene}.mp3`);
 const edl = JSON.parse(readFileSync(join(HERE, 'edl', `film${film}.json`), 'utf8'));
 const manifest = existsSync(join(KIT, 'captures/out/MANIFEST.json'))
   ? JSON.parse(readFileSync(join(KIT, 'captures/out/MANIFEST.json'), 'utf8')) : {};
+// BEATS, NOT NUMBERS. Every shot records the timestamps of its own moments to
+// captures/out/beats/<shotId>.json, so a cut says WHICH MOMENT it wants ("atBeat": "generate") and
+// the offset is read from the take that is actually on disk. Hand-written seconds are measured
+// against one recording and silently outlive it — that is how beats ended up landing on an idle
+// editor and a page-load flash. `beatLead` is how long before the moment the cut starts (0.4s by
+// default, so the gesture is not already underway on the first frame).
+const beatsOf = (shotId) => {
+  const p = join(KIT, 'captures/out/beats', `${shotId}.json`);
+  if (!existsSync(p)) return null;
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
+};
+const beatSec = (shotId, beatName, lead = 0.4) => {
+  const beats = beatsOf(shotId);
+  const hit = beats?.find((b) => b.name === beatName);
+  if (!hit) {
+    throw new Error(`shot ${shotId}: no beat named "${beatName}" (it records ${beats ? beats.map(b => b.name).join(', ') : 'no beats at all'}) — ` +
+      `name a beat the shot actually marks, or fall back to a literal \`in\``);
+  }
+  return Math.max(0, hit.sec - lead);
+};
+
 const resolveSource = (cut) => {
   const attempt = (s) => {
     if (!s) return null;
@@ -207,7 +228,12 @@ for (const t of timeline) {
     const { path: src, usedFallback } = resolveSource({ scene: `${t.scene}.${i}`, source: sub.source, fallback: sub.fallback ?? t.cut.fallback });
     const part = join(WORK, `scene-${t.scene}-${i}.mp4`);
     const zoom = sub.zoom ?? t.cut.zoom;
-    const inSec = usedFallback ? (sub.fallbackIn ?? t.cut.fallbackIn ?? sub.in ?? 0) : (sub.in ?? 0);
+    const lead = sub.beatLead ?? t.cut.beatLead ?? 0.4;
+    const shotId = usedFallback ? (sub.fallback ?? t.cut.fallback) : (sub.source ?? t.cut.source);
+    const beatName = usedFallback ? (sub.fallbackAtBeat ?? t.cut.fallbackAtBeat) : (sub.atBeat ?? t.cut.atBeat);
+    const inSec = beatName && !String(shotId).includes('/')
+      ? beatSec(shotId, beatName, lead)
+      : usedFallback ? (sub.fallbackIn ?? t.cut.fallbackIn ?? sub.in ?? 0) : (sub.in ?? 0);
     // A source that cannot fill its slot is looped (motion keeps moving) — never frame-cloned.
     // The retry used to loop ANY short source: a UI capture that ran out replayed its own gesture,
     // and worse, a part that stayed short shifted every later scene early against the voice, which

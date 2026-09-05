@@ -10,21 +10,21 @@
         {
           "source": "f1-s1-ordinary-video",
           "mode": "fit",
-          "in": 0.3,
           "fallback": "f4-s1-public-page",
-          "fallbackIn": 8.5
+          "fallbackIn": 8.5,
+          "atBeat": "start"
         },
         {
           "source": "f1-s1-ordinary-video",
           "mode": "fit",
-          "in": 2.5,
           "fallback": "f4-s1-public-page",
           "fallbackIn": 10.5,
           "zoom": {
             "cx": 0.5,
             "cy": 0.55,
             "scale": 1.5
-          }
+          },
+          "atBeat": "start"
         }
       ],
       "note": "an ordinary shared video on its public page — the doors project, the one seeded film with no live windows, so nothing interactive gives the trap away"
@@ -45,7 +45,8 @@
       "fallback": "f4-s1-public-page",
       "fallbackIn": 2,
       "voDelay": 0.4,
-      "reshoot": "the public page right after the kinesin window auto-returns: section marker lit on the progress bar, punch-in"
+      "reshoot": "the public page right after the kinesin window auto-returns: section marker lit on the progress bar, punch-in",
+      "atBeat": "returned"
     },
     {
       "scene": "4",
@@ -54,7 +55,8 @@
       "kind": "VIDEO",
       "fallback": "f4-s1-public-page",
       "fallbackIn": 4,
-      "reshoot": "ask surface must actually open (Ask! → panel); chips render; never an error card"
+      "reshoot": "ask surface must actually open (Ask! → panel); chips render; never an error card",
+      "atBeat": "click"
     },
     {
       "scene": "5",
@@ -81,7 +83,8 @@
       "fallback": "f4-s1-public-page",
       "fallbackIn": 5,
       "voDelay": 0.4,
-      "reshoot": "back on the public page after the solar window: Ask! button + section badge visible, cursor drifts"
+      "reshoot": "back on the public page after the solar window: Ask! button + section badge visible, cursor drifts",
+      "atBeat": "returned"
     },
     {
       "scene": "8",
@@ -92,46 +95,46 @@
           "source": "montage-1-drop",
           "fallback": "f2-s2b-library-drop",
           "mode": "fit",
-          "in": 0,
-          "fallbackIn": 7.8
+          "fallbackIn": 7.8,
+          "atBeat": "drop"
         },
         {
           "source": "montage-2-mark",
           "fallback": "f2-s3-mark-section",
           "mode": "fit",
-          "in": 0,
-          "fallbackIn": 9.8
+          "fallbackIn": 9.8,
+          "atBeat": "mark"
         },
         {
           "source": "montage-3-card",
           "fallback": "f2-s4-this-moment",
           "mode": "fit",
-          "in": 0,
           "fallbackIn": 14.0,
           "zoom": {
             "cx": 0.78,
             "cy": 0.45,
             "scale": 1.8
-          }
+          },
+          "atBeat": "card"
         },
         {
           "source": "montage-4-generate",
           "fallback": "f2-s4-this-moment",
           "mode": "fit",
-          "in": 0,
           "fallbackIn": 21.4,
           "zoom": {
             "cx": 0.78,
             "cy": 0.55,
             "scale": 1.8
-          }
+          },
+          "atBeat": "generate"
         },
         {
           "source": "montage-5-share",
           "fallback": "f2-s8-share",
           "mode": "fit",
-          "in": 0,
-          "fallbackIn": 14.0
+          "fallbackIn": 14.0,
+          "atBeat": "share"
         }
       ],
       "reshoot": "five ≈1.8s real shots: drop → mark → Generate mini model → Generate → Share sheet"
@@ -152,7 +155,8 @@
       "fallback": "f4-s1-public-page",
       "fallbackIn": 20,
       "voDelay": 0.4,
-      "reshoot": "zoom-out on the v3 template with the doors glowing"
+      "reshoot": "zoom-out on the v3 template with the doors glowing",
+      "atBeat": "start"
     }
   ]
 }

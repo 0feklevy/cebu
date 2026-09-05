@@ -7,9 +7,9 @@
       "source": "f4-s1-public-page",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 2,
       "fallback": "captures/props/lesson-waves.mp4",
-      "reshoot": "the public page PLAYING"
+      "reshoot": "the public page PLAYING",
+      "atBeat": "start"
     },
     {
       "scene": "2",
@@ -32,18 +32,17 @@
       "source": "f1-s3-ask-surface",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 0,
       "fallback": "f4-s1-public-page",
       "fallbackIn": 6,
       "voDelay": 0.4,
-      "reshoot": "ask surface opens (panel + chips)"
+      "reshoot": "ask surface opens (panel + chips)",
+      "atBeat": "ask-hover"
     },
     {
       "scene": "5",
       "source": "f1-s3-ask-surface",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 4,
       "fallback": "f4-s1-public-page",
       "fallbackIn": 12,
       "slot": [
@@ -51,16 +50,17 @@
         25
       ],
       "silence": true,
-      "reshoot": "the typed question + the answer starting to stream; never an error card"
+      "reshoot": "the typed question + the answer starting to stream; never an error card",
+      "atBeat": "click"
     },
     {
       "scene": "6",
       "source": "f1-s3-ask-surface",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 7,
       "fallback": "f4-s1-public-page",
-      "fallbackIn": 18
+      "fallbackIn": 18,
+      "atBeat": "panel-open"
     },
     {
       "scene": "7",
@@ -76,34 +76,34 @@
       "source": "f5-s5-phone",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 0,
       "fallback": "captures/props/lesson-waves.mp4",
-      "reshoot": "phone: the vertical render playing (no title card)"
+      "reshoot": "phone: the vertical render playing (no title card)",
+      "atBeat": "playing"
     },
     {
       "scene": "9",
       "source": "f5-s5-phone",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 4,
       "fallback": "captures/props/lesson-waves.mp4",
-      "reshoot": "Audio language menu + CC toggle"
+      "reshoot": "Audio language menu + CC toggle",
+      "atBeat": "cc-reach"
     },
     {
       "scene": "10",
       "source": "f4-s1-public-page",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 10,
-      "fallback": "captures/props/lesson-waves.mp4"
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "start"
     },
     {
       "scene": "11",
       "source": "f4-s1-public-page",
       "mode": "fit",
       "kind": "VIDEO",
-      "in": 16,
-      "fallback": "captures/props/lesson-waves.mp4"
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "start"
     }
   ]
 }

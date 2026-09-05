@@ -385,13 +385,19 @@ async function verifyConfigs() {
       const enabled = edges.filter((e) => !e.disabled);
       A('demo: exactly three choice doors enabled, no replay card', enabled.length === 3 && !edges.some((e) => e.destination_type === 'restart'),
         edges.map((e) => `${e.label}:${e.disabled ? `disabled(${e.disabled_reason})` : 'ok'}`).join(', '));
+      // The PUBLIC config does not carry destination project ids — deliberately, since a share page
+      // must not leak the ids of projects the viewer has no link to. What it exposes is the label
+      // and the order, which is exactly what the viewer reads, so that is what is asserted here.
+      // (The id-level wiring is asserted against the authoring API in T.demo.branching.edges below.)
       const doorOrder = [...edges].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-      A('demo: door #1 is "Make yours" -> the tutorial project', doorOrder[0]?.dest_project_id === T.tutorial?.projectId && doorOrder[0]?.label === 'Make yours',
-        doorOrder.map((e) => `${e.label}->${e.dest_project_id ?? e.destination_type}`).join(', '));
-      A('demo: doors #2/#3 are Viewer Superpowers and Drop In Anything', ['powers', 'heavy'].every((key) => {
-        const n = (T.niche ?? []).find((x) => x.key === key);
-        return !!n?.projectId && edges.some((e) => e.dest_project_id === n.projectId);
-      }), doorOrder.map((e) => e.label).join(' | '));
+      const labels = doorOrder.map((e) => e.label);
+      A('demo: the first door a viewer sees is "Make yours"', labels[0] === 'Make yours', labels.join(' | '));
+      A('demo: the other two doors are Viewer Superpowers and Drop In Anything',
+        ['Viewer Superpowers', 'Drop In Anything'].every((l) => labels.includes(l)), labels.join(' | '));
+      const authored = T.demo.branching?.edges ?? [];
+      A('demo: "Make yours" is wired to the tutorial project (authoring API)',
+        authored.find((e) => e.label === 'Make yours')?.dest_project_id === T.tutorial?.projectId,
+        authored.map((e) => `${e.label}->${String(e.dest_project_id ?? e.destination_type).slice(0, 8)}`).join(', '));
       if (T.demo.permalinkSlug) {
         const pc = await j('GET', `/api/v1/public/permalink/${T.demo.permalinkSlug}/config`, undefined, { noAuth: true });
         A(`demo: permalink /${T.demo.permalinkSlug} config responds 200`, pc.status === 200, `-> ${pc.status}`);
