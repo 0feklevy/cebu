@@ -2330,3 +2330,15 @@ deploys deserves one at least as much.
 - 📄 Ledger of record for the whole run: podcast-saas/tutorial-kit/PRODUCTION-PLAN.md (+
   CHECKLIST.md task-tracker audit). Owner decisions taken autonomously logged there (voice =
   admin default; music = original synthesis; kinesin = film-captures only).
+- 🟢 PR OPENED: #192 "Welcome playlist: flagship demo project + per-user seeding (085)" —
+  product code (085 + WelcomeSeedService + share-mode duplication + viewer post-roll-advance
+  fix + two latent duplication bugs) + the regenerable tutorial-kit factory. Seeding E2E PASS
+  locally (clone + personal playlist + idempotency). Branch history rewritten pre-push to drop
+  ~1.5GB of accidentally-committed chrome-profile/work artifacts (local-only branch; census
+  taken first; .gitignore added).
+- 🔴 OPEN (product): Galton Board This-moment generation fails twice ("simplify prompt" class);
+  the section presents with full UI regardless (verified live). Investigate the generator vs
+  that package's DOM.
+- 🔴 OPEN (viewer asserts): build-template's "two sim sections present" assert counts only the
+  teaser-anchored sections in the share config — stale vs the film2-anchored tail layout; the
+  live journey + posters verify the truth. Update the assert next pass.
