@@ -1,47 +1,41 @@
-// Film 3 · Scene 3 — the staged kinesin project: open its existing simulation section, show the
-// This-moment card with the stored prompt, flip Simple UI (stored ON — shown flipping OFF→ON so
-// the state lands ON with the motion on camera), then Preview → Run with collapsed controls.
-import { settle, beatClock, openEditor, openSectionEditor } from '../shot-utils.mjs';
+// Film 3 · Scene 3 — the kinesin package in the "Generate mini model" card (the capture profile's
+// staged kinesin project, its SIM section): card opens, HOLD, the script's verbatim prompt, Minimal
+// UI, Auto script, ✦ Generate — editor's pacing (CARD_PACING). Normalised off camera first
+// (switches OFF, prompt empty, saved) so every flip is on camera.
+import { settle, openEditor, openBlock, revealCard, setSwitch, clearPrompt, saveSection, easeMove, cardBeat, V3_VIEWPORT, KINESIN_PROJECT } from '../shot-utils.mjs';
 
-const KINESIN_PROJECT = '02d892ff-dea3-4a88-a8a7-2498dbafda1f';
+const PROMPT = 'Let viewers scrub the walking cycle and switch motors — keep only those two controls';
 
 export default {
   id: 'f3-s3-simple-ui',
   film: 3,
   scene: '3',
   kind: 'editor-flow',
-  duration: 30,
+  duration: 22,
+  viewport: V3_VIEWPORT,
+  cursor: true,
   async run(page, api) {
-    const beat = beatClock(this.id);
     await openEditor(page, api, KINESIN_PROJECT);
     await settle(page);
-    beat.mark('editor');
 
-    // The staged section (10s→40s, type simulation — verified via probe-state.mjs).
-    await openSectionEditor(page, 'SIM');
-    await settle(page, 2000); // the This-moment card with the existing prompt
-    beat.mark('this-moment');
-
-    // Simple UI: stored ON. Flip OFF → ON so the camera sees the switch move and end ON.
-    const sw = page.locator('button[role="switch"]').filter({ hasText: 'Simple UI' }).first();
-    await sw.waitFor({ timeout: 10000 });
-    if ((await sw.getAttribute('aria-checked')) === 'true') {
-      await sw.click();
-      await settle(page, 700);
-    }
-    await sw.click();
-    if ((await sw.getAttribute('aria-checked')) !== 'true') throw new Error('Simple UI did not end ON');
-    await settle(page, 1000);
-    beat.mark('simple-ui-on');
-
-    // Preview → Run: the collapsed control set.
-    await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    // Off camera: normalise + save.
+    await openBlock(page, 'SIM', { glide: false });
+    await revealCard(page);
+    await setSwitch(page, 'simple', false);
+    await setSwitch(page, 'auto', false);
+    await clearPrompt(page);
+    await saveSection(page);
     await settle(page, 800);
-    await page.getByRole('button', { name: 'Run', exact: true }).click();
-    beat.mark('run');
-    await settle(page, 6000);
-    beat.mark('collapsed-controls');
-    await settle(page, 1500);
-    beat.flush();
+
+    // On camera.
+    await easeMove(page, 700, 420, { ms: 300 });
+    api.mark('start');
+    await openBlock(page, 'SIM');
+    await revealCard(page);
+    const gen = await cardBeat(page, api, PROMPT);
+    return {
+      trim: { from: 'start', to: 'held', padBefore: 0.3 },
+      note: gen.ok ? 'generation completed after the cut' : `GENERATION FAILED after the cut: ${gen.error}`,
+    };
   },
 };

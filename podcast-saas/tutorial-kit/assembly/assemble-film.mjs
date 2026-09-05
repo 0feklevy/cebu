@@ -225,24 +225,37 @@ for (const t of timeline) {
 // page-load flash — white, or black, or a paused poster — and a contact sheet of the first cut was
 // mostly black frames. Every part's first frame is measured; a dark one is named, and a dark FIRST
 // frame of the film (the thumbnail, and a viewer's whole first impression) stops the build.
-const firstFrameLuma = (file) => {
+// FLATNESS, not brightness. A page-load flash is a flat white field and a missing take is a flat
+// black one, but a solar system is legitimately dark and a light UI is legitimately bright — judging
+// by average luma alone rejected a real shot of space and would have kept a blank white page. What
+// both failures share is that the frame has no CONTENT: its darkest and brightest pixels are almost
+// the same. That is what is measured.
+const firstFrameSpread = (file) => {
   const s = spawnSync(FF, ['-hide_banner', '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print',
     '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stderr ?? '';
-  const m2 = s.match(/YAVG=([\d.]+)/);
-  return m2 ? Number(m2[1]) : null;
+  const num = (k) => { const m2 = s.match(new RegExp(`${k}=([\\d.]+)`)); return m2 ? Number(m2[1]) : null; };
+  // YMIN/YMAX, not the YLOW/YHIGH percentiles: a starfield is 90% empty space, so its percentile
+  // spread is as flat as a blank page while its actual range is the full 0-255. Sparse bright
+  // content is exactly what a simulation plate is made of.
+  const lo = num('YMIN'), hi = num('YMAX'), avg = num('YAVG');
+  return lo === null || hi === null ? null : { spread: hi - lo, avg };
 };
-const DARK = 24;   // 8-bit luma average; a real UI screenshot sits far above this
-const darkParts = [];
+const FLAT_SPREAD = 40;
+const flatParts = [];
 for (const p of parts) {
-  const y = firstFrameLuma(p.file);
-  if (y !== null && y < DARK && !p.src.includes('under-window')) darkParts.push(`${p.scene} (luma ${y.toFixed(1)}) ${basename(p.src)}`);
+  // No exemption. The black plate used to be excused here, which is exactly why 23 seconds of black
+  // in the teaser never tripped a check that existed to catch black.
+  const f = firstFrameSpread(p.file);
+  if (f && f.spread < FLAT_SPREAD) {
+    flatParts.push({ scene: p.scene, text: `${p.scene} (spread ${f.spread.toFixed(0)}, luma ${f.avg?.toFixed(0)}) ${basename(p.src)}` });
+  }
 }
-if (darkParts.length) {
-  console.error(`\n!! film ${film}: ${darkParts.length} cut(s) open on a near-black frame — a load flash or a paused poster:\n   ` +
-    darkParts.join('\n   ') + `\n   Fix the \`in\` offset or reshoot; the EDL's offsets are read off frame sheets.\n`);
-  if (darkParts[0].startsWith(`${edl.cuts[0].scene}.0 `)) {
-    throw new Error(`film ${film}: the FIRST frame of the film is black. That frame is the thumbnail and the ` +
-      `viewer's first impression — fix scene ${edl.cuts[0].scene}'s source or \`in\` before building.`);
+if (flatParts.length) {
+  console.error(`\n!! film ${film}: ${flatParts.length} cut(s) open on a featureless frame — a page-load flash or a missing take:\n   ` +
+    flatParts.map(f => f.text).join('\n   ') + `\n   Pick the \`in\` from the footage: node assembly/scan-luma.mjs <shotId>\n`);
+  if (flatParts.some(f => f.scene === `${edl.cuts[0].scene}.0`)) {
+    throw new Error(`film ${film}: the FIRST frame of the film has no picture in it. That frame is the thumbnail ` +
+      `and the viewer's first impression — fix scene ${edl.cuts[0].scene}'s source or \`in\` before building.`);
   }
 }
 writeFileSync(join(WORK, 'concat.txt'), parts.map(p => `file '${p.file}'`).join('\n'));
