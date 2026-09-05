@@ -2347,3 +2347,21 @@ deploys deserves one at least as much.
   suites, check-db's second migration list; plus one proven webkit flake). Local: backend full
   suite exit 0, client 1988/1988. Ready for owner review; production template publish + flags
   remain the deliberate operator step.
+
+## 2026-09-05 midday — owner review of the first cut: REJECTED ("stuck and boring") → overhaul in progress
+- 🔴 VERDICT (owner, verbatim force): films captured sims as footage + piled sections post-roll —
+  wrong architecture. Scripts not marketing-strong; pace/music/narration/embedding all rejected;
+  "The Heavy Simulation" has no practical point; editor sim loading "takes hours".
+- 🟢 GRAMMAR VERIFIED (code + live): MID-ROLL live windows — section inside the video presents
+  the real sim while video+narration continue underneath, auto-exits at window end. New layout
+  of record: tutorial-kit/seeding/layout-v3.json (windows at beats; tutorial its own project;
+  kinesin embedded for the LOCAL review build — public seeding still needs license clearance).
+- 🟢 PRODUCT FIXES SHIPPED-TO-BRANCH: "✦ This moment" → "Generate mini model" (no star); header
+  "?" right of Create link; TimelinePanel adds sections at the PLAYHEAD (was append-to-end — the
+  root mechanism of the tail pileup); ChoiceOverlay focuses the first door; generation status
+  ellipsis bounded (was growing forever). Client 1988/1988 green.
+- 🟡 IN FLIGHT (agent fleet): editor sim-loading perf root-cause+fix; scripts v3 (marketing-hard,
+  window grammar, "Drop In Anything" replaces heavy-sim); driving music beds; performance review
+  of the sim serving path; layout-driven build-template v3; narration voice audition (free Edge
+  neural for the review phase — owner ruling; ElevenLabs after sign-off); reference research →
+  CREATIVE-DIRECTION-v3.md.
