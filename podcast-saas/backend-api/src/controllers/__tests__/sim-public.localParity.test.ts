@@ -188,3 +188,88 @@ describe('serve-time injection reaches an already-stored revision', () => {
     expect(body).toContain('<title>an old sim</title>');
   });
 });
+
+/**
+ * Repeat loads must REVALIDATE, not re-download (EDITOR-PERF, 2026-09-05).
+ *
+ * Measured against the live editor: non-revision package files were served with NO
+ * Cache-Control and NO validator at all, so every preview mount re-downloaded the whole
+ * package — 36.5MB for the kinesin sim, three times in one short editor session. These tests
+ * pin the fix: legacy keys carry `no-cache` + validators, and a conditional request answers
+ * 304 with no body. Mutation-proven: with `statValidators`/the HTML ETag removed from the
+ * controller, every test in this block fails.
+ */
+describe('repeat loads revalidate instead of re-downloading (local branch)', () => {
+  const BIN_KEY = 'simulations/proj-legacy/sim-legacy/models/big-model.glb';
+
+  beforeAll(() => {
+    const onDisk = join(baseDir, BIN_KEY);
+    mkdirSync(dirname(onDisk), { recursive: true });
+    writeFileSync(onDisk, Buffer.alloc(4096, 7));
+  });
+
+  it('legacy entry HTML: ETag present, matching If-None-Match answers 304 with no body', async () => {
+    mocks.current = new LocalStorageAdapter();
+    const first = await localApp.inject({ method: 'GET', url: `/sim-public/${KEY}` });
+    expect(first.statusCode).toBe(200);
+    const etag = first.headers.etag as string;
+    expect(etag, 'entry HTML must carry an ETag').toBeTruthy();
+    expect(first.headers['cache-control']).toBe('no-cache');
+
+    const second = await localApp.inject({
+      method: 'GET', url: `/sim-public/${KEY}`, headers: { 'if-none-match': etag },
+    });
+    expect(second.statusCode).toBe(304);
+    expect(second.body).toBe('');
+  });
+
+  it('legacy binary: no-cache + stat validators, conditional GET answers 304', async () => {
+    mocks.current = new LocalStorageAdapter();
+    const first = await localApp.inject({ method: 'GET', url: `/sim-public/${BIN_KEY}` });
+    expect(first.statusCode).toBe(200);
+    // The measured bug: this response used to carry NONE of these three headers.
+    expect(first.headers['cache-control']).toBe('no-cache');
+    expect(first.headers.etag).toMatch(/^W\//);
+    expect(first.headers['last-modified']).toBeTruthy();
+
+    const inm = await localApp.inject({
+      method: 'GET', url: `/sim-public/${BIN_KEY}`,
+      headers: { 'if-none-match': first.headers.etag as string },
+    });
+    expect(inm.statusCode).toBe(304);
+    expect(inm.body).toBe('');
+
+    const ims = await localApp.inject({
+      method: 'GET', url: `/sim-public/${BIN_KEY}`,
+      headers: { 'if-modified-since': first.headers['last-modified'] as string },
+    });
+    expect(ims.statusCode).toBe(304);
+  });
+
+  it('replace-in-place is still picked up: changed bytes answer 200 with the new content', async () => {
+    mocks.current = new LocalStorageAdapter();
+    const first = await localApp.inject({ method: 'GET', url: `/sim-public/${BIN_KEY}` });
+    const oldEtag = first.headers.etag as string;
+
+    // "Replace simulation" overwrites the same key with different bytes (different size here,
+    // so the validator changes even on filesystems with coarse mtime resolution).
+    writeFileSync(join(baseDir, BIN_KEY), Buffer.alloc(8192, 9));
+
+    const after = await localApp.inject({
+      method: 'GET', url: `/sim-public/${BIN_KEY}`, headers: { 'if-none-match': oldEtag },
+    });
+    expect(after.statusCode, 'stale validator must NOT pin old bytes').toBe(200);
+    expect(after.rawPayload.length).toBe(8192);
+    expect(after.headers.etag).not.toBe(oldEtag);
+  });
+
+  it('Range requests still work (a 304 gate must not break media streaming)', async () => {
+    mocks.current = new LocalStorageAdapter();
+    const res = await localApp.inject({
+      method: 'GET', url: `/sim-public/${BIN_KEY}`, headers: { range: 'bytes=0-99' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.length).toBe(100);
+    expect(res.headers['content-range']).toMatch(/^bytes 0-99\//);
+  });
+});

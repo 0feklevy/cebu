@@ -8,6 +8,7 @@ import { simulations, system_prompts, video_files } from '../../db/schema.js';
 import { asc, eq } from 'drizzle-orm';
 import { projectOrientation } from 'shared/video/orientation';
 import { logger } from '../../lib/logger.js';
+import { mapWithLimit } from '../../lib/mapWithLimit.js';
 import { SIM_SCANNER_SOURCE } from './simScannerSource.js';
 import { assertSafeZipArchive } from '../security/zipGuard.js';
 import { CAPTURE_AUTHORING_RULES } from 'shared/sim/captureAuthoring';
@@ -148,6 +149,15 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 // ── Storage content types ─────────────────────────────────────────────────────
+
+/**
+ * Fan-out width for staging a revision's files (read from the base + write to storage).
+ * 8 mirrors the bounded ZIP-upload waves (backend-010's cap of 12, kept slightly lower here
+ * because each worker holds a whole file in memory while it writes): wide enough that a
+ * 30MB many-file package is no longer a chain of serial round trips, narrow enough that
+ * publication cannot monopolise storage connections.
+ */
+const REVISION_UPLOAD_CONCURRENCY = 8;
 
 const CONTENT_TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -582,6 +592,8 @@ You only write the body of SCRIPTS.main.
       const _injected = [];
 
       // [YOUR IMPLEMENTATION HERE]
+      // (_hidden, _hide, _restoreAll, _ivs, _listeners, _injected ALSO exist in the enclosing bridge
+      //  scope — a mainBody that omits the declarations above still works; declaring them is fine too.)
       // Use _hide() to hide elements.
       // Push intervals: _ivs.push(setInterval(..., ms));
       // Automation/demo intervals ONLY: _ivs.push(simDemoTimer(setInterval(..., ms)));
@@ -691,7 +703,9 @@ End the mainBody with: return function cleanup() { ... };
     app.togglePlay()) are NOT idempotent. Read the state boolean FIRST (e.g. app.exploreExploit.active) and
     only call the toggle when it is not already in the desired state. Make cleanup equally guarded so it
     only reverses what you actually changed — a re-fired startScript must NEVER bounce the state off/on.
-25. Use _hide() for hiding: it records originals automatically for restoration.
+25. Use _hide() for hiding: it records originals automatically for restoration. _hide, _restoreAll,
+    _hidden, _ivs, _listeners and _injected are PROVIDED by the host in the scope enclosing your body —
+    use them directly or declare your own; never reference any other helper you did not declare.
 
 ### Animation
 26. Use setInterval for animation: step 0.1–0.3, intervalMs 30–150ms. Pingpong at min/max.
@@ -984,6 +998,47 @@ const BridgeGenerationSchema = z.object({
   warnings:   z.array(z.string()).default([]),
 });
 
+/**
+ * The helpers the generation prompt promises every section body, declared ONCE in the enclosing
+ * bridge scope. The prompt's template declares `_hidden/_hide/_restoreAll/_ivs/_listeners/_injected`
+ * inside SCRIPTS.main and says "fill in [YOUR IMPLEMENTATION HERE]"; a model that returns only that
+ * part relies on them, and both wrappers used to splice the body in bare — the first `_hide(...)`
+ * threw `ReferenceError: _hidden is not defined` on activation, the runtime posted SCRIPT_ERROR, and
+ * the viewer played the film through the whole window (2 of 6 generated bodies, 2026-09-05).
+ *
+ * They live in the scope that ENCLOSES the body functions, so a body that declares its own copies
+ * (the worked example's `var _hidden = [] …`, or the template's `const _hidden = []`) shadows them
+ * legally instead of colliding. `_drainPrelude()` runs from the standard stopScript AFTER the body's
+ * own cleanup: whatever a body pushed into the shared collections is cleared, removed, restored, and
+ * the collections are emptied for the next section on the same document.
+ */
+const BRIDGE_BODY_PRELUDE: readonly string[] = [
+  '  // ── Body prelude — the helpers the generation prompt promises (see BRIDGE_BODY_PRELUDE) ──',
+  '  var _hidden = [], _ivs = [], _listeners = [], _injected = [];',
+  '  function _hide(el) {',
+  '    if (!el || !el.style) return;',
+  "    var orig = el.style.getPropertyValue('display') || '';",
+  "    el.style.setProperty('display', 'none');",
+  '    _hidden.push([el, orig]);',
+  '  }',
+  '  function _restoreAll() {',
+  '    for (var i = _hidden.length - 1; i >= 0; i--) {',
+  '      var h = _hidden[i];',
+  "      try { if (h[1]) h[0].style.setProperty('display', h[1]); else h[0].style.removeProperty('display'); } catch (e) {}",
+  '    }',
+  '    _hidden.length = 0;',
+  '  }',
+  '  function _drainPrelude() {',
+  '    for (var i = 0; i < _ivs.length; i++) { try { clearInterval(_ivs[i]); clearTimeout(_ivs[i]); } catch (e) {} }',
+  '    _ivs.length = 0;',
+  '    for (var j = 0; j < _listeners.length; j++) { var l = _listeners[j]; try { l[0].removeEventListener(l[1], l[2]); } catch (e) {} }',
+  '    _listeners.length = 0;',
+  '    for (var k = 0; k < _injected.length; k++) { try { if (_injected[k] && _injected[k].remove) _injected[k].remove(); } catch (e) {} }',
+  '    _injected.length = 0;',
+  '    _restoreAll();',
+  '  }',
+];
+
 /** Wrap LLM-generated mainBody in the guaranteed-correct bridge template.
  *  The system owns: SIM_READY, startScript, stopScript, SimAPI, and the message listener.
  *  The LLM only writes the SCRIPTS.main function body — it can NEVER break the protocol. */
@@ -1006,6 +1061,8 @@ export function wrapBridgeMainBody(mainBody: string): string {
     "    document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(_fireReady));",
     '  else requestAnimationFrame(_fireReady);',
     '  setTimeout(_fireReady, 3000);',
+    '',
+    ...BRIDGE_BODY_PRELUDE,
     '',
     '  // ── LLM-GENERATED IMPLEMENTATION (SCRIPTS.main body only) ────────────────────',
     '  let _cancelFn = null;',
@@ -1046,6 +1103,7 @@ export function wrapBridgeMainBody(mainBody: string): string {
     '  }',
     '  function stopScript() {',
     '    if (_cancelFn) { _cancelFn(); _cancelFn = null; }',
+    '    _drainPrelude();',
     '    _lastSig = null;',
     "    const st = document.getElementById('__simHideUi');",
     '    if (st) st.remove();',
@@ -1284,6 +1342,8 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     '  for (var _k in __SECTIONS__) { if (Object.prototype.hasOwnProperty.call(__SECTIONS__, _k)) { _hasAny = true; break; } }',
     '  if (!_hasAny) return;',
     '',
+    ...BRIDGE_BODY_PRELUDE,
+    '',
     '  // ── Standard Listener — system-owned, guaranteed correct ────────────────────',
     '  var _cancelFn = null;',
     '  // hasOwnProperty guards are load-bearing: script names arrive via an origin-unchecked',
@@ -1487,6 +1547,7 @@ export function wrapBridgeCombined(entries: Map<string, string>, opts?: WrapBrid
     "      try { if (typeof fn === 'function') fn(); }",
     "      catch (err) { _post({ type: 'SCRIPT_ERROR', phase: 'cleanup', message: String(err && err.message || err) }); }",
     '    }',
+    '    _drainPrelude();',
     '    _lastSig = null; _lastName = null; _lastParams = null; _lastToken = undefined;',
     '    _autoStarted = true; _autoRunning = true; _uiHook = null;',
     "    var st = document.getElementById('__simHideUi');",
@@ -3244,14 +3305,19 @@ export class SimulationService {
       });
       const uploading = await revisions.beginUpload(simId, draft.id);
       const files: SimManifestFile[] = [];
+      const uploadStartedAt = Date.now();
       try {
-        for (const item of copyPlan) {
+        // Bounded fan-out, not a serial loop: for a 30MB / many-file package the read→write
+        // round trips dominated publication wall time on cloud storage (every file waited for
+        // the previous one). Order of `files` is preserved by mapWithLimit; the abort check
+        // runs per item exactly as before, and the first failure rejects the whole stage.
+        files.push(...await mapWithLimit(copyPlan, REVISION_UPLOAD_CONCURRENCY, async (item) => {
           throwIfAborted(signal);
           const bytes = await item.read();
-          files.push(await revisions.writeFile(uploading, revisionRoot, {
+          return revisions.writeFile(uploading, revisionRoot, {
             manifestPath: item.manifestPath, bytes, contentType: item.contentType, role: item.role,
-          }));
-        }
+          });
+        }));
         files.push(await revisions.writeFile(uploading, revisionRoot, {
           manifestPath: bridgeManifestPath,
           bytes: Buffer.from(art.bridgeJs, 'utf-8'),
@@ -3270,6 +3336,14 @@ export class SimulationService {
           .catch(() => undefined);
         throw err;
       }
+      // Publish observability: where a slow publication actually spends its time. One line per
+      // publish, so it can stay.
+      logger.info({
+        simId, revisionId: draft.id,
+        fileCount: files.length,
+        totalBytes: files.reduce((a, f) => a + f.bytes, 0),
+        uploadMs: Date.now() - uploadStartedAt,
+      }, 'sim publish: revision files staged');
 
       const validating = await revisions.finishUpload(simId, draft.id);
       const manifest = buildLegacyManifest({

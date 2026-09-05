@@ -33,6 +33,7 @@ import { captureSpaceVerdict, freeBytesFor } from './captureSpace.js';
 import { join } from 'node:path';
 
 import { logger } from '../../../../lib/logger.js';
+import { mapWithLimit } from '../../../../lib/mapWithLimit.js';
 import { getStorageAdapter } from '../../../storage/getStorageAdapter.js';
 import type { StorageService } from '../../../storage/StorageService.js';
 import type { SimCaptureWindow } from '../../types.js';
@@ -121,8 +122,7 @@ async function fetchPackageFiles(
   if (keys.length === 0) {
     throw new Error(`container capture: no package objects under ${prefix}`);
   }
-  const files: CaptureInputFile[] = [];
-  let total = 0;
+  const stageable: string[] = [];
   let skipped = 0;
   for (const key of keys) {
     const rel = key.slice(prefix.length);
@@ -131,13 +131,26 @@ async function fetchPackageFiles(
       skipped += 1;
       continue;
     }
+    stageable.push(key);
+  }
+  // Bounded fan-out instead of one file at a time: staging a 30MB many-file package was a chain
+  // of serial storage round trips. The cumulative ceiling is enforced exactly as before — checked
+  // as each read lands (the += and the comparison run atomically on the event loop), so a runaway
+  // prefix still fails loudly instead of OOMing; at most the in-flight window is read past it.
+  let total = 0;
+  const stagedAt = Date.now();
+  const files: CaptureInputFile[] = await mapWithLimit(stageable, 8, async (key) => {
     const content = await storage.readObject(key);
     total += content.byteLength;
     if (total > MAX_PACKAGE_BYTES) {
       throw new Error(`container capture: package under ${prefix} exceeds ${MAX_PACKAGE_BYTES} bytes`);
     }
-    files.push({ path: rel, content });
-  }
+    return { path: key.slice(prefix.length), content };
+  });
+  logger.info(
+    { packageRoot: source.packageRoot, files: files.length, bytes: total, stageMs: Date.now() - stagedAt },
+    'export(container-capture): package staged',
+  );
   if (!files.some((f) => f.path === source.entryPath)) {
     throw new Error(
       `container capture: entry ${source.entryPath} is not among the ${files.length} staged files of ${prefix}`,
