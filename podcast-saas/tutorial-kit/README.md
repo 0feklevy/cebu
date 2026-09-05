@@ -62,16 +62,48 @@ The films are the ad AND the proof: the viewer's hand is on the sim while the na
   everything seeded is license-clean and ours (`sims/`, `music/`, generated images).
 - Brand: spoken name "Flow Video"; the UI renders `PUBLIC_BRAND_NAME`. Owner to unify.
 
-## Current status (2026-09-05, overnight run)
-- [x] 5 scripts through the critics-panel gates (G1-pre, G1-post CLEAR, films 3-5 panel)
-- [x] 3 seeded sims built + smoke-verified (60fps, contract, proofs); wave-lab shelved
-- [x] Music beds + overlay rig + capture engine + assembly pipeline (film 1 proven end-to-end)
-- [x] Seeding: migration 085 + share-mode duplication + WelcomeSeedService + admin toggle + tests
-- [~] Capture campaign: kinesin + murmuration-3D footage in; editor/viewer shots + template
-  build running as agents; films 2-5 assemble on their EDLs as shots land
-- [ ] REAL narration TTS — **blocked on owner**: local ElevenLabs credential is a key-ID, not an
-  `sk_` key (both env and admin keystore). One command re-renders when fixed:
-  `narration/run-narration.sh --force` then re-run assembly per film.
-- [ ] Spanish dub + in-film voice-answer audio — same key blocker.
-- Open (owner): brand-name unification; music taste veto; scene-3 ANAM-vs-podcast staging auto-
-  resolves at capture (both pre-scripted).
+## The build gates (each exists because it caught a real wrong film)
+`assemble-film.mjs` refuses rather than shipping something that looks fine:
+- **Voice** — every clip's text must equal `narration/lines.json` (checked against
+  `narration/audio-manifest.json`). A rewritten script line keeps its filename; 17 of 48 clips once
+  said deleted lines and nothing complained. `--no-vo-check` is for structural dry-runs only.
+- **Picture** — a cut whose first frame has no picture in it fails, measured as flatness over the
+  frame's FULL range (`YMIN`/`YMAX`). Percentiles read a starfield as flat; a page-load flash is
+  bright and a missing take is black, and what they share is emptiness.
+- **Fill** — a shot too short for its slot fails and names the shortfall. Only sources marked
+  `mode:"loop"` (the simulation plates) may repeat; anything else strobed silently before.
+- **Timeline stamp** — `assembly/work/film<N>/timeline.json` carries the film's sha256, and the
+  seeder refuses to pair window times with a different cut.
+
+Offsets are **named moments, not seconds**: each shot records its own beats to
+`captures/out/beats/<shotId>.json`, and a cut says `"atBeat": "generate"`. Hand-written seconds are
+measured against one take and silently outlive it. `node assembly/scan-luma.mjs <shotId>` shows
+where a take actually has a picture.
+
+## Sound architecture
+Voice is summed on its OWN bus, levelled to a measured target, and given one gentle ceiling — speech
+carries 14-21 dB of crest, so no linear gain puts it at -19 LUFS under a -3 dBTP ceiling, and the
+clips therefore ship uniform and quiet (-24 LUFS) by design. The music does not cut dead inside a
+live window: it ducks on a 300 ms ramp into a low-passed bed, because the film is still running
+under the simulation. The master is ONE measured static gain — never a `loudnorm` on the master,
+which is a compressor and re-shapes the very balance the mix just built.
+
+## Minimal UI needs a hide list
+`simple_ui: true` alone hides NOTHING. The player builds its cloak from `ui_hide`, which
+`buildPlayerConfig` reads from `sim_meta.uiControls.hide`. The layout carries the selectors per
+window (`uiHide`), and seeding applies them AFTER generation — generating the bridge rewrites
+`sim_meta` wholesale and takes them with it.
+
+## Current status (2026-09-06)
+- [x] Five films assembled from real captures + ElevenLabs narration and music beds; live windows
+      sit on recordings of the same simulations being driven, so the MP4 is never black
+- [x] Seeding: 5 projects + playlist + permalink + podcast, every window verified mid-roll in a
+      real browser (presented, auto-exited, no script errors) with proof frames in `seeding/proof/`
+- [x] Four critique panels before assembly and one after, every essential finding adversarially
+      verified against the artifact (`critique/round-3-pre/`)
+- [ ] **Owner action — the ask surface.** Anam answers 401 to the local `ANAM_API_KEY`, so film 1
+      beat 4 and film 4 beats 4-6 have no honest shot; they run a real page shot meanwhile rather
+      than a staged one. Valid credentials unblock `--only f1-s3-ask-surface`.
+- [ ] Reshoot the branch-cards capture: it still shows the v2 door titles ("The Heavy Simulation").
+- [ ] Reshoot `f1-s3-return`: the take is hung (poster still up, sim panel mounted, doubled chrome).
+- Open (owner): brand-name unification; music taste veto.
