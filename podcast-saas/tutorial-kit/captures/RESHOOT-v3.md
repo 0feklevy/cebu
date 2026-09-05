@@ -7,6 +7,7 @@ Shot on the v3 template with the capture profile (`captures/chrome-profile`, ONE
 
 | shot id | needed by | status | file · duration |
 |---|---|---|---|
+| f1-s1-ordinary-video | F1 b1 ("This looks like a video.") | **done** — the DOORS share page playing plainly; chrome in frame throughout, play head 27.4→36.9 s | 9.52 s · 1600×900 |
 | f2-s4-this-moment | F1 b8 · F2 b6-8 · F3 b3-4 | **done** — tour project, Solar System picked on camera, verbatim prompt, both switches, generation ran | 31.2 s · 1600×900 |
 | f3-s3-simple-ui | F3 b3-5 | **done** — kinesin package, verbatim prompt, editor's pacing | 26.12 s |
 | f3-s4-iteration | F3 b3-5 | **done** — opens on the previous prompt with both toggles on, follow-up replaces it | 15.76 s |
@@ -19,7 +20,7 @@ Shot on the v3 template with the capture profile (`captures/chrome-profile`, ONE
 | montage sub-cuts ×5 | F1 b8 | **done** — drop / mark / card / generate / share, ≈2.1-2.7 s each | see `montage-*` |
 | f1-s3-return | F1 b3 | **done** — cut keyed to the window's own exit | 11.0 s |
 | f1-s7-return | F1 b7 | **done** — same, solar window | 18.32 s |
-| f4-s1-public-page | F4 b1 + fallbacks | **done** — re-shot PLAYING (53→77 s, film-only stretch) | 22.6 s |
+| f4-s1-public-page | F4 b1 · beds in F3/F4/F5 · fallback for b1 | **done** — re-shot on the DOORS page playing, 22.8→44.9 s of its master, chrome in frame throughout | 22.04 s |
 | **live-window plates ×4** | replaces `assembly/plates/under-window.mp4` | **done** — real simulation footage, full-frame 1920×1080, moving throughout | see below |
 
 ## Live-window plates (new, 2026-09-05)
@@ -82,7 +83,19 @@ may want hiding if the plate is ever shown full-frame in a film.
    times out — the control is visible, enabled and topmost, but the bar never satisfies the
    stability check — and the film silently stays paused. A click on the FRAME is worse: inside a
    live window it pauses the film and hands control to the sim ("Resume video →").
-7. **A measurement that did not happen is a failure, not a pass.** `check-plates.mjs` first
+7. **"An ordinary shared video" has exactly one home: the DOORS project.** It is the only seeded
+   project with no simulation sections, so its page is a plain video throughout — the demo's page
+   cannot supply that beat, because the demo project IS film 1 and every moment of it plays inside
+   one of its own live windows. Pick the stretch from the master, not by guessing:
+   `node assembly/scan-luma.mjs <shotId|path>`; `film5.SCRATCH.mp4` is an editor recording around
+   12 s and a full-frame Wave Lab ripple from ~22 s to ~42 s (luma ~87), which is what the two
+   doors shots use.
+8. **A still shot loses the page chrome after 2.5 s.** The viewer hides its controls 2500 ms after
+   the last pointer activity (`useProjectPlayer.ts:914`) and there is NO hover exemption — parking
+   the pointer on the bar does not help. `holdWithChrome()` nudges the pointer one pixel every
+   1.8 s, which is invisible (no cursor is drawn and the screencast records no OS pointer) and
+   keeps the bar, the Ask! pill and the clock in frame for the whole take.
+9. **A measurement that did not happen is a failure, not a pass.** `check-plates.mjs` first
    reported "all plates pass" while measuring nothing: ffmpeg's `metadata=print` writes at info
    level to STDERR, and `-v error` plus an stdout-only read returned null for every sample, which
    `Math.min` of an empty list then turned into a pass.
