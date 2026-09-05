@@ -9,7 +9,7 @@ video + narration keep playing underneath; at second Y it auto-returns. The view
 touch it during the window. **Sims never appear as footage. Only as live windows.** VIDEO beats
 are narration + fast REAL UI captures only.
 
-WINDOW MAP: kinesin [2,15] · solarSystem [25,36] · murmuration [45,52] → sync layout-v3.json.
+WINDOW MAP: kinesin [2,10] · solarSystem [25,33] · murmuration [45,52] → sync layout-v3.json.
 
 Voice: US trailer confidence with a grin — quick, warm, talking WITH your hands full. ~150 wpm
 in bursts; every "…" and " — " is a performed pause (TTS gets this text verbatim; no bracketed
@@ -22,11 +22,11 @@ final hit lands with "Flow Video."
 |---|---|---|---|---|
 | 1 | 0:00–0:02 | VIDEO | This looks like a video. | Dead-ordinary frame: a shared video playing on its public page (`/slug`) — play bar ticking, cursor drifting. Calm. A trap. |
 | 2 | 0:02–0:10 | LIVE-WINDOW kinesin | It isn't. Go on — touch it. Grab the motor… spin it. | WINDOW OPENS t=2 (label chip "Touch the motor"): the REAL Kinesin 3D sim mounts on top, Simple UI (cycle scrub + orbit only); film + music keep rolling underneath, music cut to room tone. The viewer's own hand drives it; for a viewer who doesn't touch, Auto Script keeps the motor walking and slowly orbits (never a frozen molecule). |
-| 3 | 0:10–0:15 | LIVE-WINDOW kinesin (cont.) | You're driving a molecular machine inside an ad. This is Flow Video. | Scrub drags the walking cycle; orbit swings the camera. AUTO-RETURN t=15 — riser, film swells back. |
+| 3 | 0:10–0:15 | VIDEO | You're driving a molecular machine inside an ad. This is Flow Video. | AUTO-RETURN t=10 — riser, film swells back: the public page with the section marker lit on the progress bar; punch-in 2.0× on the marker, cut wide. |
 | 4 | 0:15–0:20 | VIDEO | Questions? Ask out loud. It answers from this lesson. | REAL ask surface: mic waveform pulses, question chip, answer caption chips render. Chips-only staging (no timed audio exchange here — film 4 owns the clean listen). Anchors: ask surface per capture ruling (ANAM avatar plan-of-record / podcast Tap-to-ask fallback). |
 | 5 | 0:20–0:25 | VIDEO | And when the story forks… your viewers steer. | **Follow user decisions** branch in the real viewer: Cards overlay slides in, cursor picks, timeline visibly jumps down that path. |
-| 6 | 0:25–0:31 | LIVE-WINDOW solarSystem | Round two — a solar system. Tap any planet. Go ahead… I'll wait. | WINDOW OPENS t=25 (chip "Fly to a planet"): real Solar System 3D, Simple UI (time speed + tap-a-planet fly-to). Music out. The wait is scripted air — let them tap. |
-| 7 | 0:31–0:36 | LIVE-WINDOW solarSystem (cont.) | There you go. They fly… you keep teaching. | Camera sweeps to Mars on the viewer's tap (auto-tour covers a no-touch viewer). AUTO-RETURN t=36. |
+| 6 | 0:25–0:33 | LIVE-WINDOW solarSystem | Round two — a solar system. Tap any planet. Go ahead… I'll wait. | WINDOW OPENS t=25 (chip "Fly to a planet"): real Solar System 3D, Simple UI (time speed + tap-a-planet fly-to). Music out. The wait is scripted air — let them tap. |
+| 7 | 0:33–0:36 | VIDEO | There you go. They fly… you keep teaching. | AUTO-RETURN t=33 — back on the public page; the Ask! button and section badge visible; cursor drifts on. |
 | 8 | 0:36–0:45 | VIDEO | Want one? Drop in footage — and a simulation. Tell the AI what viewers touch. One link. That's a Flow Video. | Creator montage, 9s, five REAL shots ≈1.8s each, legible at 360p: files drop on **Library** ("sorted automatically" overlay) → section marked on **V1** → **Generate mini model** card: prompt typed + both toggles flipped → **✦ Generate with AI** → **Share this video** sheet (**Public page**). |
 | 9 | 0:45–0:52 | LIVE-WINDOW murmuration | Last one. Steer the flock… find the scatter button. …That was you. | WINDOW OPENS t=45 (chip "Steer the flock"): real Murmuration 3D — the flock bends to the viewer's pointer; **Scatter** button prominent; burst → reform. AUTO-RETURN t=52. |
 | 10 | 0:52–0:58 | VIDEO | The doors below are live. — Touch it. Ask it. Steer it. — Flow Video. | Zoom out INSIDE the product: this film sits on a Flow Video timeline; the **choice doors** section below glows, ▼ pulse. Logo lockup + end card: **"The doors below are live."** Auto-advance into the doors. |

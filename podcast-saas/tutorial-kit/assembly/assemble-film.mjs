@@ -71,26 +71,33 @@ const total = cursor;
 writeFileSync(join(WORK, 'timeline.json'), JSON.stringify({ film, total, timeline }, null, 2));
 
 // ── 3. per-scene video normalization → concat ─────────────────────────────────────────────────
+// CREATIVE-DIRECTION v3 R4: never clone a frame. A scene may carry `sources: [..]` (sub-cuts
+// split evenly across the scene — the montage grammar) and a too-short source is CUT to the next
+// sub-source or looped when it's motion footage, never frozen.
+const VF = 'scale=1920:1080:force_original_aspect_ratio=decrease,' +
+  'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0b0f17,fps=30,setsar=1';
+function renderPart(src, dur, inSec, loop, out) {
+  const inArg = inSec ? ['-ss', String(inSec)] : [];
+  const loopArg = loop ? ['-stream_loop', '-1'] : [];
+  execFileSync(FF, ['-y', '-loglevel', 'error', ...loopArg, ...inArg, '-i', src,
+    '-t', String(dur), '-vf', VF, '-an',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', out]);
+  return probe(out);
+}
 const parts = [];
 for (const t of timeline) {
-  const src = resolveSource(t.cut);
-  const part = join(WORK, `scene-${t.scene}.mp4`);
-  const inArg = t.cut.in ? ['-ss', String(t.cut.in)] : [];
-  const loop = t.cut.mode === 'loop' ? ['-stream_loop', '-1'] : [];
-  const vf = 'scale=1920:1080:force_original_aspect_ratio=decrease,' +
-    'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0b0f17,fps=30,setsar=1';
-  execFileSync(FF, ['-y', '-loglevel', 'error', ...loop, ...inArg, '-i', src,
-    '-t', String(t.dur), '-vf', vf, '-an',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', part]);
-  const got = probe(part);
-  if (got < t.dur - 0.25) {
-    // source shorter than the scene and not looped — hold the last frame to fill
-    const held = join(WORK, `scene-${t.scene}-held.mp4`);
-    execFileSync(FF, ['-y', '-loglevel', 'error', '-i', part,
-      '-vf', `tpad=stop_mode=clone:stop_duration=${(t.dur - got + 0.1).toFixed(2)}`,
-      '-t', String(t.dur), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', held]);
-    parts.push(held);
-  } else parts.push(part);
+  const subs = Array.isArray(t.cut.sources) && t.cut.sources.length
+    ? t.cut.sources
+    : [{ source: t.cut.source, fallback: t.cut.fallback, in: t.cut.in, mode: t.cut.mode }];
+  const each = t.dur / subs.length;
+  subs.forEach((sub, i) => {
+    const src = resolveSource({ scene: `${t.scene}.${i}`, source: sub.source, fallback: sub.fallback ?? t.cut.fallback });
+    const part = join(WORK, `scene-${t.scene}-${i}.mp4`);
+    // a source that cannot fill its slot is looped (motion keeps moving) — never frame-cloned
+    const got = renderPart(src, each, sub.in ?? 0, sub.mode === 'loop', part);
+    if (got < each - 0.25) renderPart(src, each, sub.in ?? 0, true, part);
+    parts.push(part);
+  });
 }
 writeFileSync(join(WORK, 'concat.txt'), parts.map(p => `file '${p}'`).join('\n'));
 const base = join(WORK, 'base.mp4');

@@ -8,7 +8,7 @@
         "sim": "kinesin",
         "window": [
           2,
-          15
+          10
         ],
         "label": "Touch the motor",
         "prompt": "Let viewers scrub the walking cycle and orbit the camera",
@@ -18,7 +18,7 @@
         "sim": "solarSystem",
         "window": [
           25,
-          36
+          33
         ],
         "label": "Fly to a planet",
         "prompt": "Give viewers the planets \u2014 let them speed up time and fly to any world",
