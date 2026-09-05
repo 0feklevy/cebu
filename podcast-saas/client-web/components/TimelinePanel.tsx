@@ -1366,18 +1366,36 @@ export function TimelinePanel({
     setCirclesDrag(null);
   }, [circlesMode]);
 
+  // A new section is born WHERE THE STORY IS — at the playhead — not appended to the tail.
+  // Appending to the end was the mechanism that piled every interactive moment after the video
+  // (owner review 2026-09-05: "why stick simulations at the end? no point"). The playhead's clip
+  // hosts the section; `findGap` keeps it off existing sections; only when the playhead sits past
+  // every clip (or the gap is unusable) does it fall back to the old append-at-end behaviour.
   const handleAppendSection = useCallback(async (type: 'simulation' | 'clip') => {
-    const anchor = clipsWithOffset[clipsWithOffset.length - 1];
-    if (!anchor || addBusy) return;
+    const last = clipsWithOffset[clipsWithOffset.length - 1];
+    if (!last || addBusy) return;
     setAddBusy(type);
     setAddMenuOpen(false);
     try {
-      const anchorDuration = anchor.dur;
-      const start = Math.max(anchorDuration, sectionTimelineEnd - anchor.offset);
+      let anchor = last;
+      let start = Math.max(last.dur, sectionTimelineEnd - last.offset);
+      let end = start + VISUAL_MAX_SEC;
+      const atPlayhead = findClipAtGlobalSec(clipsWithOffset, playheadSec);
+      if (atPlayhead) {
+        const localSec = Math.max(0, playheadSec - atPlayhead.offset);
+        const dur = atPlayhead.dur > 0 ? atPlayhead.dur : totalDuration;
+        const gap = findGap(mainSections, atPlayhead.video.id, localSec, dur);
+        if (gap && gap[1] - gap[0] >= 1) {
+          anchor = atPlayhead;
+          start = Math.max(gap[0], localSec);
+          end = Math.min(gap[1], start + VISUAL_MAX_SEC);
+          if (end - start < 1) { start = gap[0]; end = Math.min(gap[1], start + VISUAL_MAX_SEC); }
+        }
+      }
       const section = await api.createSection(projectId, {
         video_file_id: anchor.video.id,
         start_sec: start,
-        end_sec: start + VISUAL_MAX_SEC,
+        end_sec: end,
         type,
         label: type === 'simulation' ? 'Simulation' : 'Existing clip',
       });
@@ -1389,7 +1407,7 @@ export function TimelinePanel({
     finally {
       setAddBusy(null);
     }
-  }, [addBusy, clipsWithOffset, onSectionsChange, onSeek, projectId, sectionTimelineEnd, sections]);
+  }, [addBusy, clipsWithOffset, mainSections, onSectionsChange, onSeek, playheadSec, projectId, sectionTimelineEnd, sections, totalDuration]);
 
   const handleUploadNewClip = useCallback(() => {
     setAddMenuOpen(false);
@@ -2293,7 +2311,10 @@ export function TimelinePanel({
         >
           <button
             onClick={() => setAddMenuOpen(v => !v)}
-            title="Add to end"
+            title="Add at playhead"
+            aria-label="Add a section at the playhead"
+            aria-haspopup="menu"
+            aria-expanded={addMenuOpen}
             className="flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 focus-ring"
             style={{ border: '1.5px dashed #d1d5db', color: '#9ca3af' }}
           >

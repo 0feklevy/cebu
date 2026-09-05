@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import type { PlayerChoicePoint, PlayerBranchEdge } from './types';
 
 // Decision overlay shown near the end of a sequence. Bandersnatch-style: one decision
@@ -26,6 +27,10 @@ export function ChoiceOverlay({
     : null;
   const isQuiz = choice.layout === 'quiz';
   const LETTERS = 'ABCDEFGH';
+  // The decision moment is the one place the viewer MUST act: move focus onto the first choice
+  // when the doors appear so a keyboard user has a cue where to go (ui-ux review 2026-09-05).
+  const firstCardRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { firstCardRef.current?.focus({ preventScroll: true }); }, [choice.id]);
 
   return (
     <div className="viewer-choice-overlay" role="dialog" aria-label="Choose what happens next">
@@ -38,6 +43,7 @@ export function ChoiceOverlay({
           {edges.map((edge, i) => (
             <button
               key={edge.id}
+              ref={i === 0 ? firstCardRef : undefined}
               type="button"
               className="viewer-choice-card"
               onClick={() => onSelect(edge)}
