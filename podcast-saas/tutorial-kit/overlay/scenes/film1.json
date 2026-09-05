@@ -1,0 +1,18 @@
+{
+  "film": 1,
+  "title": "Teaser — Touch This Video",
+  "comment": "Cues are ANCHORED to script scenes; assemble-film.mjs re-times t0/dur from the derived timeline (anchorScene + anchorOffset; holdToSceneEnd pins a cue to its scene's end). The close composites OVER the live murmuration (ground:chroma); the lockup lands when the narrator says the brand. No button — the handoff down-timeline IS the CTA.",
+  "total": 78,
+  "scenes": [
+    { "id": "f1-logo-intro", "type": "logo-intro", "t0": 0, "dur": 3.2,
+      "anchorScene": "1", "anchorOffset": 0, "props": {} },
+    { "id": "f1-smart-crop", "type": "caption-chip", "t0": 38.5, "dur": 5.5,
+      "anchorScene": "5", "anchorOffset": 0.4,
+      "props": { "text": "Smart Crop", "position": "bottom-center" } },
+    { "id": "f1-end-card", "type": "end-card", "t0": 70, "dur": 8,
+      "anchorScene": "8", "anchorOffset": 0, "holdToSceneEnd": true,
+      "props": { "ground": "chroma", "line": "The flock below is live.", "arrow": true } },
+    { "id": "f1-logo-outro", "type": "logo-outro", "t0": 73.5, "dur": 4.5,
+      "anchorScene": "8", "anchorOffset": 1.6, "holdToSceneEnd": true, "props": {} }
+  ]
+}

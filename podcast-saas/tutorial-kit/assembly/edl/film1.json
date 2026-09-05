@@ -1,0 +1,78 @@
+{
+  "film": 1,
+  "note": "scene \u2192 visual source. source = capture-manifest shot id OR a path relative to tutorial-kit/. Entries marked placeholder swap for real shots as the capture campaign lands them.",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "captures/footage/k1-beauty-clean.mp4",
+      "mode": "fit",
+      "in": 2
+    },
+    {
+      "scene": "2",
+      "source": "captures/footage/k2-viewer.webm",
+      "mode": "fit",
+      "in": 1
+    },
+    {
+      "scene": "3a",
+      "source": "captures/footage/murmuration-touch-phone.webm",
+      "mode": "loop",
+      "placeholder": "ask-surface shot pending (ANAM ruling at capture)",
+      "fallback": "captures/footage/murmuration3d-lesson.webm"
+    },
+    {
+      "scene": "3b",
+      "source": "captures/footage/ask-exchange.webm",
+      "slot": [
+        17,
+        25
+      ],
+      "mode": "loop",
+      "placeholder": "voice exchange pending TTS key",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "3c",
+      "source": "captures/footage/ask-exchange.webm",
+      "mode": "loop",
+      "placeholder": "same",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "4",
+      "source": "f4-branching-viewer",
+      "mode": "fit",
+      "placeholder": "viewer branching shot pending",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "5",
+      "source": "smartcrop-split",
+      "mode": "fit",
+      "placeholder": "smart-crop composite pending",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "6",
+      "source": "f2-s2b-library-drop",
+      "mode": "fit",
+      "placeholder": "montage becomes 5 sub-cuts when shots land",
+      "fallback": "captures/props/lesson-waves.mp4"
+    },
+    {
+      "scene": "7",
+      "source": "f1-s7-zoomout",
+      "mode": "fit",
+      "placeholder": "demo-project timeline shot pending",
+      "fallback": "captures/footage/murmuration-lesson.mp4"
+    },
+    {
+      "scene": "8",
+      "source": "captures/footage/murmuration3d-lesson.webm",
+      "mode": "loop",
+      "in": 8,
+      "padAfter": 1.2
+    }
+  ]
+}

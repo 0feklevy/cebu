@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wave Lab</title>
+<style>
+  :root { --ink:#e8f1ee; --dim:#93aca6; --panel:#0a1512cc; --line:#1f3a33; --accent:#39d3a8; }
+  html,body { margin:0; height:100%; background:#04100d; color:var(--ink);
+    font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; overflow:hidden; }
+  #stage { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  #panel { position:absolute; top:14px; right:14px; width:240px; padding:14px 16px;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; backdrop-filter:blur(8px); }
+  #panel h1 { margin:0 0 2px; font-size:15px; }
+  #panel p.sub { margin:0 0 10px; font-size:11px; color:var(--dim); }
+  .row { margin:9px 0; }
+  .row label { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); margin-bottom:3px; }
+  .row output { color:var(--ink); font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  select { width:100%; padding:6px 8px; border-radius:8px; background:#0e211c; color:var(--ink);
+    border:1px solid var(--line); font-size:12.5px; }
+  .btns { display:flex; gap:8px; margin-top:12px; }
+  button { flex:1; padding:8px 0; border-radius:9px; border:1px solid var(--line);
+    background:#0e211c; color:var(--ink); font-size:12.5px; font-weight:600; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button[aria-pressed="true"] { background:linear-gradient(135deg,#0d8b6b,#39d3a8); border:none; color:#04100d; }
+  .toggle { display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px; color:var(--dim); }
+  #hint { position:absolute; left:16px; bottom:14px; font-size:12px; color:var(--dim);
+    background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+  @media (max-width:640px){ #panel{ width:200px; padding:11px 12px; } #hint{ display:none; } }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="A pool of interfering waves. Tap anywhere to drop a new wave source."></canvas>
+
+<aside id="panel" aria-label="Wave controls">
+  <h1>Wave Lab</h1>
+  <p class="sub">Interference, live. Tap the water to add a source.</p>
+  <div class="row">
+    <label for="frequency"><span>Frequency</span><output id="frequency-out">1.6 Hz</output></label>
+    <input type="range" id="frequency" min="0.4" max="4" step="0.1" value="1.6">
+  </div>
+  <div class="row">
+    <label for="amplitude"><span>Amplitude</span><output id="amplitude-out">1.0</output></label>
+    <input type="range" id="amplitude" min="0.2" max="2" step="0.05" value="1">
+  </div>
+  <div class="row">
+    <label for="damping"><span>Damping</span><output id="damping-out">0.12</output></label>
+    <input type="range" id="damping" min="0" max="0.5" step="0.01" value="0.12">
+  </div>
+  <div class="row">
+    <label for="sources"><span>Sources</span></label>
+    <select id="sources">
+      <option value="1">One source</option>
+      <option value="2" selected>Two sources</option>
+      <option value="3">Three sources</option>
+    </select>
+  </div>
+  <div class="btns">
+    <button id="phase" type="button" aria-pressed="false">Antiphase</button>
+    <button id="pause" type="button" aria-pressed="false">Pause</button>
+  </div>
+  <label class="toggle" for="grid"><span>Wavefront rings</span>
+    <input type="checkbox" id="grid" checked></label>
+</aside>
+
+<p id="hint">Tap the water — every tap drops a wave source.</p>
+
+<script>
+(function () {
+  'use strict';
+  var canvas = document.getElementById('stage');
+  var ctx = canvas.getContext('2d');
+  var DPR = 1;                               // field is computed per-pixel at CSS resolution
+  var W = 0, H = 0, img = null, buf = null;
+  var SCALE = 2;                             // compute at half res, draw scaled — 60fps everywhere
+  var fw = 0, fh = 0;
+  function resize() {
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = W; canvas.height = H;
+    fw = Math.max(2, Math.round(W / SCALE)); fh = Math.max(2, Math.round(H / SCALE));
+    img = ctx.createImageData(fw, fh);
+    buf = img.data;
+    place();
+  }
+  var P = { frequency: 1.6, amplitude: 1, damping: 0.12, sources: 2, antiphase: false, running: true, grid: true };
+  var srcs = [];
+  function place() {
+    srcs.length = 0;
+    var n = P.sources;
+    for (var i = 0; i < n; i++) {
+      srcs.push({ x: fw * (0.5 + (n === 1 ? 0 : (i / (n - 1) - 0.5)) * 0.45), y: fh * 0.52, born: t });
+    }
+  }
+  var t = 0;
+  window.addEventListener('resize', resize); resize();
+
+  canvas.addEventListener('pointerdown', function (e) {
+    var r = canvas.getBoundingClientRect();
+    srcs.push({ x: (e.clientX - r.left) / SCALE, y: (e.clientY - r.top) / SCALE, born: t });
+    if (srcs.length > 6) srcs.shift();
+  });
+
+  function bind(id, key, fmt) {
+    var el = document.getElementById(id), out = document.getElementById(id + '-out');
+    el.addEventListener('input', function () {
+      P[key] = parseFloat(el.value);
+      if (out) out.textContent = fmt ? fmt(P[key]) : P[key].toFixed(2).replace(/0$/, '');
+    });
+  }
+  bind('frequency', 'frequency', function (v) { return v.toFixed(1) + ' Hz'; });
+  bind('amplitude', 'amplitude');
+  bind('damping', 'damping', function (v) { return v.toFixed(2); });
+  document.getElementById('sources').addEventListener('change', function (e) {
+    P.sources = parseInt(e.target.value, 10); place();
+  });
+  document.getElementById('grid').addEventListener('change', function (e) { P.grid = e.target.checked; });
+  var phaseBtn = document.getElementById('phase');
+  phaseBtn.addEventListener('click', function () {
+    P.antiphase = !P.antiphase;
+    phaseBtn.setAttribute('aria-pressed', String(P.antiphase));
+  });
+  var pauseBtn = document.getElementById('pause');
+  pauseBtn.addEventListener('click', function () {
+    P.running = !P.running;
+    pauseBtn.setAttribute('aria-pressed', String(!P.running));
+    pauseBtn.textContent = P.running ? 'Pause' : 'Play';
+  });
+
+  function field() {
+    var k = P.frequency * 0.55, w = P.frequency * 0.16, damp = P.damping * 0.06;
+    var i = 0, x, y, s, v, d, ph;
+    for (y = 0; y < fh; y++) for (x = 0; x < fw; x++) {
+      v = 0;
+      for (s = 0; s < srcs.length; s++) {
+        var sc = srcs[s];
+        var dx = x - sc.x, dy = y - sc.y;
+        d = Math.sqrt(dx * dx + dy * dy);
+        ph = (P.antiphase && (s % 2)) ? Math.PI : 0;
+        v += Math.sin(d * k - t * w + ph) * Math.exp(-d * damp) * P.amplitude;
+      }
+      // map -maxA..maxA → deep teal ↔ bright foam
+      var u = Math.max(-1.6, Math.min(1.6, v)) / 1.6;
+      var L = 18 + (u + 1) * 34;                       // 18..86
+      var r8, g8, b8;
+      if (u > 0.55 && P.grid) { r8 = 220; g8 = 255; b8 = 245; }        // crest foam ring
+      else { r8 = Math.round(L * 0.32); g8 = Math.round(L * 2.2); b8 = Math.round(L * 1.75); }
+      buf[i++] = r8; buf[i++] = g8; buf[i++] = b8; buf[i++] = 255;
+    }
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.putImageData(img, 0, 0);
+    ctx.drawImage(canvas, 0, 0, fw, fh, 0, 0, W, H);
+    ctx.restore();
+    // source markers
+    for (var m = 0; m < srcs.length; m++) {
+      ctx.beginPath();
+      ctx.arc(srcs[m].x * SCALE, srcs[m].y * SCALE, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#39d3a8'; ctx.fill();
+      ctx.strokeStyle = '#04100d'; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+
+  var frames = 0;
+  function loop() {
+    if (P.running) { t += 1; field(); frames++; }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  /** Scripting surface — what a FlowVid bridge binds to. */
+  window.WaveLabSim = {
+    set: function (key, value) {
+      var el = document.getElementById(key);
+      if (!el) return;
+      if (el.tagName === 'SELECT') { el.value = String(value); el.dispatchEvent(new Event('change', { bubbles: true })); return; }
+      if (el.type === 'checkbox') { if (el.checked !== !!value) el.click(); return; }
+      el.value = String(value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+    togglePhase: function () { phaseBtn.click(); },
+    pause: function () { if (P.running) pauseBtn.click(); },
+    play: function () { if (!P.running) pauseBtn.click(); },
+    addSourceAt: function (fx, fy) { srcs.push({ x: fw * fx, y: fh * fy, born: t }); if (srcs.length > 6) srcs.shift(); },
+    getState: function () {
+      return { frequency: P.frequency, amplitude: P.amplitude, damping: P.damping,
+               sources: srcs.length, antiphase: P.antiphase, running: P.running };
+    },
+  };
+  window.__flowvidReadyForPresent = function () {
+    return new Promise(function (resolve) {
+      (function check() { if (frames > 2) resolve(); else requestAnimationFrame(check); })();
+    });
+  };
+})();
+</script>
+</body>
+</html>

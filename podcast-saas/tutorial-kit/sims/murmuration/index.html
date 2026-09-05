@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Murmuration</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="stage" aria-label="A living flock of starlings in three dimensions. Move your pointer to draw them in."></canvas>
+
+<aside id="panel" aria-label="Flock controls">
+  <h1>Murmuration</h1>
+  <p class="sub">A living flock in deep space. Your pointer draws it in.</p>
+  <div class="row">
+    <label for="cohesion"><span>Cohesion</span><output id="cohesion-out">1.0</output></label>
+    <input type="range" id="cohesion" min="0" max="2" step="0.05" value="1">
+  </div>
+  <div class="row">
+    <label for="alignment"><span>Alignment</span><output id="alignment-out">1.0</output></label>
+    <input type="range" id="alignment" min="0" max="2" step="0.05" value="1">
+  </div>
+  <div class="row">
+    <label for="separation"><span>Separation</span><output id="separation-out">1.2</output></label>
+    <input type="range" id="separation" min="0" max="2.5" step="0.05" value="1.2">
+  </div>
+  <div class="row">
+    <label for="speed"><span>Speed</span><output id="speed-out">1.0×</output></label>
+    <input type="range" id="speed" min="0.3" max="2" step="0.05" value="1">
+  </div>
+  <div class="btns">
+    <button id="scatter" type="button">Scatter</button>
+    <button id="reset" type="button">Reset</button>
+  </div>
+  <label class="toggle" for="trails"><span>Light trails</span>
+    <input type="checkbox" id="trails" checked></label>
+</aside>
+
+<p id="hint">Move your pointer — the flock follows. Tap to startle it.</p>
+
+<script src="js/flock.js"></script>
+<script src="js/render.js"></script>
+<script src="js/input.js"></script>
+<script src="js/api.js"></script>
+</body>
+</html>

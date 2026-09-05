@@ -1,0 +1,44 @@
+{
+  "film": 3,
+  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "captures/footage/k1-beauty-clean.mp4",
+      "mode": "fit",
+      "in": 1
+    },
+    {
+      "scene": "2",
+      "source": "f3-s2-heavy-drop",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "3",
+      "source": "f3-s3-simple-ui",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "4",
+      "source": "f3-s4-iteration",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "5",
+      "source": "f3-s5-noloading",
+      "fallback": "captures/footage/k2-viewer.webm",
+      "mode": "fit",
+      "placeholder": "present-gating viewer capture round 2"
+    },
+    {
+      "scene": "6",
+      "source": "captures/footage/k1-beauty-clean.mp4",
+      "mode": "loop",
+      "in": 6,
+      "padAfter": 1.0
+    }
+  ]
+}

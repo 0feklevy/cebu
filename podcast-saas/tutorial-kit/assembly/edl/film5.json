@@ -1,0 +1,49 @@
+{
+  "film": 5,
+  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f5-s1-editor-pause",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "placeholder": "round 2"
+    },
+    {
+      "scene": "2",
+      "source": "f2-s8-share",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "note": "share sheet reuse"
+    },
+    {
+      "scene": "3",
+      "source": "f5-s3-permalink",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "placeholder": "round 2"
+    },
+    {
+      "scene": "4",
+      "source": "f5-s4-collab-access",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "placeholder": "round 2"
+    },
+    {
+      "scene": "5",
+      "source": "f5-s5-two-frames",
+      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "mode": "fit",
+      "placeholder": "laptop+phone composite round 2"
+    },
+    {
+      "scene": "6",
+      "source": "f5-s6-endcard-ground",
+      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "mode": "loop",
+      "in": 4,
+      "padAfter": 1.0
+    }
+  ]
+}

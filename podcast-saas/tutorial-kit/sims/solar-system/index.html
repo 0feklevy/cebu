@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<link rel="icon" href="data:,">
+<title>Solar System — a scale model you can fly through</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vignette"></div>
+<div id="veil"><span>forming the solar system…</span></div>
+<div id="hud"><b>Drag</b> to orbit · <b>scroll / pinch</b> to zoom · <b>tap a planet</b> to visit it</div>
+
+<!-- Static controls: FlowVid's scanner reads these ids from the initial DOM. -->
+<div id="controls">
+  <div id="panel-title">Solar System</div>
+  <label>Time lapse <output id="speed-out">—</output>
+    <input id="speed" type="range" min="0" max="1" step="0.001" value="0.6"></label>
+  <label>Focus
+    <select id="focus">
+      <option value="Overview" selected>Overview</option>
+      <option value="Sun">Sun</option>
+      <option value="Mercury">Mercury</option>
+      <option value="Venus">Venus</option>
+      <option value="Earth">Earth</option>
+      <option value="Mars">Mars</option>
+      <option value="Jupiter">Jupiter</option>
+      <option value="Saturn">Saturn</option>
+      <option value="Uranus">Uranus</option>
+      <option value="Neptune">Neptune</option>
+    </select></label>
+  <div class="row"><span>Planet labels</span><input id="labels" type="checkbox" checked></div>
+  <div class="row"><span>Orbit lines</span><input id="orbits" type="checkbox" checked></div>
+  <button id="tour">Cinematic tour</button>
+  <button id="reset">Reset</button>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

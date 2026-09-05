@@ -1,0 +1,64 @@
+{
+  "film": 2,
+  "note": "sources = capture-manifest shot ids or kit-relative paths; placeholders fall back until round-2 shots land",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f2-s1-pullback",
+      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "mode": "fit",
+      "placeholder": "pullback shot round 2"
+    },
+    {
+      "scene": "2",
+      "source": "f2-s2b-library-drop",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "note": "s2a-new-project prepends when split cuts land"
+    },
+    {
+      "scene": "3",
+      "source": "f2-s3-mark-section",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "4",
+      "source": "f2-s4-this-moment",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "5",
+      "source": "f2-s5-preview-run",
+      "fallback": "captures/footage/wave-lab-broll.webm",
+      "mode": "fit"
+    },
+    {
+      "scene": "6",
+      "source": "f2-s6-layers",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "7",
+      "source": "f2-s7-settings",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit",
+      "placeholder": "settings 4-cards shot round 2"
+    },
+    {
+      "scene": "8",
+      "source": "f2-s8-share",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "mode": "fit"
+    },
+    {
+      "scene": "9",
+      "source": "f2-s9-zoomout",
+      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "mode": "fit",
+      "placeholder": "meta zoom-out needs demo project (round 2)"
+    }
+  ]
+}

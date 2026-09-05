@@ -1,0 +1,40 @@
+/* Solar System — original work for the FlowVid demo project (2026). MIT.
+   Same design language as orbit-lab: dark glass card, quiet type, one accent. */
+:root { --ink:#eaf2ff; --dim:#8fa3c0; --panel:#141b2acc; --accent:#6fb3ff; }
+html,body { margin:0; height:100%; background:#04060d; overflow:hidden;
+  font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif; -webkit-user-select:none; user-select:none; }
+#stage { position:absolute; inset:0; width:100%; height:100%; touch-action:none; cursor:grab; }
+#stage.dragging { cursor:grabbing; }
+
+/* Cinematic vignette over the render, under the UI. */
+#vignette { position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(ellipse 72% 62% at 50% 46%, transparent 58%, rgba(2,3,10,.5) 100%); }
+
+/* Boot veil — the present gate keeps FlowVid from ever filming this, but a
+   human opening the file directly gets a quiet fade instead of a black flash. */
+#veil { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:#04060d; color:var(--dim); font-size:13px; letter-spacing:.22em; text-transform:uppercase;
+  transition:opacity .9s ease; pointer-events:none; z-index:5; }
+#veil.gone { opacity:0; }
+
+#hud { position:absolute; left:16px; top:14px; color:var(--dim); font-size:13px;
+  letter-spacing:.4px; pointer-events:none; transition:opacity .8s; text-shadow:0 1px 8px #000c; }
+#hud b { color:var(--ink); font-weight:600; }
+
+#controls { position:absolute; right:12px; top:12px; display:flex; flex-direction:column;
+  gap:10px; background:var(--panel); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+  border:1px solid #ffffff14; border-radius:14px; padding:14px 16px; width:200px;
+  color:var(--ink); font-size:13px; box-shadow:0 8px 30px #00000059; }
+#panel-title { font-size:11px; letter-spacing:.28em; text-transform:uppercase; color:var(--dim);
+  padding-bottom:2px; border-bottom:1px solid #ffffff10; }
+#controls label { display:flex; flex-direction:column; gap:4px; color:var(--dim); }
+#controls output { color:var(--ink); float:right; font-variant-numeric:tabular-nums; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.row { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--dim); }
+.row input { accent-color:var(--accent); }
+button { background:#1d2941; color:var(--ink); border:1px solid #ffffff1f; border-radius:9px;
+  padding:7px 10px; font-size:13px; cursor:pointer; font-family:inherit; transition:background .15s; }
+button:hover { background:#243354; }
+button:active { background:#27395c; }
+select { background:#1d2941; color:var(--ink); border:1px solid #ffffff1f; border-radius:9px;
+  padding:6px 8px; font-size:13px; font-family:inherit; }

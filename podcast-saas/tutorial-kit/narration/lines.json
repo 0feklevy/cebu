@@ -1,0 +1,314 @@
+[
+  {
+    "film": 1,
+    "scene": "1",
+    "role": "narrator",
+    "t0": 0,
+    "t1": 4,
+    "text": "This looks like a video."
+  },
+  {
+    "film": 1,
+    "scene": "2",
+    "role": "narrator",
+    "t0": 4,
+    "t1": 14,
+    "text": "It isn't. That cursor? A viewer — dragging the molecule, spinning the camera. In a Flow Video, the lesson is alive."
+  },
+  {
+    "film": 1,
+    "scene": "3a",
+    "role": "narrator",
+    "t0": 14,
+    "t1": 17,
+    "text": "Got a question? Ask it. Out loud."
+  },
+  {
+    "film": 1,
+    "scene": "3c",
+    "role": "narrator",
+    "t0": 25,
+    "t1": 28,
+    "text": "Not the internet. This. Video."
+  },
+  {
+    "film": 1,
+    "scene": "4",
+    "role": "narrator",
+    "t0": 28,
+    "t1": 36,
+    "text": "When the story hits a fork? Your viewers choose. They don't watch it — they steer it."
+  },
+  {
+    "film": 1,
+    "scene": "5",
+    "role": "narrator",
+    "t0": 36,
+    "t1": 45,
+    "text": "On a phone, it stays vertical — the frame follows your speaker. And the same video? It speaks Spanish."
+  },
+  {
+    "film": 1,
+    "scene": "6",
+    "role": "narrator",
+    "t0": 45,
+    "t1": 57,
+    "text": "Making one? Upload your video. Drop in a simulation — no code. Tell the AI what your viewers can touch. Share one link. That's a Flow Video."
+  },
+  {
+    "film": 1,
+    "scene": "7",
+    "role": "narrator",
+    "t0": 57,
+    "t1": 64,
+    "text": "Don't take my word for it. The next section of this timeline is live. Go scatter the flock."
+  },
+  {
+    "film": 1,
+    "scene": "8",
+    "role": "narrator",
+    "t0": 64,
+    "t1": 72,
+    "text": "Touch it. Ask it. Steer it. — Flow Video."
+  },
+  {
+    "film": 2,
+    "scene": "1",
+    "role": "narrator",
+    "t0": 0,
+    "t1": 8,
+    "text": "You just met a living simulation. Here's the whole build — start to share — in the next two minutes."
+  },
+  {
+    "film": 2,
+    "scene": "2",
+    "role": "narrator",
+    "t0": 8,
+    "t1": 20,
+    "text": "New project, name it, create. Your Library's on the right, timeline below. Drop everything in at once — footage, images, audio, even a whole simulation as a zip. It sorts itself."
+  },
+  {
+    "film": 2,
+    "scene": "3",
+    "role": "narrator",
+    "t0": 20,
+    "t1": 32,
+    "text": "Your video sits on V-one. Now the move that changes everything: drag across the moment you want to come alive. That marks a section."
+  },
+  {
+    "film": 2,
+    "scene": "4",
+    "role": "narrator",
+    "t0": 32,
+    "t1": 60,
+    "text": "Pick Simulation, choose your package. This Orbit Lab came in with that drop — a real gravity sandbox, and it's just a file. No code. Now tell it what this moment is for: type what your viewer should see and touch. Flip on Simple UI — it hides every control that doesn't matter. Flip on Auto Script — it animates the demonstration for viewers who just watch. Hit Generate with AI."
+  },
+  {
+    "film": 2,
+    "scene": "5",
+    "role": "narrator",
+    "t0": 60,
+    "t1": 70,
+    "text": "Watch the Preview: the AI wired your simulation to this exact moment. Viewers get just the controls you chose — nothing else in their way."
+  },
+  {
+    "film": 2,
+    "scene": "6",
+    "role": "narrator",
+    "t0": 70,
+    "t1": 84,
+    "text": "Layer it up: b-roll on V-two — generate it from a prompt if you don't have footage. Music on A-two. Images with camera moves. And \"Follow user decisions\" branches the story on your viewers' choices."
+  },
+  {
+    "film": 2,
+    "scene": "7",
+    "role": "narrator",
+    "t0": 84,
+    "t1": 98,
+    "text": "Settings finishes it: generate your title and thumbnail with AI. Give the video an avatar your viewers can question. Smart Crop keeps phones upright — the frame follows your speaker. Then decide who can watch. Done."
+  },
+  {
+    "film": 2,
+    "scene": "8",
+    "role": "narrator",
+    "t0": 98,
+    "t1": 114,
+    "text": "Hit Share. Pick your address. That one link is the whole experience — the interactive video, a podcast version that answers voice questions, even your asset library as its own page."
+  },
+  {
+    "film": 2,
+    "scene": "9",
+    "role": "narrator",
+    "t0": 114,
+    "t1": 132,
+    "text": "And this project — the one you're inside right now — was built exactly this way. That Orbit Lab below? You just watched it get built. It's yours now: change one word of the prompt, hit Generate, and watch it obey. Then ship your own."
+  },
+  {
+    "film": 3,
+    "scene": "1",
+    "role": "narrator",
+    "t0": 0,
+    "t1": 8,
+    "text": "Some simulations are heavy. Thirty megabytes of three-D models and live code heavy. Watch how Flow Video treats one."
+  },
+  {
+    "film": 3,
+    "scene": "2",
+    "role": "narrator",
+    "t0": 8,
+    "t1": 20,
+    "text": "Zip it. Drop it. That's the whole import. No size police, no special format — your files, exactly as you built them."
+  },
+  {
+    "film": 3,
+    "scene": "3",
+    "role": "narrator",
+    "t0": 20,
+    "t1": 38,
+    "text": "Mark the moment, tell it what it's for — and here's the part that matters for big sims: Simple UI. Seven controls become two. Your viewer sees exactly what you chose, and nothing else."
+  },
+  {
+    "film": 3,
+    "scene": "4",
+    "role": "narrator",
+    "t0": 38,
+    "t1": 52,
+    "text": "Don't like the first cut? Say so — in English. \"Make the timeline bigger. Hide the background toggle.\" The AI remembers the conversation and rewires it."
+  },
+  {
+    "film": 3,
+    "scene": "5",
+    "role": "narrator",
+    "t0": 52,
+    "t1": 68,
+    "text": "And when your video reaches this moment? The simulation is already warm. Poster first, then the live thing — fully loaded, sixty frames a second. No spinners. Not ever. That's the rule."
+  },
+  {
+    "film": 3,
+    "scene": "6",
+    "role": "narrator",
+    "t0": 68,
+    "t1": 78,
+    "text": "Big science. Small controls. Smooth as glass. Drop yours in — the editor does the heavy lifting."
+  },
+  {
+    "film": 4,
+    "scene": "1",
+    "role": "narrator",
+    "t0": 0,
+    "t1": 7,
+    "text": "Your viewers have powers here. Four of them. Count along."
+  },
+  {
+    "film": 4,
+    "scene": "2",
+    "role": "narrator",
+    "t0": 7,
+    "t1": 17,
+    "text": "One: touch. Any simulation section is live. Launch a planet — watch the forces pull it into orbit."
+  },
+  {
+    "film": 4,
+    "scene": "3a",
+    "role": "narrator",
+    "t0": 17,
+    "t1": 22,
+    "text": "Two: ask. Out loud, mid-video. Listen."
+  },
+  {
+    "film": 4,
+    "scene": "3c",
+    "role": "narrator",
+    "t0": 33,
+    "t1": 40,
+    "text": "Grounded in this lesson. Not the internet."
+  },
+  {
+    "film": 4,
+    "scene": "4",
+    "role": "narrator",
+    "t0": 40,
+    "t1": 50,
+    "text": "Three: choose. The story pauses, your viewer picks a path, and the video follows their decision."
+  },
+  {
+    "film": 4,
+    "scene": "5",
+    "role": "narrator",
+    "t0": 50,
+    "t1": 62,
+    "text": "Four: watch it their way. Vertical on phones — the frame follows the speaker. Another language? Same video, same voice, dubbed. And captions ride along everywhere."
+  },
+  {
+    "film": 4,
+    "scene": "6",
+    "role": "narrator",
+    "t0": 62,
+    "t1": 72,
+    "text": "Touch, ask, choose, their way. Give your viewers powers — they'll give you their attention. That's a Flow Video."
+  },
+  {
+    "film": 5,
+    "scene": "1",
+    "role": "narrator",
+    "t0": 0,
+    "t1": 6,
+    "text": "You built it. Let's ship it — one link, three doors."
+  },
+  {
+    "film": 5,
+    "scene": "2",
+    "role": "narrator",
+    "t0": 6,
+    "t1": 19,
+    "text": "Hit Create link. Your video gets a public page. Same link, slash audio — a podcast that answers voice questions. Slash library — every asset, browsable."
+  },
+  {
+    "film": 5,
+    "scene": "3",
+    "role": "narrator",
+    "t0": 20,
+    "t1": 32,
+    "text": "Want it memorable? Pick your own address and publish there. That's the link you put on a slide, in a bio, on a syllabus."
+  },
+  {
+    "film": 5,
+    "scene": "4",
+    "role": "narrator",
+    "t0": 32,
+    "t1": 44,
+    "text": "Working with a team? Invite collaborators — they edit, you stay the owner. And Access decides who watches: everyone, anyone holding your link — or just you."
+  },
+  {
+    "film": 5,
+    "scene": "5",
+    "role": "narrator",
+    "t0": 44,
+    "t1": 56,
+    "text": "Viewers need nothing — no app, no account, no download. The link is the product: interactive on day one, on any screen."
+  },
+  {
+    "film": 5,
+    "scene": "6",
+    "role": "narrator",
+    "t0": 56,
+    "t1": 64,
+    "text": "Build once. Share one link. Teach everywhere."
+  },
+  {
+    "film": 1,
+    "scene": "3b-viewer",
+    "text": "Why does it move in eight-nanometer steps?",
+    "role": "viewer",
+    "t0": null,
+    "t1": null
+  },
+  {
+    "film": 4,
+    "scene": "3b-viewer",
+    "text": "Why doesn't the moon crash into the earth?",
+    "role": "viewer",
+    "t0": null,
+    "t1": null
+  }
+]

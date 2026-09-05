@@ -2309,3 +2309,24 @@ nginx and systemd, but **not `.github/workflows/`**. So this very PR — which e
 pipeline's own verification gate — does not require human approval, while a one-line `APP_VERSION`
 change to compose did. If deployment configuration deserves an eye, the pipeline that decides what
 deploys deserves one at least as much.
+
+## 2026-09-05 — Welcome playlist / flagship tutorial films (overnight run, feat/welcome-tutorial-kit)
+- 🟢 SHIPPED-TO-BRANCH: seeding feature — migration 085 + WelcomeSeedService (dark-gated:
+  env WELCOME_SEED_ENABLED over admin flag + WELCOME_TEMPLATE_PROJECT_ID; per-user editable
+  clone via new shareHeavyBytes duplication mode; playlist swap). 10 unit tests. Commit 6f62774.
+- 🟢 FIXED: ProjectDuplicationService never carried sim_files (latent for any imported-sim
+  duplication; found by seeding design as pre-build fix #1). Commit b4ed201..dda4921 range.
+- 🟢 BUILT: tutorial-kit production line — 5 gated scripts (3-critic panel pre+post), 3 original
+  multi-file sims (Murmuration 3D, Orbit Lab w/ force vectors, Solar System in flight), original
+  music beds (verified -32 LUFS), overlay rig (product palette, chroma-keyed), capture engine
+  (persistent anonymous profile), assembly pipeline PROVEN (film1 72s scratch cut renders with
+  logo intro + chroma end-card over live sim footage).
+- 🔴 OPEN (owner action): local ElevenLabs credential is a key-ID, not an sk_ key — blocks real
+  narration TTS, Spanish dub, and the film's voice-answer audio. Scratch VO (macOS say) stands in
+  for timing; one command re-renders when a valid key lands (narration/run-narration.sh).
+- 🔴 OPEN (product gap, logged from film-4 accuracy panel): listener questions are recorded but
+  have NO creator-facing list UI since the 2026-09-03 removal (audioEdition.controller.ts:370) —
+  cheap future feature, scripts now honest about it.
+- 📄 Ledger of record for the whole run: podcast-saas/tutorial-kit/PRODUCTION-PLAN.md (+
+  CHECKLIST.md task-tracker audit). Owner decisions taken autonomously logged there (voice =
+  admin default; music = original synthesis; kinesin = film-captures only).

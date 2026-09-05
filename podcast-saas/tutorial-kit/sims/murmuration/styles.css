@@ -1,0 +1,24 @@
+/* Murmuration — chrome around the stage. The canvas is the whole viewport;
+   the panel and hint float above it on translucent glass. */
+:root { --ink:#dfe9f5; --dim:#8fa3bb; --panel:#0d1622cc; --line:#24344a; --accent:#63b3ff; }
+html,body { margin:0; height:100%; background:#060b12; color:var(--ink);
+  font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; overflow:hidden; }
+#stage { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+#panel { position:absolute; top:14px; right:14px; width:232px; padding:14px 16px;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  backdrop-filter:blur(8px); }
+#panel h1 { margin:0 0 2px; font-size:15px; letter-spacing:.02em; }
+#panel p.sub { margin:0 0 10px; font-size:11px; color:var(--dim); }
+.row { margin:9px 0; }
+.row label { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); margin-bottom:3px; }
+.row output { color:var(--ink); font-variant-numeric:tabular-nums; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.btns { display:flex; gap:8px; margin-top:12px; }
+button { flex:1; padding:8px 0; border-radius:9px; border:1px solid var(--line);
+  background:#132033; color:var(--ink); font-size:12.5px; font-weight:600; cursor:pointer; }
+button:hover { border-color:var(--accent); }
+#scatter { background:linear-gradient(135deg,#2563b0,#63b3ff); border:none; color:#fff; }
+.toggle { display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px; color:var(--dim); }
+#hint { position:absolute; left:16px; bottom:14px; font-size:12px; color:var(--dim);
+  background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+@media (max-width:640px){ #panel{ width:196px; padding:11px 12px; } #hint{ display:none; } }

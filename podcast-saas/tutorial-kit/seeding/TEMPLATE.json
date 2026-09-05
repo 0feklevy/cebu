@@ -1,0 +1,494 @@
+{
+  "builtAt": "2026-09-05T08:04:16.110Z",
+  "finishedAt": "2026-09-05T08:09:30.857Z",
+  "api": "http://127.0.0.1:8080",
+  "appUrl": "http://localhost:3000",
+  "steps": [
+    {
+      "id": "preflight",
+      "title": "API + emulator reachable, assets present",
+      "status": "done",
+      "detail": "film1=film1.SCRATCH.mp4; film2=film2.SCRATCH.mp4; films3-5=film3.SCRATCH.mp4,film4.SCRATCH.mp4,film5.SCRATCH.mp4; solar-system=zipped"
+    },
+    {
+      "id": "cleanup",
+      "title": "Previous run deleted (recreation)",
+      "status": "done",
+      "detail": "playlists=1 projects=4 failures=0"
+    },
+    {
+      "id": "A0",
+      "title": "Demo project created",
+      "status": "done",
+      "detail": "4d4bec1f-ae65-4c4b-9813-f595ef4c8463"
+    },
+    {
+      "id": "A1",
+      "title": "Teaser (film1) uploaded, HLS ready",
+      "status": "done",
+      "detail": "film1.SCRATCH.mp4 · 72s · hls ok"
+    },
+    {
+      "id": "A2",
+      "title": "Second timeline video (film2) uploaded, HLS ready",
+      "status": "done",
+      "detail": "film2.SCRATCH.mp4"
+    },
+    {
+      "id": "A3",
+      "title": "Sims uploaded to the project library",
+      "status": "done",
+      "detail": "Murmuration e06ade63-3455-4b8d-8c51-3f67d471d26d; Orbit Lab 594695dd-107d-4f65-92f1-0010f56baaa0; Solar System a7a494ca-f2da-4871-8fb2-eb3a61fa8360"
+    },
+    {
+      "id": "A4",
+      "title": "Image (waves-diagram) + audio (sting-ambient) uploaded",
+      "status": "done",
+      "detail": "image=bf436a78-59e4-45d9-a62e-c09d8ec971ad audio=20b4ebfc-cc11-4f9a-b74d-f6d4452b8162 (8s)"
+    },
+    {
+      "id": "A5a",
+      "title": "Sim sections created",
+      "status": "done",
+      "detail": "#1 Murmuration [72-102] 0a0f9291-fb14-4200-a510-0c3d0947fa9a (teaser post-roll); #2 Solar System [133-163] f883a195-f119-4646-b462-6b756c15ad89; #3 Orbit Lab [163-188] 41ca7921-8224-436b-97bc-0f0fd7fb1fc8; #4 Galton Board [188-213] 5c03237c-c884-4b0c-b81c-5f56a4d13ade — tail anchored to film2 post-roll"
+    },
+    {
+      "id": "A5-gen-murmuration",
+      "title": "This-moment generated (murmuration)",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/revisions/7c9fb395-7c40-4160-94b3-c0d45f0915bc/package/index.html?section=0a0f9291-fb14-4200-a510-0c3d0947fa9a&v=8e36e877581e"
+    },
+    {
+      "id": "A5-gen-sim2",
+      "title": "This-moment generated (sim2)",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/a7a494ca-f2da-4871-8fb2-eb3a61fa8360/revisions/9e98714a-0b64-4304-94c8-a35b3a57133e/package/index.html?section=f883a195-f119-4646-b462-6b756c15ad89&v=53cceee5249f"
+    },
+    {
+      "id": "A5-gen-orbit",
+      "title": "This-moment generated (orbit)",
+      "status": "done",
+      "detail": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/594695dd-107d-4f65-92f1-0010f56baaa0/revisions/8b8bd0c9-edcc-40cd-9bac-d401a7836db7/package/index.html?section=41ca7921-8224-436b-97bc-0f0fd7fb1fc8&v=8a7d36991fab"
+    },
+    {
+      "id": "A5-gen-galton",
+      "title": "This-moment generated (galton)",
+      "status": "failed",
+      "detail": "Galton Board: generation error: Generation failed. Please try again or simplify your prompt. (generation_error)"
+    },
+    {
+      "id": "A6",
+      "title": "Image section (drift) + A2 ambient sting placed",
+      "status": "done",
+      "detail": "image@30s for 6s (5ba6ae34-346f-4a85-a3b4-230802028aa2); sting@64s for 8s (3b17088a-5213-4ca6-80e0-7e5c9ac5e561) — audio.controller insert-cutaway"
+    },
+    {
+      "id": "B-heavy",
+      "title": "Niche project \"The Heavy Simulation\"",
+      "status": "done",
+      "detail": "dc8bacd8-3302-4a2d-ae6b-83120a44fccc · film3.SCRATCH.mp4"
+    },
+    {
+      "id": "B-powers",
+      "title": "Niche project \"Viewer Superpowers\"",
+      "status": "done",
+      "detail": "bcd34cc3-fce1-4f01-afa4-e4587ebdfd71 · film4.SCRATCH.mp4"
+    },
+    {
+      "id": "B-doors",
+      "title": "Niche project \"One Link, Three Doors\"",
+      "status": "done",
+      "detail": "6aa2df92-a684-4c33-a006-0591f5e4d127 · film5.SCRATCH.mp4"
+    },
+    {
+      "id": "A7",
+      "title": "Branching choice created headlessly (What next? -> 3 doors + replay)",
+      "status": "done",
+      "detail": "cp=af20c251-f737-4c00-97ef-07b8758d7711; issues=[]"
+    },
+    {
+      "id": "A8-share",
+      "title": "Demo public + share link",
+      "status": "done",
+      "detail": "http://localhost:3000/v/q33lE4PXHQTPWiJvDf0IXg"
+    },
+    {
+      "id": "A8-permalink",
+      "title": "Demo permalink /welcome-flow-video",
+      "status": "done",
+      "detail": "http://localhost:3000/welcome-flow-video"
+    },
+    {
+      "id": "A8-podcast",
+      "title": "Podcast (audio) edition built",
+      "status": "done",
+      "detail": "duration_ms=205021"
+    },
+    {
+      "id": "C",
+      "title": "Playlist \"Welcome to Flow Video\" (4 items, shared, public via slug)",
+      "status": "done",
+      "detail": "6a2bd6f3-688c-488b-9459-6dbee1992b52 · items=4 · http://localhost:3000/pl/BVSEIiXl8SN3LqSen6eCfQ · permalink=http://localhost:3000/welcome-to-flow-video"
+    },
+    {
+      "id": "A5-poster-murmuration",
+      "title": "Poster captured+stored (murmuration)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "A5-poster-sim2",
+      "title": "Poster captured+stored (Solar System)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "A5-poster-orbit",
+      "title": "Poster captured+stored (Orbit Lab)",
+      "status": "done",
+      "detail": "stored"
+    },
+    {
+      "id": "A5-poster-galton",
+      "title": "Poster (Galton Board)",
+      "status": "skipped",
+      "detail": "generation failed"
+    },
+    {
+      "id": "D2",
+      "title": "Viewer screenshots captured",
+      "status": "done",
+      "detail": "proof/viewer-1-teaser.png, proof/viewer-2-sim-section.png"
+    }
+  ],
+  "previousRunCleanup": {
+    "playlists": [
+      "cc6676f9-1f85-40ac-abe8-9c4678e633d0"
+    ],
+    "projects": [
+      "1ba64e27-7e15-482d-b0fd-c792e0ced325",
+      "f667587b-1f43-41d5-b469-c9567d6c2132",
+      "eeb935b4-e6f3-45eb-836a-482a5bc3538a",
+      "5c766bae-8254-452f-aa8f-1091f765aa48"
+    ],
+    "failures": []
+  },
+  "demo": {
+    "projectId": "4d4bec1f-ae65-4c4b-9813-f595ef4c8463",
+    "title": "Welcome to Flow Video",
+    "videos": {
+      "film1": {
+        "id": "10b25444-460f-479e-b596-99ac5ea073b3",
+        "source": "film1.SCRATCH.mp4",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-7f568c71b7b62fa936d7ed9f735f7c44/hls/10b25444-460f-479e-b596-99ac5ea073b3/mto3jyyf/master.m3u8",
+        "duration_sec": 72
+      },
+      "film2": {
+        "id": "48c89d4d-810f-4954-9a2b-2a5fa71c7349",
+        "source": "film2.SCRATCH.mp4",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-0e354677269eb7cad8c3d39a6a4ab7b7/hls/48c89d4d-810f-4954-9a2b-2a5fa71c7349/mto3kmd6/master.m3u8",
+        "duration_sec": 133
+      }
+    },
+    "sims": {
+      "murmuration": {
+        "id": "e06ade63-3455-4b8d-8c51-3f67d471d26d",
+        "name": "Murmuration",
+        "entry_file": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/index.html"
+      },
+      "orbitLab": {
+        "id": "594695dd-107d-4f65-92f1-0010f56baaa0",
+        "name": "Orbit Lab",
+        "entry_file": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/594695dd-107d-4f65-92f1-0010f56baaa0/index.html"
+      },
+      "galtonBoard": {
+        "id": "0f8cbc5b-6b40-4458-b302-3ce2802acbe1",
+        "name": "Galton Board",
+        "entry_file": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/0f8cbc5b-6b40-4458-b302-3ce2802acbe1/index.html"
+      },
+      "fiveSpecies": {
+        "id": "cf765795-06ad-4526-ab69-8e27ad019314",
+        "name": "5 Species Battle",
+        "entry_file": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/cf765795-06ad-4526-ab69-8e27ad019314/index.html"
+      },
+      "solarSystem": {
+        "id": "a7a494ca-f2da-4871-8fb2-eb3a61fa8360",
+        "name": "Solar System",
+        "entry_file": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/a7a494ca-f2da-4871-8fb2-eb3a61fa8360/index.html"
+      }
+    },
+    "sections": {
+      "murmuration": {
+        "id": "0a0f9291-fb14-4200-a510-0c3d0947fa9a",
+        "simulation_id": "e06ade63-3455-4b8d-8c51-3f67d471d26d",
+        "start_sec": 72,
+        "end_sec": 102,
+        "prompt": "Let viewers steer the flock — cohesion, speed, and a scatter button",
+        "simulation_url": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/revisions/7c9fb395-7c40-4160-94b3-c0d45f0915bc/package/index.html?section=0a0f9291-fb14-4200-a510-0c3d0947fa9a&v=8e36e877581e",
+        "generated": true,
+        "url_carries_section_param": true
+      },
+      "sim2": {
+        "id": "f883a195-f119-4646-b462-6b756c15ad89",
+        "sim": "Solar System",
+        "simulation_id": "a7a494ca-f2da-4871-8fb2-eb3a61fa8360",
+        "start_sec": 133,
+        "end_sec": 163,
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "anchored_to": "film2",
+        "simulation_url": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/a7a494ca-f2da-4871-8fb2-eb3a61fa8360/revisions/9e98714a-0b64-4304-94c8-a35b3a57133e/package/index.html?section=f883a195-f119-4646-b462-6b756c15ad89&v=53cceee5249f",
+        "generated": true,
+        "url_carries_section_param": true
+      },
+      "orbit": {
+        "id": "41ca7921-8224-436b-97bc-0f0fd7fb1fc8",
+        "simulation_id": "594695dd-107d-4f65-92f1-0010f56baaa0",
+        "start_sec": 163,
+        "end_sec": 188,
+        "prompt": "Let viewers launch planets and watch the forces pull them into orbit",
+        "anchored_to": "film2",
+        "simulation_url": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/594695dd-107d-4f65-92f1-0010f56baaa0/revisions/8b8bd0c9-edcc-40cd-9bac-d401a7836db7/package/index.html?section=41ca7921-8224-436b-97bc-0f0fd7fb1fc8&v=8a7d36991fab",
+        "generated": true,
+        "url_carries_section_param": true
+      },
+      "galton": {
+        "id": "5c03237c-c884-4b0c-b81c-5f56a4d13ade",
+        "simulation_id": "0f8cbc5b-6b40-4458-b302-3ce2802acbe1",
+        "start_sec": 188,
+        "end_sec": 213,
+        "prompt": "Let viewers drop balls and watch the bell curve build itself",
+        "anchored_to": "film2",
+        "generated": false,
+        "generation_error": "Galton Board: generation error: Generation failed. Please try again or simplify your prompt. (generation_error)"
+      },
+      "image": {
+        "id": "5ba6ae34-346f-4a85-a3b4-230802028aa2",
+        "image_id": "bf436a78-59e4-45d9-a62e-c09d8ec971ad",
+        "global_offset_sec": 30,
+        "duration_sec": 6,
+        "camera_movement": "drift"
+      },
+      "sting": {
+        "id": "3b17088a-5213-4ca6-80e0-7e5c9ac5e561",
+        "audio_id": "20b4ebfc-cc11-4f9a-b74d-f6d4452b8162",
+        "global_offset_sec": 64,
+        "duration_sec": 8,
+        "track": "audio"
+      }
+    },
+    "branching": {
+      "sequence_id": "dae8398f-6314-4d8c-9fb7-35e06c951d30",
+      "choice_point_id": "af20c251-f737-4c00-97ef-07b8758d7711",
+      "edges": [
+        {
+          "id": "68391cbd-91f2-4224-b3c4-40bcc7355d9f",
+          "label": "The Heavy Simulation",
+          "destination_type": "project"
+        },
+        {
+          "id": "0fe8e754-8d6e-4459-a5fd-0f2a45ad38b7",
+          "label": "Viewer Superpowers",
+          "destination_type": "project"
+        },
+        {
+          "id": "7f1e8b51-590e-4497-8c04-253545e07548",
+          "label": "One Link, Three Doors",
+          "destination_type": "project"
+        },
+        {
+          "id": "2e17d978-110e-4a39-81e5-edcf1af1250c",
+          "label": "Watch again",
+          "destination_type": "restart"
+        }
+      ],
+      "validation_issues": [],
+      "viewer_caveat": "flat overlays (image/sting) are not rendered by the branching viewer today — see notes[]"
+    },
+    "imageId": "bf436a78-59e4-45d9-a62e-c09d8ec971ad",
+    "audioId": "20b4ebfc-cc11-4f9a-b74d-f6d4452b8162",
+    "audioDurationSec": 8,
+    "shareToken": "q33lE4PXHQTPWiJvDf0IXg",
+    "shareUrl": "http://localhost:3000/v/q33lE4PXHQTPWiJvDf0IXg",
+    "permalink": "http://localhost:3000/welcome-flow-video",
+    "permalinkSlug": "welcome-flow-video",
+    "audioEdition": {
+      "status": "ready",
+      "duration_ms": 205021
+    }
+  },
+  "niche": [
+    {
+      "key": "heavy",
+      "projectId": "dc8bacd8-3302-4a2d-ae6b-83120a44fccc",
+      "title": "The Heavy Simulation",
+      "video": {
+        "id": "de84cd86-8195-4295-9583-e045e5118667",
+        "source": "film3.SCRATCH.mp4",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-2aab72f821b6a12e644fddbfa2a735da/hls/de84cd86-8195-4295-9583-e045e5118667/mto3nnj5/master.m3u8",
+        "duration_sec": 78
+      },
+      "shareUrl": "http://localhost:3000/v/cYVKAhbiYK1wGH6pAUQ1Sw",
+      "shareToken": "cYVKAhbiYK1wGH6pAUQ1Sw"
+    },
+    {
+      "key": "powers",
+      "projectId": "bcd34cc3-fce1-4f01-afa4-e4587ebdfd71",
+      "title": "Viewer Superpowers",
+      "video": {
+        "id": "878d6c3b-56f6-46b8-b51b-aa7bbcb840d1",
+        "source": "film4.SCRATCH.mp4",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-8b44051923cbd92fed84797b13dee1f8/hls/878d6c3b-56f6-46b8-b51b-aa7bbcb840d1/mto3o66y/master.m3u8",
+        "duration_sec": 72
+      },
+      "shareUrl": "http://localhost:3000/v/XzPyHmzj1fJmDxjMoFubxg",
+      "shareToken": "XzPyHmzj1fJmDxjMoFubxg"
+    },
+    {
+      "key": "doors",
+      "projectId": "6aa2df92-a684-4c33-a006-0591f5e4d127",
+      "title": "One Link, Three Doors",
+      "video": {
+        "id": "2df64e66-5c55-417b-becc-4d1a363dec22",
+        "source": "film5.SCRATCH.mp4",
+        "hls_url": "http://localhost:8080/hls-public/t/1789257600-2e91ddd17209148c7f80a7707070dced/hls/2df64e66-5c55-417b-becc-4d1a363dec22/mto3opbk/master.m3u8",
+        "duration_sec": 64
+      },
+      "shareUrl": "http://localhost:3000/v/SOVFn0jIX1bGJ9o6DXHNtA",
+      "shareToken": "SOVFn0jIX1bGJ9o6DXHNtA"
+    }
+  ],
+  "playlist": {
+    "id": "6a2bd6f3-688c-488b-9459-6dbee1992b52",
+    "title": "Welcome to Flow Video",
+    "items": [
+      {
+        "position": 0,
+        "project_id": "4d4bec1f-ae65-4c4b-9813-f595ef4c8463",
+        "title": "Welcome to Flow Video"
+      },
+      {
+        "position": 1,
+        "project_id": "dc8bacd8-3302-4a2d-ae6b-83120a44fccc",
+        "title": "The Heavy Simulation"
+      },
+      {
+        "position": 2,
+        "project_id": "bcd34cc3-fce1-4f01-afa4-e4587ebdfd71",
+        "title": "Viewer Superpowers"
+      },
+      {
+        "position": 3,
+        "project_id": "6aa2df92-a684-4c33-a006-0591f5e4d127",
+        "title": "One Link, Three Doors"
+      }
+    ],
+    "shareToken": "BVSEIiXl8SN3LqSen6eCfQ",
+    "shareUrl": "http://localhost:3000/pl/BVSEIiXl8SN3LqSen6eCfQ",
+    "permalinkUrl": "http://localhost:3000/welcome-to-flow-video",
+    "slug": "welcome-to-flow-video"
+  },
+  "verification": {
+    "asserts": [
+      {
+        "name": "public share config responds 200",
+        "ok": true,
+        "detail": "status=200"
+      },
+      {
+        "name": "video HLS url present",
+        "ok": true,
+        "detail": "http://localhost:8080/hls-public/t/1789257600-7f568c71b7b62fa936d7ed9f735f7c44/hls/10b25444-460f-479e-b596-99ac5ea073b3/mto3jyyf/master.m3u8"
+      },
+      {
+        "name": "two sim sections present",
+        "ok": false,
+        "detail": "found 1"
+      },
+      {
+        "name": "sim sections carry simulation_url",
+        "ok": false,
+        "detail": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/revisions/7c9fb395-7c40-4160-94b3-c0d45f0915bc/package/index.html?section=0a0f9291-fb14-4200-a510-0c3d0947fa9a&v=8e36e877581e"
+      },
+      {
+        "name": "sim sections carry poster_url",
+        "ok": false,
+        "detail": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/posters/5f3cdba7bd599b1b__0a0f9291-fb14-4200-a510-0c3d0947fa9a__2fdf23aa8a73852e__wide__high/standard.png"
+      },
+      {
+        "name": "image section present (image_overlays)",
+        "ok": true,
+        "detail": "{\"id\":\"5ba6ae34-346f-4a85-a3b4-230802028aa2\",\"image_url\":\"http://localhost:8080/local-storage/blobs/6c/4f/6c4f14e7a024b9a10221eb7fa3b41df732c98b2c38698d322e161a"
+      },
+      {
+        "name": "audio cutaway present (audio_cutaways)",
+        "ok": true,
+        "detail": "{\"id\":\"3b17088a-5213-4ca6-80e0-7e5c9ac5e561\",\"audio_url\":\"http://localhost:8080/local-storage/blobs/3f/a3/3fa3b4c3700fb05321c326f3b2d3f60f8b231b63c798bf7bb4d61b"
+      },
+      {
+        "name": "branching block present with a choice point",
+        "ok": true,
+        "detail": "edges=4"
+      },
+      {
+        "name": "choice edges enabled (3 doors + replay)",
+        "ok": true,
+        "detail": "The Heavy Simulation:ok, Viewer Superpowers:ok, One Link, Three Doors:ok, Watch again:ok"
+      },
+      {
+        "name": "permalink /config responds 200",
+        "ok": true,
+        "detail": "GET /api/v1/public/permalink/welcome-flow-video/config -> 200"
+      },
+      {
+        "name": "playlist share config has 4 items",
+        "ok": true,
+        "detail": "status=200 items=4"
+      }
+    ],
+    "screenshots": [
+      {
+        "what": "t=teaser playing",
+        "path": "proof/viewer-1-teaser.png",
+        "url": "http://localhost:3000/v/q33lE4PXHQTPWiJvDf0IXg"
+      },
+      {
+        "what": "post-roll sim section engaged",
+        "path": "proof/viewer-2-sim-section.png",
+        "url": "http://localhost:3000/v/q33lE4PXHQTPWiJvDf0IXg"
+      }
+    ],
+    "posters": [
+      {
+        "key": "murmuration",
+        "sectionId": "0a0f9291-fb14-4200-a510-0c3d0947fa9a",
+        "outcome": "stored",
+        "identity": "5f3cdba7bd599b1b__0a0f9291-fb14-4200-a510-0c3d0947fa9a__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-murmuration.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/e06ade63-3455-4b8d-8c51-3f67d471d26d/revisions/7c9fb395-7c40-4160-94b3-c0d45f0915bc/package/index.html?section=0a0f9291-fb14-4200-a510-0c3d0947fa9a&v=8e36e877581e"
+      },
+      {
+        "key": "sim2",
+        "sectionId": "f883a195-f119-4646-b462-6b756c15ad89",
+        "outcome": "stored",
+        "identity": "15d0d8e0701657c3__f883a195-f119-4646-b462-6b756c15ad89__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-sim2.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/a7a494ca-f2da-4871-8fb2-eb3a61fa8360/revisions/9e98714a-0b64-4304-94c8-a35b3a57133e/package/index.html?section=f883a195-f119-4646-b462-6b756c15ad89&v=53cceee5249f"
+      },
+      {
+        "key": "orbit",
+        "sectionId": "41ca7921-8224-436b-97bc-0f0fd7fb1fc8",
+        "outcome": "stored",
+        "identity": "0c0a453ec83e94fa__41ca7921-8224-436b-97bc-0f0fd7fb1fc8__2fdf23aa8a73852e__wide__high",
+        "proof": "proof/poster-orbit.png",
+        "captured_from": "http://localhost:8080/sim-public/simulations/4d4bec1f-ae65-4c4b-9813-f595ef4c8463/594695dd-107d-4f65-92f1-0010f56baaa0/revisions/8b8bd0c9-edcc-40cd-9bac-d401a7836db7/package/index.html?section=41ca7921-8224-436b-97bc-0f0fd7fb1fc8&v=8a7d36991fab"
+      }
+    ]
+  },
+  "notes": [
+    "POST /api/v1/projects validates via shared CreateProjectSchema (shared/src/types/project.ts:38): only {topic,...}; a \"name\" key is silently stripped — the project title is set with PATCH /api/v1/projects/:id {title} (projects.controller.ts:200).",
+    "The podcast edition route is /api/v1/projects/:id/audio-edition (audioEdition.controller.ts:71,129), not .../audio; POST returns 202 and the same GET is the status poll.",
+    "Sim-section posters are CLIENT-captured: POST /api/v1/projects/:id/sections/:sid/poster with PNG renditions of exactly POSTER_SIZES[aspect] (simulations.controller.ts:221, shared/src/sim/posterIdentity.ts:52) — this builder captures them with headless Chrome from the section's served sim URL.",
+    "Branching IS creatable headlessly (branch.controller.ts: sequences/choice-points/edges), BUT the current viewer disables flat overlays (image/b-roll/audio cutaways) whenever a branching block exists — client-web/components/viewer/useProjectPlayer.ts:2467,2517,2559 (\"flat overlays disabled in branching mode (Phase 2)\"). The image section + A2 sting are therefore present in the config/editor but not rendered by the branching viewer today; keep or drop the choice graph at capture time.",
+    "A post-roll sim section (start_sec >= host duration - 0.05) is entered from onEnded (useProjectPlayer.ts:3233-3247); \"Back to video\" from it returns to the START of the same segment (useProjectPlayer.ts:2070). With film2 absent, section 2 sits at [end+30,end+60] on the teaser and is reachable by scrubbing; a re-run with film2 re-anchors the layout."
+  ]
+}

@@ -1,0 +1,13 @@
+# Generated / heavy artifacts — every one of these regenerates from the committed scripts
+# (see README.md's regeneration contract). The repo carries the FACTORY, not the output.
+captures/chrome-profile/
+captures/out/
+captures/footage/
+captures/auth-state.json
+captures/props/*.mp4
+assembly/work/
+assembly/out/*.mp4
+music/*.wav
+narration/audio/
+narration/audio-scratch/
+seeding/.seed-env.local
