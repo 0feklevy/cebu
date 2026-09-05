@@ -160,3 +160,132 @@ No unrequested work found. `captures/stage-capture-prop.mjs` and the "Standing W
 project look at first glance like scope creep (a whole extra project nobody asked for by name) but
 they are correctly in service of requirement 3 (real captures need real on-screen content to film)
 — not extra scope, necessary infrastructure for a named requirement.
+
+---
+
+## COMPLETION PASS — 2026-09-05, ~12:00–12:20 EEST
+
+Re-audited against `feat/welcome-tutorial-kit`, commit range `77bf941..4fa4d79` (PR #192, open,
+`main` ← `feat/welcome-tutorial-kit`), i.e. everything that landed after the baseline snapshot
+above. **This branch was still live/concurrent during this pass** — a new commit landed and two
+EDL files were mid-edit while this was being written; see the §12.1 row below. Baseline items not listed below
+are unchanged from the original audit; only items whose verdict moved, or that are new, appear here.
+
+### 1–2. Playlist + demo project — now largely BUILT, not just designed
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 1.4 | Playlist actually seeded for every new user | **DONE** | Migration `085_welcome_seed.sql` registered (`backend-api/src/db/migrate.ts:66`, last entry). `WelcomeSeedService.ts` (129 lines) wired from TWO real call sites: post-signup in `firebase-auth.ts:188-190`, and a heal-on-list path in `projects.controller.ts:165-168`. Admin toggle wired end-to-end: `settings.controller.ts:32` (schema) → `admin-web/app/feature-flags/page.tsx:216-221` (UI). 10/10 unit tests pass (`welcomeSeed.test.ts`, re-run live: `Test Files 1 passed, Tests 10 passed`) with real branch-differentiated assertions (env-override, admin-flag fallback, no double-seed, no self-seed, orphan-adoption, playlist swap with project-id substitution) — not theatre. **Independently re-ran the E2E check myself** (`node seeding/e2e-seed-check.mjs`) against the live local stack (backend genuinely running with `WELCOME_SEED_ENABLED=true`): fresh user → private clone created, playable (200), personal playlist leads with the clone (`playlistLeadsWithClone: true`), idempotent (`cloneCount: 1` after a second listing) → `"verdict": "PASS"`. |
+| 2.1–2.6, 7.1–7.8 | Demo project + niche projects, built via real APIs (sections, This-moment, posters, permalink, share, playlist) | **DONE, with two real gaps (see §14.1/§14.2)** | `seeding/TEMPLATE.json` (built 08:04–08:09 UTC) records 26 build steps, 24 `done`. Real project (`4d4bec1f…`), 2 timeline videos with HLS, 3 working sim sections (Murmuration/Solar/Orbit, all `generated:true` with live `simulation_url`+poster), image + audio-sting sections placed, branching choice block (4 edges, all enabled), permalink `/welcome-flow-video` (200), share link, podcast/audio edition, playlist (4 items, shared). `verification.asserts`: 8/11 `ok:true` — the 3 `ok:false` entries are a known, already-logged false-negative in the assert's OWN section-counting logic (confirmed independently, §14.4), not a missing feature. |
+| 8.2 | Migration 085 | **DONE** | `085_welcome_seed.sql` + `.rollback.sql` both present and registered. |
+| 8.3 | Dark-gated env/admin flag | **DONE** (shipped a real, now-fixed regression — see §14.7) | `WELCOME_SEED_ENABLED` env overrides `admin_settings.welcome_seed_enabled`; both switches confirmed wired to real code paths, not just present in a schema. |
+| 8.4 | Idempotent | **DONE** | 3-layer idempotency (per-boot memo, partial unique index + orphan-adoption, conditional pointer update) — confirmed both in code and by the live E2E re-run's `cloneCount: 1`. |
+| 8.5 | Unit tests | **DONE** (see §14.7 for a real nuance) | 10 tests, genuinely differentiated fixtures/assertions per gate — verified by reading, not just by the pass count. |
+| 8.6 | Integration tests | **DONE** | `seeding/e2e-seed-check.mjs`, independently re-run PASS this session (not just trusted from DECISIONS.md's attestation). |
+| 8.7 | Pre-build fix #1 (`sim_files` on clone) | **DONE** | `ProjectDuplicationService.ts` diff (+94 lines in commit `f445debe`) adds the `sim_files` copy path the design doc flagged as a blocker. |
+
+### 3–5. Capture / narration / assembly — now largely PRODUCED (as SCRATCH, not final)
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 3.1 | Captures via v0.7.0 stack + Playwright, comprehensive | **DONE** | `captures/out/MANIFEST.json` has 16 real recorded shots spanning BOTH editor scenes (f2-s2a…s8: new project, library drop, mark section, This-moment, preview, layers, share; f3-s2…s4: heavy-sim drop, simple UI, iteration) AND viewer/public scenes (f1-s3/s7, f4-s1/s2/s4, f5-s5) — genuinely covers the editor+viewer split the task asked about. See §14.5 for a real portability caveat in HOW these are recorded. |
+| 4.1–4.3 | Real TTS / admin voice / spend | **Correctly still BLOCKED, honestly reported** | `narration/audio/` is empty on disk (0 files) — real ElevenLabs TTS genuinely never ran. `narration/audio-scratch/` has 41 real `.mp3` files (one per script scene, macOS `say`) — the "scratch VO stands in" claim is disk-true, not just asserted. README/DECISIONS both state this is blocked on an owner-side credential; nothing overstates it. |
+| 4.4–4.5 | Word-timed captions / tap-to-ask on tutorial | **PARTIAL, mechanism now exercised but not confirmed end-to-end** | The films WERE uploaded through the real video pipeline (`TEMPLATE.json` A1/A2: `film1.SCRATCH.mp4`/`film2.SCRATCH.mp4`, HLS ready) — the correct path identified at baseline (Groq STT auto-transcription on upload) is genuinely reachable now, not merely theoretical. Did not independently confirm `captions_vtt` actually populated (a live API probe for it came back empty/inconclusive; not chased further given diminishing returns). Flag for the next session rather than assume either way. |
+| 5.1 | ffmpeg assembly (captures+infographic+narration+music) | **DONE** | All 5 films exist on disk, `assembly/out/film{1..5}.SCRATCH.mp4`. Durations independently re-measured with `ffprobe`: film1=72s, film2=133s, film3=78s, film4=72s, film5=64s — match the README's per-film targets (~72s/~2:12/~78s/~72s/~64s) closely. **Filenames say SCRATCH**: these are structurally-complete, correctly-timed assemblies using placeholder (`say`-synthesized) narration, not final production audio — real narration is a re-run away once the ElevenLabs key is fixed (`narration/run-narration.sh --force` per README), but has not happened yet. |
+| 5.2 | Loudness ≈ reference (−22.8dB mean) | **DONE, independently re-measured** | `ffmpeg -af volumedetect` on `film1.SCRATCH.mp4`: **mean_volume: −23.0 dB** — a 0.2dB match to the −22.8dB reference. (Caution for future audits: the assembly pipeline's own `loudnorm` filter targets **−19 LUFS** integrated, `assembly/assemble-film.mjs:112` — a different, EBU-R128 metric from the plain dBFS "mean_volume" the reference number appears to use; measured Input Integrated was −19.7 LUFS, i.e. it matches ITS OWN target, not the −22.8dB figure directly. Don't conflate the two metrics in a future pass — re-verified the actual dBFS mean is what lines up with the stated reference.) |
+| 5.3 | QC at 360p legibility | **PARTIAL** | Real QC-still infrastructure ran: 4 frames per film (8%/35%/60%/92% of runtime) × 5 films = 20 PNGs in `assembly/out/qc/`. No step actually downscales to 360p specifically (`assemble-film.mjs`'s only `scale=` call targets 1920×1080) — the stills are full-resolution frame grabs, so "legibility AT 360p" specifically was not demonstrated, only frame-level QC in general. |
+| 5.4 | H.264 1080p output | **DONE** | `ffprobe` on `film1.SCRATCH.mp4`: `codec_name=h264, width=1920, height=1080, r_frame_rate=30/1`. |
+
+### 6. Critique gates — G1-post is now claimed CLEAR in three places the ledger of record does not support
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 6.4/6.5 | G1-pre/G1-post gate completion | **Still not DONE, and now a worse, multi-document version of the same problem** | `PRODUCTION-PLAN.md` (the branch's own "ledger of record", per `DECISIONS.md`) is **unchanged since its one commit** (`git log --follow` shows exactly 1 commit; `git diff HEAD` clean) and still reads, verbatim: `PRODUCTION-PLAN.md:59` `\| G1-post \| scripts v2 after fixes \| pending \|` and `:89` `PM/accuracy critic: still running — its findings fold into v2 before G1-post.` No PM/accuracy findings were ever recorded anywhere (grepped the whole repo for a verdict doc — none exists). Yet **three other places now assert it passed**: `README.md:61` `"5 scripts through the critics-panel gates (G1-pre, G1-post CLEAR, films 3-5 panel)"`, `scripts/SCRIPT-1-TEASER.md:1` and `SCRIPT-2-TUTORIAL.md:1` both title themselves `"v2.1 (G1-post CLEAR)"`. This is the exact self-contradiction the original checklist flagged at 6.4 (`CLAUDE.md §3b`'s named failure mode) — except it has since spread from one internally-contradictory file to a genuine cross-document conflict between the source-of-truth ledger and three downstream documents, none of which were reconciled with it. The scripts' actual SUBSTANCE still reads as satisfying the honesty/accuracy bar on independent inspection (§9 below) — but that remains this auditor's read, not the recorded critic sign-off the plan itself requires. |
+
+### 9. Script honesty — re-verified against the ACTUAL shipped product, not just script text
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 9.1 | "Built exactly this way" is true of the seeded project (owner steer moved this from Wave Lab to Solar System) | **DONE — verified byte-exact against the live build, not just read for internal consistency** | `SCRIPT-2-TUTORIAL.md` scene 4 has the capture rule: the on-camera prompt "must be VERBATIM the seeded section's stored prompt" — **"Give viewers the planets — let them speed up time and fly to any world."** Confirmed this exact string exists in THREE independent places: the script (`SCRIPT-2-TUTORIAL.md:19`), the builder source (`seeding/build-template.mjs:366`), and the actual API-committed value (`seeding/TEMPLATE.json` → `demo.sections.sim2.prompt`). All three match character-for-character, including the em dash. |
+| 9.2–9.4 | Handover scope honesty / ANAM-fallback honesty / no faked latency | **DONE, still holds in the current v2.1 text** | Re-read directly: `SCRIPT-2-TUTORIAL.md:11,22,24,31` (edit/sim-swap scope, dubbing deferred to film 4); `SCRIPT-1-TEASER.md:18` and `SCRIPT-4-VIEWER-POWERS.md:10` (ANAM plan-of-record + honest fallback; "no faked latency" stated explicitly in both). |
+
+### 10. Device/browser sweep — still not demonstrated against the real deliverable; a specific PR claim doesn't check out
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 10.1/10.2 | Sweep on the seeded playlist, chromium/firefox/webkit | **Still NOT DONE — a specific claim to the contrary does not check out** | PR #192's own body states: *"Cross-engine smoke (firefox/webkit) loads the permalink with all four videos mounted."* Searched the whole repo (`tutorial-kit/`, `seeding/`) and the session scratchpad for any firefox/webkit-tagged script or artifact: the ONLY matches are `engine-firefox.png`/`engine-webkit.png`, dated **2026-09-04 19:52** (the day before this branch's build) and showing a **Kinesin motor-protein "Walking cycle" demo** — confirmed by direct image inspection — i.e. leftover screenshots from an unrelated, earlier audit, not evidence of a welcome-playlist cross-engine check. CI's own "Viewer end-to-end (firefox/webkit, real app on loopback)" jobs did pass on this PR, but those are the pre-existing general viewer E2E suites, not a check of this specific permalink/playlist. No artifact substantiates the PR body's specific claim. |
+
+### 11. Documentation
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 11.5 | DECISIONS.md ledger entries | **DONE, one small currency gap** | Substantive entry exists at `DECISIONS.md:2313-2345` (SHIPPED-TO-BRANCH, BUILT, 3× 🔴 OPEN, PR-opened lines) — real, specific, not just "work happened." Gap: the live hotfix commit `4fa4d79` (§14.7) landed after this entry was written and is not yet reflected — expected given timing (it landed minutes before this pass concluded), flagged for the next ledger touch rather than treated as a violation. |
+
+### 12. Commit/PR/deploy
+
+| id | requirement | verdict | evidence |
+|---|---|---|---|
+| 12.1 | Everything committed | **PARTIAL — live risk recurring, but for a different reason than before** | `git status --short` at the end of this pass: `M assembly/edl/film1.json`, `M assembly/edl/film4.json` — real, uncommitted, and changing WHILE this audit ran (confirmed by re-diffing mid-session: EDL shot references being updated from placeholders to real recorded shot IDs, e.g. `f1-s3-ask-surface`). This is the same class of risk the baseline's priority action #3 named; this time it reflects genuinely continuous work rather than neglect, but the exposure (uncommitted work an interrupted run could lose) is the same. |
+| 12.2 | PR opened | **DONE** | PR #192, `feat/welcome-tutorial-kit` → `main`, open, mergeable. |
+| 12.3 | Deploy approval left to owner | **N/A, unchanged** | No deploy/release dispatch attempted. |
+
+---
+
+## 14. New findings from this pass (not in the original 13 sections)
+
+1. **[Highest priority — licensing/compliance] Two new sim packages with zero license documentation were added to the SEEDED template, and one was wired live, without recorded authorization.** `captures/props/galton-board.zip` and `five-species.zip` (each a single `index.html`, no LICENSE/attribution file, no license text found inside either — checked directly) were uploaded into the demo project's library (`TEMPLATE.json` step `A3`) and Galton Board was wired as a **4th live sim section** (`A5a`). Searched `CREATIVE-BRIEF.md`, `PRODUCTION-PLAN.md`, `README.md`, `seeding/DESIGN.md` for any mention of either sim's origin or license: **zero hits in all four**. PR #192's body calls them an "owner-GitHub variety pair" with no license named, which does not satisfy `CLAUDE.md §8`'s explicit rule ("name every new dependency and its licence in the PR body; when unsure, leave it out and say so"). This is a materially different situation from kinesin/dynein, which has a *dated, repeatedly-cited* owner permission and is contractually restricted to film-captures-only (never seeded) — these two are already inside the artifact every new user's account will contain. **Also a scope deviation**: `PRODUCTION-PLAN.md:40` ("OWNER STEER 3", timestamped 02:05) explicitly finalizes *"Final seeded lineup (3 sims, distinct characters): Murmuration 3D, Solar System 3D, Orbit Lab"* — Galton Board appears in none of the planning documents' decision record, only in the build script and the PR body.
+2. **[High — correctness] The demo project's image + audio sections are unreachable by design, because it also has a branching block.** `client-web/components/viewer/useProjectPlayer.ts:2506` (`updateBrollOverlay`) and `:2549` (`updateAudioCutaway`) both open with `if (branching) return;  // flat overlays disabled in branching mode (Phase 2)`. The seeded demo project has BOTH a branching choice block (`A7`, "What next?") AND an image section + ambient-sting audio cutaway (`A6`) on the SAME project — meaning the infographic (checklist 2.3) and the ambient sting (2.4) will never render for any real viewer, despite being correctly configured server-side and shown as "done" in the build log. `TEMPLATE.json`'s own `notes` array already documents this exact tradeoff and explicitly says it needs a decision ("keep or drop the choice graph at capture time") — the decision was never made; the build kept both, so the conflict ships live and silent (nothing errors; the content is just never shown).
+3. Galton Board's This-moment generation genuinely fails (`"Galton Board: generation error: Generation failed. Please try again or simplify your prompt."`, persisted verbatim in `TEMPLATE.json` → `demo.sections.galton.generation_error`) — already correctly logged in `DECISIONS.md` as 🔴 OPEN; independently re-confirmed from the persisted build record, not just trusted from the ledger.
+4. `build-template.mjs`'s own `verification.asserts` block reports `"two sim sections present": false, found 1` (and two dependent per-section asserts also `false`) — already correctly logged in `DECISIONS.md` as a known false-negative in the assert's own counting logic (the real project has 3 working live sections, confirmed via `demo.sections`); re-confirmed independently rather than taken on trust.
+5. **[Hygiene] The entire capture pipeline's `playwright` resolution is anchored to a hardcoded personal path.** All 10 scripts under `captures/` (`capture-all.mjs`, `probe-editor.mjs`, `record-sim-footage.mjs`, etc.) resolve the `playwright` package via `createRequire(pathToFileURL('/Users/ofeklevy/Desktop/Kinesin and Dynin/3d-kinesin/package.json'))` rather than any dependency inside this monorepo — despite `playwright` being genuinely installed and reachable in-repo (`node_modules/.pnpm/playwright@1.60.0`, used by `client-web`). This works today only because this exact developer's machine happens to have that external folder; it directly undercuts the README's own "regeneration contract" premise ("re-running scripts, not archaeology") on any other machine, or this same machine after that folder is cleaned up.
+6. The teaser's opening-beat contradiction named in the ORIGINAL checklist (priority action #10) is **still unresolved**: `SCRIPT-1-TEASER.md`'s scene 1 (0:00–0:04) still opens on Kinesin product footage; `CREATIVE-BRIEF.md`'s STYLE REFERENCE item 1 still calls for "Animated brand-mark intro on a clean light ground (~3s) — then straight into product" first. Neither document was reconciled despite the script reaching "v2.1 (G1-post CLEAR)".
+7. **[Live during this audit] PR #192's CI genuinely failed, was diagnosed, and was fixed, all within this pass.** At the run captured 08:50–08:52 UTC, two required checks failed: (a) **Release verification gate** — `admin-web`'s `adminControlsA11y.test.tsx` (`ui-ux-007`, "gives every switch the name of the flag it throws") asserted exactly 5 named switches and got 6, because this PR's own new "Welcome project seeding" toggle (`admin-web/app/feature-flags/page.tsx:216-221`) was never added to the test's expected-names list; (b) **Static audits** — the backend test-typecheck ratchet (`deploy/scripts/typecheck-tests-ratchet.sh`) reported `welcomeSeed.test.ts (4 new)` type errors, i.e. real TypeScript errors in a file vitest's runtime execution never surfaces (exactly the gap that ratchet exists to catch). **A commit landed mid-audit** (`4fa4d795`, "test: satisfy the CI gates the new toggle and test tripped") that fixes both by name; re-triggered CI was polled to completion in the background — see the final line of this report for the outcome.
+8. Ledger currency: `DECISIONS.md`'s 2026-09-05 entry predates commit `4fa4d795` and does not yet mention it (expected — it landed minutes before this pass concluded).
+
+
+### Scope check (this pass)
+
+No unrequested implementation work found (this pass only read, measured, and re-ran existing
+scripts/tests — no code changed). The completion-pass audit itself surfaced two things worth
+naming as scope-adjacent rather than as findings against a requirement: (1) a stray, wrongly-placed
+memory directory was committed at `podcast-saas/backend-api/.claude/agent-memory/task-tracker/`
+(should be at the git root's `.claude/`) — harmless to the build (markdown only, not imported by
+any TypeScript), but worth a cleanup pass since it will keep confusing future memory look-ups; (2)
+the Galton Board / Five Species sim addition (§14.1) is itself scope creep relative to
+`PRODUCTION-PLAN.md`'s own recorded "final lineup" decision, independent of its licensing gap.
+
+---
+
+## CRITICAL UPDATE (supersedes §14.7's "see the final line of this report") — a REAL regression, currently blocking PR #192
+
+The CI re-run triggered by commit `4fa4d795` (which fixed the admin-a11y and welcomeSeed-typecheck
+failures) was polled to completion. Result: **`Static audits` now SUCCESS; `Release verification
+gate` is now FAILING FOR A DIFFERENT, NEW REASON** — and this one is a real product regression, not
+a test-hygiene gap.
+
+`client-web`'s test suite never actually ran to completion in the FIRST CI attempt: pnpm's
+recursive-run stops at the first failing workspace package, and `admin-web` failed first
+alphabetically, masking whatever came after it. Fixing `admin-web` let the pipeline reach
+`client-web` for the first time in this PR's CI history — where it failed:
+`Test Files 2 failed (2) | Tests 5 failed | 1983 passed (1988)`, in
+`__tests__/simExitHandoff.test.tsx` (4 failures) and `__tests__/viewerActiveSimUrl.test.tsx`
+(1 failure) — e.g. `"the seek must be issued at T0: expected 10 to be +0"` and
+`"the return committed but never released the key: expected '...index.html' to be null"`.
+
+**Confirmed by direct comparison, not inferred:** ran the identical two test files against a clean
+`git worktree` of `main` (`bde9317c`) — **26/26 PASS**. Ran them again on this branch — **5/26
+FAIL, reproducible locally** (`pnpm --filter client-web exec vitest run __tests__/simExitHandoff.
+test.tsx __tests__/viewerActiveSimUrl.test.tsx`). The only `client-web` file this branch touches
+relative to `main` is `components/viewer/useProjectPlayer.ts` (+75/-4), the "post-roll 'Go back to
+video' ADVANCES instead of replaying" change the seeding commit (`f445debe`) describes as "verified
+live through the whole welcome arc." That live click-through verification did not catch what the
+existing automated suite catches: the new `simReturnPlanRef` virtual/seek continuation logic
+(`useProjectPlayer.ts` ~lines 2083-2113, ~4222-4260) leaves stale seek state or fails to release
+`activeSimUrl` on at least one explicit-return path.
+
+**This is still open as of this pass — do not treat it as fixed.** While investigating, a SEPARATE,
+uncommitted, in-progress edit to this same file was observed on disk (a `TEMP-DIAG` console.log in
+`revealChoice` plus a fix for choice-doors-appearing-over-a-live-section) — evidence the concurrent
+run is actively working in this exact area, but re-running the two failing spec files against that
+uncommitted state still gives the same **5 failed | 21 passed** — it does not touch the regression
+above. `gh pr view 192`: `mergeable=MERGEABLE mergeStateStatus=UNSTABLE`.

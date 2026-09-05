@@ -18,28 +18,28 @@
     },
     {
       "scene": "3a",
-      "source": "f4-s3-ask",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "source": "f1-s3-ask-surface",
       "mode": "loop",
-      "placeholder": "ask surface round 2"
+      "placeholder": "ask surface round 2",
+      "in": 3
     },
     {
       "scene": "3b",
-      "source": "f4-s3-ask",
+      "source": "f4-s2-orbit-touch",
       "slot": [
         22,
         33
       ],
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
       "mode": "loop",
-      "placeholder": "same"
+      "placeholder": "same",
+      "in": 12
     },
     {
       "scene": "3c",
-      "source": "f4-s3-ask",
-      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "source": "f4-s2-orbit-touch",
       "mode": "loop",
-      "placeholder": "same"
+      "placeholder": "same",
+      "in": 24
     },
     {
       "scene": "4",
@@ -50,10 +50,11 @@
     },
     {
       "scene": "5",
-      "source": "f4-s5-their-way",
+      "source": "f5-s5-phone",
       "fallback": "captures/props/lesson-waves.mp4",
       "mode": "fit",
-      "placeholder": "smart-crop + languages round 2"
+      "placeholder": "smart-crop + languages round 2",
+      "in": 5
     },
     {
       "scene": "6",

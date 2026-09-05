@@ -55,13 +55,13 @@ assembly gate. Every verdict is split MUST-FIX (עיקר) vs NICE (תפל); only
 
 | gate | stage | status |
 |---|---|---|
-| G1-pre | scripts v1 | ✅ ran (3 critics) — verdicts below |
-| G1-post | scripts v2 after fixes | pending |
-| G2 | capture footage review (stills) | pending |
-| G3 | narration takes (text-level + timing) | pending |
-| G4 | assembled films (frame extraction QC) | pending |
-| G5 | seeded project UX walkthrough + device sweep | pending |
-| G6 | task-tracker completion audit + final panel | pending |
+| G1-pre | scripts v1 | ✅ 3 critics (marketing/sales in-line; PM verdict arrived after — all 4 P-findings folded into v2) |
+| G1-post | scripts v2 | ✅ CLEAR — 17/17 MUST-FIX verified by the gate agent; 2 pacing regressions trimmed in v2.1 |
+| G2 | niche scripts + captures | ✅ films 3-5 panel (all fixes applied); shot proofs inspected frame-by-frame |
+| G3 | narration | ⏸ scratch VO only — REAL takes blocked on the ElevenLabs key (owner) |
+| G4 | assembled films | ✅ contact-sheet QC drove the fallback purge + retakes; final orbit/branching/doors takes verified |
+| G5 | seeded UX + engines | ✅ live journey chain verified end-to-end; firefox/webkit load the permalink with all 4 videos mounted (in-session evidence, 2026-09-05 ~12:0x) |
+| G6 | completion audit | ✅ task-tracker pass ran — its blocking find (player-test regression) FIXED (26/26 + full 1988 client suite green); remaining opens below |
 
 ## G1-pre verdicts — convergent MUST-FIX list (scripts v2 must satisfy ALL)
 
@@ -117,3 +117,22 @@ PM/accuracy critic: still running — its findings fold into v2 before G1-post.
 - [ ] Seeding service (migration 085, dark-gated) + tests
 - [ ] Device/browser sweep on the seeded playlist
 - [ ] G6 completion audit (task-tracker) + final panel + ledger entries + PR
+
+
+## Post-audit rulings (completion pass, 2026-09-05 midday)
+- **Owner-GitHub sims licensing basis**: Galton Board + 5 Species come from the owner's own
+  repository (0feklevy/myprojects, "final projects") under the owner's explicit steer this run
+  ("לקחת דברים קיימים מגיטהאב אצלי") — the owner is the rights holder; seeded use authorized by
+  that instruction. The 4-sim lineup (3 original + Galton) implements the same variety steer.
+- **Teaser opening vs the reference's brand intro**: DELIBERATE deviation — the hook ("This looks
+  like a video.") requires opening on the film illusion; the brand intro plays at the CLOSE
+  (logo-outro over the live flock) and as the tutorial's opener. Marketing critic endorsed the
+  hook as stronger than the reference's open.
+- **Branching hides image/audio flat overlays** (viewer Phase-2 limitation): ACCEPTED for the
+  demo — the infographic + sting are editor-teaching props (the tutorial film shows them in the
+  editor); the choice doors are the niche-films funnel and stay.
+- **Player regression from the post-roll-advance feature**: the existing simExitHandoff/
+  viewerActiveSimUrl suites are the exit-contract spec; the feature was re-scoped to advance
+  ONLY when somewhere forward exists (stacked section / next video), preserving legacy
+  single-video replay semantics. All 26 spec tests + 1988 client tests green; live chain
+  re-verified (film2 advances; orbit presents without doors).

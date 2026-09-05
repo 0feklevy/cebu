@@ -2090,22 +2090,22 @@ export function useProjectPlayer(
         // sequence end) take over.
         {
           const contLocal = simSection.end_sec + SECTION_BOUNDARY_EPSILON_SEC;
-          const segForCont = timelineRef.current[segmentIdx];
           const stackedNext = segmentsRef.current[segmentIdx]?.simulations.find((s) =>
             s !== simSection &&
             s.type === 'simulation' &&
             !!s.simulation_url &&
-            !!segForCont &&
-            segForCont.duration >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC &&
             contLocal >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC &&
             contLocal < s.end_sec,
           ) ?? null;
           const nextSeg = timelineRef.current[segmentIdx + 1];
+          // Only when there is somewhere FORWARD to go. A single-video post-roll keeps the
+          // legacy replay-from-start return (null plan) — that contract is what
+          // simExitHandoff/viewerActiveSimUrl pin, and this feature must not disturb it.
           simReturnPlanRef.current = stackedNext
             ? { kind: 'virtual', segIdx: segmentIdx, local: Math.max(contLocal, stackedNext.start_sec) }
             : nextSeg
               ? { kind: 'seek', global: nextSeg.offset }
-              : { kind: 'virtual', segIdx: segmentIdx, local: contLocal };
+              : null;
         }
         merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
         // (D5) The player itself paused the video for a post-roll sim — stop the active +
@@ -2987,7 +2987,19 @@ export function useProjectPlayer(
       const isLast = idx === timelineRef.current.length - 1;
       if (cp && isLast) {
         const remaining = seg.duration - t;
-        if (remaining <= cp.lead_in_sec && !activeChoiceRef.current && !choiceResolvedRef.current) {
+        // NOT while post-roll sim sections still stand between the film and the decision: they
+        // park the video at its end (remaining≈0 for their whole stay), and the lead-in even
+        // fires DURING the last playing seconds — either way the doors floated over live
+        // simulations (welcome-demo audit). When such sections exist, the section exit path
+        // reveals the choice after the stack truly finishes; the lead-in reveal is theirs to
+        // suppress entirely, not to race.
+        const hasPostRollSections = !!segmentsRef.current[idx]?.simulations.some((s) =>
+          s.type === 'simulation' && !!s.simulation_url &&
+          seg.duration >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC,
+        );
+        const simHolding = !!activeSimRef.current || !!desiredSimRef.current;
+        if (remaining <= cp.lead_in_sec && !hasPostRollSections && !simHolding
+            && !activeChoiceRef.current && !choiceResolvedRef.current) {
           revealChoice(cp);
         }
         // Loop behavior: replay the trailing region until the viewer chooses.
@@ -4325,19 +4337,7 @@ export function useProjectPlayer(
           // choice/sequence-end path) over the host's final frame — the video must stay paused:
           // play() on an ended element restarts it from ZERO, which is precisely the replay this
           // plan exists to prevent.
-          if (virtualAdvance) {
-            if (!activeSimRef.current) {
-              // Nothing left to present past this time — the sequence is done; surface the same
-              // decision onEnded would (the demo's "What next?" doors live here).
-              if (branching) {
-                const cp = currentSequence()?.choice_point ?? null;
-                if (cp && !choiceResolvedRef.current && !activeChoiceRef.current) revealChoice(cp);
-              }
-              videoRef.current?.pause();
-              merge({ playing: false });
-            }
-            return;
-          }
+          if (virtualAdvance) return;
           void safePlay(videoRef.current!).then((ok) => {
             // A refused play() is a covered, ACTIONABLE state, not a silent failure: the incoming
             // media will never become audible, so the outgoing package must keep its gain. Guarded

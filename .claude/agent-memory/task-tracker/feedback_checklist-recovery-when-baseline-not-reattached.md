@@ -33,3 +33,17 @@ reconstructed list as if it were the original), but don't let the gap block deli
 evidence-backed audit — the reconstruction-then-verify approach is not a lesser audit, just an
 honestly-labeled one. See [[flowvid-2026-09-05-solar-system-sim-completion-audit]] for a worked
 example (97/97 items, all resolved to DONE with file:line evidence).
+
+**Addendum, 2026-09-05 (welcome-playlist completion pass):** this time the checklist baseline
+*was* recoverable from disk — `CHECKLIST.md` itself existed in the repo, no reconstruction needed.
+But the task also named a specific "agent memory" file that wasn't in this canonical directory
+either. It turned up committed at `podcast-saas/backend-api/.claude/agent-memory/task-tracker/
+welcome-tutorial-kit-master-checklist.md` — a SECOND, non-canonical `.claude/agent-memory/` tree,
+one workspace package deep, almost certainly created because a memory-writing tool call ran with
+its cwd inside `backend-api/` instead of the git root, and then got committed into product source
+alongside real code. **Lesson: before concluding a named memory file "doesn't exist," search for
+stray `.claude/agent-memory` trees nested under workspace packages, not just the git-root one** —
+`find <repo-root> -path '*/.claude/agent-memory/*' -not -path '<repo-root>/.claude/*'` would have
+found it in one call instead of several. Report the stray tree as a hygiene finding (it's committed
+into a real package, so it's not neutral) but its CONTENT is still legitimate, recoverable baseline
+— read it. See [[flowvid-2026-09-05-welcome-playlist-completion-audit]] for the full case.

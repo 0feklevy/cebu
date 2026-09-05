@@ -16,42 +16,46 @@
     },
     {
       "scene": "3a",
-      "source": "captures/footage/murmuration-touch-phone.webm",
-      "mode": "loop",
-      "placeholder": "ask-surface shot pending (ANAM ruling at capture)",
-      "fallback": "captures/footage/murmuration3d-lesson.webm"
+      "source": "f1-s3-ask-surface",
+      "mode": "fit",
+      "placeholder": "ask EXCHANGE ships with the TTS key; surface shot meanwhile",
+      "fallback": "captures/footage/murmuration3d-lesson.webm",
+      "in": 4
     },
     {
       "scene": "3b",
-      "source": "captures/footage/ask-exchange.webm",
+      "source": "f4-s2-orbit-touch",
       "slot": [
         17,
         25
       ],
-      "mode": "loop",
-      "placeholder": "voice exchange pending TTS key",
-      "fallback": "captures/props/lesson-waves.mp4"
+      "mode": "fit",
+      "placeholder": "real spoken exchange pending key",
+      "in": 16
     },
     {
       "scene": "3c",
-      "source": "captures/footage/ask-exchange.webm",
-      "mode": "loop",
+      "source": "f4-s2-orbit-touch",
+      "mode": "fit",
       "placeholder": "same",
-      "fallback": "captures/props/lesson-waves.mp4"
+      "in": 26
     },
     {
       "scene": "4",
-      "source": "f4-branching-viewer",
+      "source": "f4-s4-branching",
       "mode": "fit",
       "placeholder": "viewer branching shot pending",
-      "fallback": "captures/props/lesson-waves.mp4"
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 14
     },
     {
       "scene": "5",
-      "source": "smartcrop-split",
+      "source": "f5-s5-phone",
       "mode": "fit",
       "placeholder": "smart-crop composite pending",
-      "fallback": "captures/props/lesson-waves.mp4"
+      "fallback": "captures/props/lesson-waves.mp4",
+      "in": 6,
+      "note": "vertical phone visual until the smart-crop split composite lands"
     },
     {
       "scene": "6",
