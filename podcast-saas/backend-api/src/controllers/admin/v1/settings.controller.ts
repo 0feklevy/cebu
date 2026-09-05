@@ -28,6 +28,8 @@ const UpdateSettingsSchema = z.object({
   sim_adaptive_quality: z.boolean().optional(),
   sim_boundary_sentinel: z.boolean().optional(),
   sim_transition_coordinator: z.boolean().optional(),
+  // Welcome seeding (085). The env var wins when set; this is the runtime half of the gate.
+  welcome_seed_enabled: z.boolean().optional(),
 });
 
 export async function registerAdminSettingsRoutes(app: FastifyInstance): Promise<void> {

@@ -632,6 +632,21 @@ export function useProjectPlayer(
   const activeSimUrlRef = useRef<string | null>(null);
   const resumeActionRef = useRef<'resume' | 'backToVideo'>('resume');
   const simReturnGlobalSecRef = useRef(0);
+  /**
+   * Where "Go back to video" LANDS for a POST-ROLL section (flagship-demo audit 2026-09-05).
+   * Going "back" from a section that plays BETWEEN videos must move the story FORWARD — the
+   * next stacked section, the next sequence video, or the sequence end — never replay the film
+   * the viewer just finished. A bare global-seconds return point cannot express that: a post-roll
+   * window's virtual time (host duration and beyond) is numerically identical to the NEXT
+   * segment's real region, so the mapping loop in `resumeFromSim` would land inside the wrong
+   * video. `virtual` pins the segment index explicitly and reuses the exact time convention
+   * `onEnded` already presents stacked sections with; null falls back to the legacy mapping.
+   */
+  const simReturnPlanRef = useRef<
+    | { kind: 'seek'; global: number }
+    | { kind: 'virtual'; segIdx: number; local: number }
+    | null
+  >(null);
   // ── FLAT-OVERLAY CONFIG REVISIONS (broll-player-001) ────────────────────────────────────
   //
   // `onTick` is `useCallback(fn, [])` — frozen at mount — so every flat-overlay updater it calls
@@ -2068,6 +2083,30 @@ export function useProjectPlayer(
         userPausedRef.current = true;
         resumeActionRef.current = 'backToVideo';
         simReturnGlobalSecRef.current = timelineRef.current[segmentIdx]?.offset ?? 0;
+        // Continuation plan for "Go back to video" — forward, never a replay. Another stacked
+        // section covering this one's end (the onEnded coverage test, same epsilon) continues in
+        // VIRTUAL time on this segment; otherwise the next sequence video starts from 0; at the
+        // sequence end the virtual time past the last section lets the ended path (choice /
+        // sequence end) take over.
+        {
+          const contLocal = simSection.end_sec + SECTION_BOUNDARY_EPSILON_SEC;
+          const segForCont = timelineRef.current[segmentIdx];
+          const stackedNext = segmentsRef.current[segmentIdx]?.simulations.find((s) =>
+            s !== simSection &&
+            s.type === 'simulation' &&
+            !!s.simulation_url &&
+            !!segForCont &&
+            segForCont.duration >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC &&
+            contLocal >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC &&
+            contLocal < s.end_sec,
+          ) ?? null;
+          const nextSeg = timelineRef.current[segmentIdx + 1];
+          simReturnPlanRef.current = stackedNext
+            ? { kind: 'virtual', segIdx: segmentIdx, local: Math.max(contLocal, stackedNext.start_sec) }
+            : nextSeg
+              ? { kind: 'seek', global: nextSeg.offset }
+              : { kind: 'virtual', segIdx: segmentIdx, local: contLocal };
+        }
         merge({ showResumeBtn: true, resumeAction: 'backToVideo', controlsVisible: true });
         // (D5) The player itself paused the video for a post-roll sim — stop the active +
         // standby HLS loaders (never the b-roll pair) until a resume path startLoads them.
@@ -4183,14 +4222,29 @@ export function useProjectPlayer(
     // (D5) Both resume paths restart playback — restore streaming if a sim-hold stopped it.
     resumeHlsAfterSim();
     if (resumeActionRef.current === 'backToVideo') {
-      const targetGlobal = Math.max(0, simReturnGlobalSecRef.current);
       const tl = timelineRef.current;
+      const plan = simReturnPlanRef.current;
+      simReturnPlanRef.current = null;
       let targetIdx = 0;
-      for (let i = tl.length - 1; i >= 0; i--) {
-        if (tl[i].offset <= targetGlobal) { targetIdx = i; break; }
+      let localTime = 0;
+      if (plan?.kind === 'virtual' && tl[plan.segIdx]) {
+        // Post-roll continuation on the SAME segment: virtual local time, exactly the
+        // convention onEnded presents stacked sections with. No global mapping — a virtual
+        // time is numerically inside the next segment's region and would land there.
+        targetIdx = plan.segIdx;
+        localTime = plan.local;
+      } else {
+        const targetGlobal = Math.max(0, plan?.kind === 'seek' ? plan.global : simReturnGlobalSecRef.current);
+        for (let i = tl.length - 1; i >= 0; i--) {
+          if (tl[i].offset <= targetGlobal) { targetIdx = i; break; }
+        }
+        localTime = tl[targetIdx] ? Math.max(0, targetGlobal - tl[targetIdx].offset) : 0;
       }
       const targetSeg = tl[targetIdx];
-      const localTime = targetSeg ? Math.max(0, targetGlobal - targetSeg.offset) : 0;
+      // UNCLAMPED: virtual continuation times live past the host's duration by design — the
+      // same `offset + virtual local` convention onEnded stamps progress with.
+      const targetGlobal = targetSeg ? targetSeg.offset + localTime : 0;
+      const virtualAdvance = plan?.kind === 'virtual' && !!tl[plan.segIdx];
 
       // ATOMIC EXIT (same ordering as deactivateSim — audited fade-out flash): freeze + mute
       // NOW so the fade shows the last valid frame silently; run the state-restoring work
@@ -4267,6 +4321,23 @@ export function useProjectPlayer(
         if (targetSeg && targetIdx === curIdxRef.current) {
           videoRef.current!.currentTime = Math.min(localTime, targetSeg.duration);
           updateSimOverlay(targetIdx, localTime);
+          // A VIRTUAL advance presents the next stacked section (or hands the ended state to the
+          // choice/sequence-end path) over the host's final frame — the video must stay paused:
+          // play() on an ended element restarts it from ZERO, which is precisely the replay this
+          // plan exists to prevent.
+          if (virtualAdvance) {
+            if (!activeSimRef.current) {
+              // Nothing left to present past this time — the sequence is done; surface the same
+              // decision onEnded would (the demo's "What next?" doors live here).
+              if (branching) {
+                const cp = currentSequence()?.choice_point ?? null;
+                if (cp && !choiceResolvedRef.current && !activeChoiceRef.current) revealChoice(cp);
+              }
+              videoRef.current?.pause();
+              merge({ playing: false });
+            }
+            return;
+          }
           void safePlay(videoRef.current!).then((ok) => {
             // A refused play() is a covered, ACTIONABLE state, not a silent failure: the incoming
             // media will never become audible, so the outgoing package must keep its gain. Guarded

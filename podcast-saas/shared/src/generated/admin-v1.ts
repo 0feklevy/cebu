@@ -49,6 +49,9 @@ export interface AdminSettings {
   sim_transition_coordinator: boolean;
   rum_sample_rate: number;
   rum_retention_days: number;
+  // Welcome seeding (migration 085): the admin half of the two-layer gate; env
+  // WELCOME_SEED_ENABLED overrides when set. Off = no new user is seeded.
+  welcome_seed_enabled: boolean;
   updated_at: string;
 }
 

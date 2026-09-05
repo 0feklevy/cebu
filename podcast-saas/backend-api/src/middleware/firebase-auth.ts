@@ -181,6 +181,13 @@ export async function firebaseAuthMiddleware(
       // Link org owner
       await db.update(orgs).set({ owner_user_id: newUser.id }).where(eq(orgs.id, newOrg.id));
       request.dbUser = newUser;
+
+      // Welcome seeding (085) — fire-and-forget, dark-gated inside the service. Deliberately
+      // OUTSIDE any await the auth path depends on and never allowed to touch the 401 path:
+      // a broken seed must cost the new user nothing.
+      void import('../services/project/WelcomeSeedService.js')
+        .then(({ seedWelcomeProject }) => seedWelcomeProject({ id: newUser.id, default_org_id: newUser.default_org_id }))
+        .catch(() => {});
     }
 
     // Claim collaboration invites sent to this address before the account existed (migration 042),

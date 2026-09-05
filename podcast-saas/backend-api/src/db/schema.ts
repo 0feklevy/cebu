@@ -127,6 +127,10 @@ export const users = pgTable('users', {
   anam_api_key_encrypted: text('anam_api_key_encrypted'),  // BYOK Anam key (migration 029)
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   last_seen_at: timestamp('last_seen_at', { withTimezone: true }),
+  // Welcome seeding (migration 085): the user's personal clone of the shared template, set in
+  // the SAME transaction as the clone's insert — the primary idempotency check.
+  welcome_project_id: uuid('welcome_project_id'),
+  welcome_playlist_id: uuid('welcome_playlist_id'),
 });
 
 export const api_keys = pgTable('api_keys', {
@@ -173,6 +177,9 @@ export const projects = pgTable('projects', {
   // Access control (migration 036). New projects are private by default; existing rows were
   // backfilled to 'public' to preserve prior by-id access. See requireProjectAccess.
   visibility: projectVisibilityEnum('visibility').notNull().default('private'),
+  // Migration 085: marks a user's seeded welcome clone. A partial unique index (SQL-only —
+  // uniq_welcome_project_per_user ON (created_by) WHERE is_welcome_seed) makes seeding race-proof.
+  is_welcome_seed: boolean('is_welcome_seed').notNull().default(false),
   share_token:       text('share_token').unique(),
   share_enabled_at:  timestamp('share_enabled_at', { withTimezone: true }),
   // Creator-controlled permalink (migration 043): public URL is {PUBLIC_SITE_URL}/{slug}.
@@ -288,6 +295,8 @@ export const admin_settings = pgTable('admin_settings', {
   utility_model: text('utility_model').default('claude-haiku-4-5').notNull(),
   generation_model: text('generation_model').default('gemini-2.0-flash').notNull(),
   complex_model: text('complex_model').default('claude-opus-4-8').notNull(),
+  // Welcome seeding admin gate (migration 085). Env WELCOME_SEED_ENABLED overrides when set.
+  welcome_seed_enabled: boolean('welcome_seed_enabled').default(false).notNull(),
   complex_min_corpus_tokens: integer('complex_min_corpus_tokens').default(50000).notNull(),
   complex_min_retries: integer('complex_min_retries').default(2).notNull(),
   // Audio / TTS settings
