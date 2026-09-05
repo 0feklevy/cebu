@@ -2993,9 +2993,13 @@ export function useProjectPlayer(
         // simulations (welcome-demo audit). When such sections exist, the section exit path
         // reveals the choice after the stack truly finishes; the lead-in reveal is theirs to
         // suppress entirely, not to race.
+        // POST-ROLL means the section STARTS at (or past) the end of the video — the same test
+        // updateSimOverlay uses. The previous form (`duration >= start`) was true for every
+        // mid-roll section, so any film with a live window never revealed its choice during the
+        // lead-in and the doors only appeared after the video had fully ended.
         const hasPostRollSections = !!segmentsRef.current[idx]?.simulations.some((s) =>
           s.type === 'simulation' && !!s.simulation_url &&
-          seg.duration >= s.start_sec - SECTION_BOUNDARY_EPSILON_SEC,
+          s.start_sec >= seg.duration - SECTION_BOUNDARY_EPSILON_SEC,
         );
         const simHolding = !!activeSimRef.current || !!desiredSimRef.current;
         if (remaining <= cp.lead_in_sec && !hasPostRollSections && !simHolding

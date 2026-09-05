@@ -462,11 +462,11 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 16px 9px 12px;
+  padding: 11px 20px 11px 14px;
   border-radius: 999px;
-  background: rgba(10, 12, 18, 0.72);
+  background: rgba(10, 12, 18, 0.92);
   color: #fff;
-  font-size: 15px;
+  font-size: clamp(16px, 1.25vw, 22px);
   font-weight: 600;
   letter-spacing: 0.01em;
   white-space: nowrap;

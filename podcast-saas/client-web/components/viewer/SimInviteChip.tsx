@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
  * different activation (`activationKey`) — a viewer who scrubs back into the same section does not
  * get lectured twice. Pointer events pass straight through to the simulation underneath.
  */
-export const SIM_INVITE_HOLD_MS = 4500;
+export const SIM_INVITE_HOLD_MS = 3500;
 
 export function SimInviteChip({
   label,
