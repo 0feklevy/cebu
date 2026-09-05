@@ -1,0 +1,62 @@
+[
+  {
+    "film": 1,
+    "file": "SCRIPT-1-TEASER.md",
+    "title": "Touch This Video",
+    "version": "v3",
+    "targetSec": 58,
+    "beats": 10,
+    "narratorLines": 10,
+    "silentBeats": 0,
+    "viewerLines": 0,
+    "words": 110
+  },
+  {
+    "film": 2,
+    "file": "SCRIPT-2-TUTORIAL.md",
+    "title": "Make Yours",
+    "version": "v3",
+    "targetSec": 83,
+    "beats": 12,
+    "narratorLines": 12,
+    "silentBeats": 0,
+    "viewerLines": 0,
+    "words": 181
+  },
+  {
+    "film": 3,
+    "file": "SCRIPT-3-HEAVY-SIM.md",
+    "title": "Drop In Anything",
+    "version": "v3",
+    "targetSec": 51,
+    "beats": 8,
+    "narratorLines": 8,
+    "silentBeats": 0,
+    "viewerLines": 0,
+    "words": 90
+  },
+  {
+    "film": 4,
+    "file": "SCRIPT-4-VIEWER-POWERS.md",
+    "title": "Viewer Superpowers",
+    "version": "v3",
+    "targetSec": 57,
+    "beats": 11,
+    "narratorLines": 10,
+    "silentBeats": 1,
+    "viewerLines": 1,
+    "words": 92
+  },
+  {
+    "film": 5,
+    "file": "SCRIPT-5-SHARE.md",
+    "title": "One Link, Three Doors",
+    "version": "v3",
+    "targetSec": 45,
+    "beats": 7,
+    "narratorLines": 7,
+    "silentBeats": 0,
+    "viewerLines": 0,
+    "words": 81
+  }
+]

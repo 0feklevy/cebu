@@ -16,8 +16,8 @@ brand line.
 
 | # | t | KIND | NARRATION (verbatim TTS input) | ON SCREEN |
 |---|---|---|---|---|
-| 1 | 0:00–0:05 | VIDEO | It's built. It's gorgeous. …Ship it. | The finished project in the editor — one confident hold on the timeline. |
-| 2 | 0:05–0:13 | VIDEO | Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable. | **Create link** → **Share this video** sheet → the three rows, cursor tapping each AS IT'S NAMED: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. |
+| 1 | 0:00–0:03 | VIDEO | It's built. …Open the doors. | The finished project in the editor — one confident hold on the timeline. |
+| 2 | 0:03–0:13 | VIDEO | Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable. | **Create link** → **Share this video** sheet → the three rows, cursor tapping each AS IT'S NAMED: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. |
 | 3 | 0:13–0:20 | VIDEO | Claim your address, and publish. That's the link for the slide, the bio, the syllabus. | **Public page** tab → permalink typed → **Publish at this address** → URL copied → a quick REAL load of the public page. |
 | 4 | 0:20–0:27 | VIDEO | Got a team? Invite them. They edit — you stay the owner. | **Collaborators** section → invite by email → role visible. Anchor: CollaboratorsSection. |
 | 5 | 0:27–0:33 | VIDEO | And Access decides who watches. Everyone… link-holders… or just you. | **Access** select toggled through its modes, in Video settings. FRAME RULE: crop above the Access header line mentioning price — no money on camera. |

@@ -18,14 +18,14 @@ under the close.
 
 | # | t | KIND | NARRATION (verbatim TTS input; ∅ = silent) | ON SCREEN |
 |---|---|---|---|---|
-| 1 | 0:00–0:06 | VIDEO | Inside your video, your viewers get four powers. …Count along. | A shared video playing on the public page (`/slug`), clean and ordinary — for four more seconds. |
-| 2 | 0:06–0:12 | LIVE-WINDOW orbitLab | One: touch. Grab space — drag… and let go. You just launched a planet. | WINDOW OPENS t=6 (label chip "Launch a planet"): REAL Orbit Lab on top — the drag IS the velocity vector; release launches. Music down to the pulse. |
-| 3 | 0:12–0:18 | LIVE-WINDOW orbitLab (cont.) | Now watch gravity fight you for it. Every simulation section is this alive. | Force vectors bend the path, trails glow; a second launch if they're hooked. AUTO-RETURN t=18. |
+| 1 | 0:00–0:06 | VIDEO | Inside your video, your viewers get four powers. | A shared video playing on the public page (`/slug`), clean and ordinary — for four more seconds. |
+| 2 | 0:06–0:12 | LIVE-WINDOW orbitLab | One: touch. Grab empty space… drag… let go. — Watch gravity fight for it. | WINDOW OPENS t=6 (label chip "Launch a planet"): REAL Orbit Lab on top — the drag IS the velocity vector; release launches. Music down to the pulse. |
+| 3 | 0:12–0:18 | LIVE-WINDOW orbitLab (cont.) | Miss? Throw another. Every simulation section is this alive. | Force vectors bend the path, trails glow; a second launch if they're hooked. AUTO-RETURN t=18. |
 | 4 | 0:18–0:22 | VIDEO | Two: ask. Out loud — mid-video. Listen. | The viewer opens the ask surface; mic waveform pulses. Staging per capture ruling: ANAM avatar plan-of-record / podcast Tap-to-ask fallback, framed honestly. |
 | 5 | 0:22–0:28 | VIDEO | ∅ | REAL exchange, clean audio: "Why doesn't the moon crash into the earth?" → grounded spoken answer begins; caption chips render. Cut on the natural answer start — no faked latency. AUDIO PENDING the ElevenLabs key (owner action); scratch VO never ships. |
 | 6 | 0:28–0:31 | VIDEO | From this lesson. Not the internet. | Answer chips settle over the running video. (Verified: no creator-facing questions list exists in v0.7.0 — scene stays viewer-side only.) |
 | 7 | 0:31–0:38 | VIDEO | Three: choose. The story pauses… your viewer picks the road. The video follows. | **Follow user decisions** in the real viewer: Cards overlay → pick → the timeline visibly jumps down that path. |
-| 8 | 0:38–0:44 | VIDEO | Four: their way. Phones stay vertical — the frame chases your speaker. | Smart-Crop vertical in a phone frame — a REAL vertical render, crop window tracking the speaker; caption chip "Smart Crop". |
+| 8 | 0:38–0:44 | VIDEO | Four: anywhere. Phones stay vertical — the frame chases your speaker. | Smart-Crop vertical in a phone frame — a REAL vertical render, crop window tracking the speaker; caption chip "Smart Crop". |
 | 9 | 0:44–0:49 | VIDEO | Another language? Same video, dubbed. And captions ride along everywhere. | Viewer gear → **Audio language**: Original / Español — two dubbed words play; CC toggle on, captions render. |
 | 10 | 0:49–0:54 | VIDEO | Touch. Ask. Choose. Their way. Give your viewers powers — they'll give you attention. | Four-up grid of the four REAL captures (infographic layer, minimal). |
 | 11 | 0:54–0:57 | VIDEO | That's a Flow Video. | End card: **"Four powers. One link."** + down-playlist pointer: "Next: One Link, Three Doors" ▼ |
