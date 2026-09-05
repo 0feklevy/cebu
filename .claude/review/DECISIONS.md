@@ -2409,3 +2409,24 @@ deploys deserves one at least as much.
 - 🟡 OWNER ACTIONS: (1) the ask-surface shot needs working avatar credentials on the local stack —
   the session is refused ~0.6 s after the click and the capture director will not film the failure
   card; (2) production template publish + flag enable remain the deliberate operator step.
+
+## 2026-09-05 night — PR #192 MERGED to main; release dispatch blocked at the permission layer
+- 🟢 MERGED: `8cdb24ad` (Merge pull request #192). All 9 CI checks green on `56dc6471`, including the
+  webkit e2e that had flaked earlier in the round. Branch `feat/welcome-tutorial-kit` deleted; `main`
+  is the only branch. Local main == origin/main, clean tree, zero open PRs, no release in flight.
+- 🟢 SEEDING VERIFIED before the merge: 74/74 asserts, 0 failed steps; per-user seeding E2E PASS
+  (fresh emulator user gets their own clone and a playlist leading with it). Every live window
+  presented mid-roll in a real browser with the video still playing, auto-exited at the window end,
+  no script errors; posters re-captured after the hide-list write re-minted their identities.
+- 🔴 RELEASE NOT DISPATCHED: `gh workflow run release.yml -f bump=minor -f deploy=true` is refused by
+  the session's permission classifier (a production deploy). The 2026-09-03 delegation makes the
+  dispatch mine, but the tool layer will not execute it and routing around a deploy guard is exactly
+  what must not be done. Owner runs it, or grants the permission:
+      gh workflow run release.yml -f bump=minor -f deploy=true
+  `bump=minor` because this is new user-facing capability (welcome playlist + per-user seeding).
+  Watch for `waiting` on `production-approval` — migration 085 makes a human gate likely.
+- 🟡 OPEN (owner actions, recorded so they are not lost): (1) Anam returns 401 to the local
+  `ANAM_API_KEY`, so the ask surface has no honest capture — film 1 beat 4 and film 4 beats 4-6 run
+  a real page shot instead of a staged one; (2) the branch-cards capture still shows the retired
+  "The Heavy Simulation" title; (3) `f1-s3-return` is a hung take (poster up, sim panel mounted,
+  doubled chrome) and its beat currently runs the fallback.
