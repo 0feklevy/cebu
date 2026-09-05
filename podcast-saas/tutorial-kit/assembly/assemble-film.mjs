@@ -218,10 +218,34 @@ for (const t of timeline) {
       throw new Error(`scene ${t.scene}.${i}: ${src} yields ${got.toFixed(2)}s of the ${each.toFixed(2)}s it must fill ` +
         `(in=${inSec}) — shorten the beat, add a sub-cut, or mark the source mode:"loop"`);
     }
-    parts.push(part);
+    parts.push({ file: part, scene: `${t.scene}.${i}`, src });
   });
 }
-writeFileSync(join(WORK, 'concat.txt'), parts.map(p => `file '${p}'`).join('\n'));
+// THE OPENING FRAME IS THE FILM. An `in` offset tuned against one take lands on the next take's
+// page-load flash — white, or black, or a paused poster — and a contact sheet of the first cut was
+// mostly black frames. Every part's first frame is measured; a dark one is named, and a dark FIRST
+// frame of the film (the thumbnail, and a viewer's whole first impression) stops the build.
+const firstFrameLuma = (file) => {
+  const s = spawnSync(FF, ['-hide_banner', '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print',
+    '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stderr ?? '';
+  const m2 = s.match(/YAVG=([\d.]+)/);
+  return m2 ? Number(m2[1]) : null;
+};
+const DARK = 24;   // 8-bit luma average; a real UI screenshot sits far above this
+const darkParts = [];
+for (const p of parts) {
+  const y = firstFrameLuma(p.file);
+  if (y !== null && y < DARK && !p.src.includes('under-window')) darkParts.push(`${p.scene} (luma ${y.toFixed(1)}) ${basename(p.src)}`);
+}
+if (darkParts.length) {
+  console.error(`\n!! film ${film}: ${darkParts.length} cut(s) open on a near-black frame — a load flash or a paused poster:\n   ` +
+    darkParts.join('\n   ') + `\n   Fix the \`in\` offset or reshoot; the EDL's offsets are read off frame sheets.\n`);
+  if (darkParts[0].startsWith(`${edl.cuts[0].scene}.0 `)) {
+    throw new Error(`film ${film}: the FIRST frame of the film is black. That frame is the thumbnail and the ` +
+      `viewer's first impression — fix scene ${edl.cuts[0].scene}'s source or \`in\` before building.`);
+  }
+}
+writeFileSync(join(WORK, 'concat.txt'), parts.map(p => `file '${p.file}'`).join('\n'));
 const base = join(WORK, 'base.mp4');
 execFileSync(FF, ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
   '-i', join(WORK, 'concat.txt'), '-c', 'copy', base]);
