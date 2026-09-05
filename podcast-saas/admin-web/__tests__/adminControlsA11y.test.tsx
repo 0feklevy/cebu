@@ -73,6 +73,7 @@ const SWITCH_TITLES = [
   'Frame-valid transition coordinator',
   'Adaptive quality',
   'Boundary sentinel',
+  'Welcome project seeding',
 ];
 
 describe('admin Controls kill switches (ui-ux-007)', () => {

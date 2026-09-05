@@ -16,6 +16,9 @@ const state = {
   userUpdates: [] as Array<Record<string, unknown>>,
   playlistInserts: [] as Array<Record<string, unknown>>,
   itemInserts: [] as Array<Record<string, unknown>>,
+  // The projects.findFirst fake serves two different lookups (template by id, then the orphan
+  // scan); this ping-pong marker says which answer is next.
+  pendingProjectLookup: 'template' as 'template' | 'orphan',
 };
 
 vi.mock('../../../db/index.js', () => ({
