@@ -1,0 +1,18 @@
+{
+  "startedAt": "2026-09-04T22:30:19.365Z",
+  "projectId": "2b2b4b74-0100-44fe-bb2c-33812b308295",
+  "videoId": "632dd368-ed82-4868-afd4-576ae47c5cd8",
+  "simId": "d8e8eacf-5504-4bb2-af8c-c52726d9c0b5",
+  "imageId": "83cdb438-4e34-4a92-9479-3fb9726ce350",
+  "audioId": "9ecc618b-f551-4b77-bbaf-30e735e4b277",
+  "hls": {
+    "id": "632dd368-ed82-4868-afd4-576ae47c5cd8",
+    "hls_status": "ready",
+    "hls_url": "http://localhost:8080/hls-public/t/1789171200-34a3fe26c7278ae579edecaff0f6f733/hls/632dd368-ed82-4868-afd4-576ae47c5cd8/mtnj1v4d/master.m3u8",
+    "raw_url": "http://localhost:8080/video-raw/t/1789171200-cbb6371e17802587f638cdda5afb783f/videos/2b2b4b74-0100-44fe-bb2c-33812b308295/7b3cb418-616d-496f-a413-7eb2c9dacf2e.mp4",
+    "duration_sec": 24.433332,
+    "hls_error": null,
+    "hls_current_tier": "1080p",
+    "hls_360p_ready": true
+  }
+}

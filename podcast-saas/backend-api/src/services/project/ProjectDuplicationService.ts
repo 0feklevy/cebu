@@ -51,10 +51,11 @@ import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
 import { db } from '../../db/index.js';
+import { jsonbValue } from '../../db/jsonb.js';
 import {
   audio_files, avatar_visuals, branch_choice_points, branch_edges, branch_sequences,
   camera_plans, corpora, hls_retired_runs, image_files, project_duplications, projects, scenes,
-  scripts, sim_posters, sim_revisions, simulations, timeline_markers, timeline_sections, video_files,
+  scripts, sim_files, sim_posters, sim_revisions, simulations, timeline_markers, timeline_sections, video_files,
   branch_path_events, collaborators, course_lessons, playlist_items, token_usage,
   video_generation_jobs, jobs, avatar_conversations, audio_renders, project_redirect_targets,
   billing_transactions, user_purchases,
@@ -271,6 +272,12 @@ export interface DuplicationSnapshot {
   choicePoints: Row<typeof branch_choice_points>[];
   edges: Row<typeof branch_edges>[];
   sims: Row<typeof simulations>[];
+  /**
+   * The blob-dedup registry rows of every simulation above (import-path sims resolve their bytes
+   * through these). A clone without them plays until the first `resolveSimFileKey` miss, then 404s
+   * file-by-file — which is why they ride in the snapshot like any other child table.
+   */
+  simFiles: Row<typeof sim_files>[];
   /** The ACTIVE revision of each simulation that has one. At most one per simulation. */
   activeRevisions: Row<typeof sim_revisions>[];
   posters: Row<typeof sim_posters>[];
@@ -380,7 +387,7 @@ export class ProjectDuplicationService {
 
     const [
       videoFiles, imageFiles, audioFiles, sections, markers,
-      sequences, choicePoints, edges, sims,
+      sequences, choicePoints, edges, sims, simFiles,
       scriptRows, sceneRows, cameraPlanRows, corpusRows, avatarVisualRows,
     ] = await Promise.all([
       db.select().from(video_files).where(eq(video_files.project_id, sourceProjectId)),
@@ -392,6 +399,8 @@ export class ProjectDuplicationService {
       db.select().from(branch_choice_points).where(eq(branch_choice_points.project_id, sourceProjectId)),
       db.select().from(branch_edges).where(eq(branch_edges.project_id, sourceProjectId)),
       db.select().from(simulations).where(eq(simulations.project_id, sourceProjectId)),
+      db.select().from(sim_files).where(inArray(sim_files.simulation_id,
+        db.select({ id: simulations.id }).from(simulations).where(eq(simulations.project_id, sourceProjectId)))),
       db.select().from(scripts).where(eq(scripts.project_id, sourceProjectId)),
       db.select().from(scenes).where(eq(scenes.project_id, sourceProjectId)),
       db.select().from(camera_plans).where(eq(camera_plans.project_id, sourceProjectId)),
@@ -412,7 +421,7 @@ export class ProjectDuplicationService {
 
     return {
       project, videoFiles, imageFiles, audioFiles, sections, markers,
-      sequences, choicePoints, edges, sims, activeRevisions, posters,
+      sequences, choicePoints, edges, sims, simFiles, activeRevisions, posters,
       scripts: scriptRows, scenes: sceneRows, cameraPlans: cameraPlanRows,
       corpora: corpusRows, avatarVisuals: avatarVisualRows,
       retiredHlsPrefixes: await retiredHlsPrefixesFor(videoFiles.map((v) => v.id)),
@@ -471,7 +480,19 @@ export class ProjectDuplicationService {
    * to storage — the only impurity is uuid minting, which is what makes the dry run cheap enough to
    * run as an ordinary read.
    */
-  buildPlan(snap: DuplicationSnapshot): PlannedDuplication {
+  buildPlan(
+    snap: DuplicationSnapshot,
+    opts: {
+      /**
+       * Welcome-seeding mode (085): the clone SHARES the template's heavy bytes instead of
+       * copying them. Only `simulations/…` (small packages, posters, the bridge artifacts the
+       * retarget rewrites) and `thumbnails/…` remain in the copy list; video raw/HLS/captions
+       * bytes are shared by carrying their columns verbatim in `commitRows` (raw `storage_key`
+       * becomes null — the clone never owned those bytes, and its delete must not reach them).
+       */
+      shareHeavyBytes?: boolean;
+    } = {},
+  ): PlannedDuplication {
     const ids = new IdAllocator();
     const warnings: string[] = [];
     const storage: StorageCopy[] = [];
@@ -662,6 +683,7 @@ export class ProjectDuplicationService {
       branch_choice_points: snap.choicePoints.length,
       branch_edges: snap.edges.length,
       simulations: snap.sims.length,
+      sim_files: snap.simFiles.length,
       sim_revisions: snap.activeRevisions.length,
       sim_posters: posterPlan.rows.length,
       scripts: snap.scripts.length,
@@ -689,6 +711,16 @@ export class ProjectDuplicationService {
     // a diff.
     warnings.push('avatar_profiles is session-scoped (session_key UNIQUE, no project_id) — nothing project-scoped exists to copy');
 
+    const sharedOut = opts.shareHeavyBytes
+      ? storage.filter((c) => !(c.from.startsWith('simulations/') || c.from.startsWith('thumbnails/')))
+      : [];
+    const effectiveStorage = opts.shareHeavyBytes
+      ? storage.filter((c) => c.from.startsWith('simulations/') || c.from.startsWith('thumbnails/'))
+      : storage;
+    if (opts.shareHeavyBytes && sharedOut.length) {
+      warnings.push(`shareHeavyBytes: ${sharedOut.length} copies dropped — those bytes stay shared with the template`);
+    }
+
     return {
       ids,
       posters: posterPlan.rows,
@@ -698,7 +730,7 @@ export class ProjectDuplicationService {
         idMap: ids.toJSON(),
         rowCounts,
         excluded,
-        storage,
+        storage: effectiveStorage,
         estimatedBytes,
         oversize,
         warnings,
@@ -1118,6 +1150,20 @@ export class ProjectDuplicationService {
        * before — see `finalizeDuplication` for why that window had to be closed.
        */
       finalize?: { duplicationId: string; now: Date };
+      /**
+       * Welcome-seeding (085). `shareHeavyBytes` pairs with the buildPlan flag of the same name:
+       * HLS/caption columns carry the template's keys VERBATIM (the bytes are shared; `hls/…` and
+       * `blobs/…` namespaces are project-id-free so the escape scan stays honest), while raw
+       * `storage_key`/`crop_key`/`captions_vtt_key` become null through the filtered copy map.
+       * `orgId` re-homes the clone into the USER's org (a template lives in a system org; the
+       * default inherit would strand the clone outside the owner's org) — and because hosts are
+       * ORG-scoped rows, a cross-org clone drops `host_a/b`. `title` bypasses the "(copy)" suffix;
+       * `isWelcomeSeed` stamps the row for the partial unique index.
+       */
+      shareHeavyBytes?: boolean;
+      orgId?: string;
+      title?: string;
+      isWelcomeSeed?: boolean;
     } = {},
   ): Promise<string> {
     const { plan, ids, posters } = planned;
@@ -1131,20 +1177,23 @@ export class ProjectDuplicationService {
     await db.transaction(async (tx) => {
       // 1 ─ root
       const newThumbKey = key(src.thumbnail_key);
+      const crossOrg = opts.orgId != null && opts.orgId !== src.org_id;
       await tx.insert(projects).values({
         id: targetId,
-        org_id: src.org_id,
+        org_id: opts.orgId ?? src.org_id,
         // The duplicator owns the copy. Delete is owner-only on `created_by`, so inheriting the
         // source's creator could hand someone a project they cannot delete.
         created_by: requestedBy ?? src.created_by,
-        title: duplicatedTitle(src.title),
+        title: opts.title ?? duplicatedTitle(src.title),
+        is_welcome_seed: opts.isWelcomeSeed ?? false,
         tier: src.tier,
         topic: src.topic,
         style_preset: src.style_preset,
         // Hosts are ORG-scoped persona rows, not project-scoped: the copy references the same ones,
-        // exactly as two hand-made projects in one org would.
-        host_a_id: src.host_a_id,
-        host_b_id: src.host_b_id,
+        // exactly as two hand-made projects in one org would — UNLESS the clone re-homes into a
+        // different org, where those rows do not exist for the new owner.
+        host_a_id: crossOrg ? null : src.host_a_id,
+        host_b_id: crossOrg ? null : src.host_b_id,
         format: src.format,
         target_duration_min: src.target_duration_min,
         pacing: src.pacing,
@@ -1239,6 +1288,19 @@ export class ProjectDuplicationService {
         }));
       }
 
+      // 3b ─ the blob-dedup registry behind import-path simulations. The blobs themselves are the
+      // product-wide shared store (never copied, never remapped); what each clone needs is its own
+      // (simulation_id, rel_path) → blob_id rows, or `resolveSimFileKey` on the clone 404s every
+      // file the moment the byte-empty prefix misses. Absent rows here were a latent bug for ANY
+      // duplicated imported-sim project, found by the welcome-template seeding design (fix #1).
+      if (snap.simFiles.length) {
+        await tx.insert(sim_files).values(snap.simFiles.map((f) => ({
+          simulation_id: ids.requireInternal(f.simulation_id, 'sim_files.simulation_id')!,
+          rel_path: f.rel_path,
+          blob_id: f.blob_id,
+        })));
+      }
+
       // 4 ─ the one carried revision per simulation, and then the pointer
       for (const rev of snap.activeRevisions) {
         const newRevId = ids.next(rev.id);
@@ -1318,7 +1380,10 @@ export class ProjectDuplicationService {
         await tx.insert(sim_posters).values(posters.map((p) => ({
           id: p.id, simulation_id: p.simulationId, package_revision: p.packageRevision,
           variant_key: p.variantKey, config_hash: p.configHash, aspect_profile: p.aspectProfile,
-          quality_profile: p.qualityProfile, identity: p.identity, variants: p.variants,
+          // jsonbValue: a raw JS array through this driver lands DOUBLE-ENCODED (a jsonb string),
+          // and sim_posters_variants_array_chk rejects it — the exact defect PosterService fixed
+          // in v0.6.1; found here by the welcome-seed E2E (posters first rode duplication tonight).
+          quality_profile: p.qualityProfile, identity: p.identity, variants: jsonbValue(p.variants),
           transparent: p.transparent, captured_at: p.capturedAt,
         })));
       }
@@ -1328,9 +1393,12 @@ export class ProjectDuplicationService {
         await tx.insert(video_files).values(snap.videoFiles.map((v) => ({
           id: ids.next(v.id), project_id: targetId, filename: v.filename, file_size: v.file_size,
           storage_key: key(v.storage_key), status: v.status, duration_sec: v.duration_sec,
-          hls_master_key: key(v.hls_master_key),
+          // Share mode: the clone plays the template's HLS tree verbatim (`hls/{videoFileId}` is
+          // project-id-free, so nothing escapes); its raw/crop/caption KEYS null out through the
+          // filtered copy map while `captions_vtt` TEXT below still carries the content.
+          hls_master_key: opts.shareHeavyBytes ? v.hls_master_key : key(v.hls_master_key),
           hls_current_tier: v.hls_current_tier,
-          hls_360p_key: key(v.hls_360p_key),
+          hls_360p_key: opts.shareHeavyBytes ? v.hls_360p_key : key(v.hls_360p_key),
           // Derived state carried as DATA so the copy never re-runs a transcode, a crop analysis or
           // a caption pass it already has the answer to — EXCEPT where the answer is "a job is
           // running", which is never true of a copy. See `duplicatedVideoPipelines`.

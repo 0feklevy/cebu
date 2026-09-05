@@ -1,0 +1,113 @@
+== BEFORE (v2 legacy section, cold) ==
+ 190883ms warm-first-paint 
+--- sim-public + api requests (finished)
+    519ms fin      7ms       160B enc=- cache=no-store /api/v1/platform/settings
+    548ms fin     22ms        99B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/share
+    552ms fin     23ms      1551B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede
+    552ms fin     25ms     14191B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/videos
+    565ms fin     39ms        15B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/avatar/circles
+    569ms fin     43ms     36061B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/editor-state
+    674ms fin      7ms         2B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/markers
+    681ms fin     10ms       126B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share
+    722ms fin      4ms      6530B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index
+    724ms fin      4ms      4147B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Dynei
+    724ms fin      5ms     44207B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFL
+    724ms fin      6ms     14426B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Kines
+    738ms fin      8ms      3682B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Micro
+    738ms fin      9ms       485B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/model
+    738ms fin     10ms      6152B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js
+    739ms fin      9ms    640466B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index
+    740ms fin     21ms       126B enc=- cache=no-store /api/v1/projects/40671c25-3b51-4dc7-93fb-b7755d9ebede/library-share
+    740ms fin      3ms     31086B enc=- cache=no-cache /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?d
+    740ms fin      9ms    568700B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/micro
+   1082ms fin    260ms  29719784B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kines
+   1261ms fin     52ms   5492776B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynei
+   6886ms fin      2ms     31086B enc=- cache=no-cache /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/index.html?d
+   6908ms fin      3ms      6530B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index
+   6908ms fin      3ms      4147B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Dynei
+   6908ms fin      6ms       485B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/model
+   6908ms fin      6ms     14426B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Kines
+   6908ms fin      6ms      3682B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/Micro
+   6909ms fin      6ms      6152B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/sim.js
+   6909ms fin      6ms     44207B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/GLTFL
+   6909ms fin      5ms    640466B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/assets/index
+   6909ms fin      4ms    568700B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/micro
+   7268ms fin    258ms  29719784B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/kines
+   7382ms fin     17ms   5492776B enc=- cache=- /sim-public/simulations/40671c25-3b51-4dc7-93fb-b7755d9ebede/d8b8397a-3ce5-4ab8-9885-df1f33f61312/models/dynei
+   8540ms fin      6ms     27032B enc=- cache=no-cache /sim-authoring.js
+
+== BEFORE (v3 revision section) ==
+  27828ms warm-first-paint SIM_PAINTED
+--- sim-public + api requests (finished)
+    582ms fin      4ms       160B enc=- cache=no-store /api/v1/platform/settings
+    597ms fin     10ms        99B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/share
+    600ms fin     13ms        15B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/avatar/circles
+    607ms fin     16ms      6759B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/videos
+    607ms fin     17ms      1566B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f
+    607ms fin     18ms     21328B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor-state
+    735ms fin      7ms         2B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/markers
+    744ms fin      3ms      6530B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    744ms fin      7ms       126B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share
+    776ms fin     16ms       126B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share
+    777ms fin      4ms     53179B enc=- cache=no-cache /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/index.html?d
+    777ms fin      5ms      4147B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    777ms fin      2ms     29601B enc=- cache=no-cache, must-revalidate /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    777ms fin      6ms     44207B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    820ms fin      8ms     14426B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    820ms fin     10ms      3682B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    820ms fin     10ms       485B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    820ms fin     11ms      6152B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    832ms fin     12ms     84839B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    832ms fin     11ms    640466B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+    850ms fin     11ms    568700B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   1171ms fin    297ms  29719784B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   1246ms fin     29ms   5492776B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   2671ms fin      3ms     27032B enc=- cache=no-cache /sim-authoring.js
+   2746ms fin     19ms       141B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/a18ace87-8d60-4ee1-8e0e-683f4bcfbbf5/poster
+   2786ms fin      3ms     53257B enc=- cache=no-cache /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/index.html?d
+   2787ms fin      1ms     80807B enc=- cache=- /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/177324aa-fabe-45a4-9f29-d0518d5c3111/vendor/matte
+   4320ms fin      1ms       -44B enc=- cache=no-cache /sim-authoring.js
+   4361ms fin     13ms       141B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/simulations/177324aa-fabe-45a4-9f29-d0518d5c3111/poster
+   6819ms fin      0ms      -901B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   6819ms fin      0ms      -885B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   6820ms fin      0ms      -899B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   6820ms fin      0ms      -900B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+   6820ms fin      0ms      -900B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/37
+
+== AFTER (v3 revision section) ==
+  27973ms warm-first-paint SIM_PAINTED
+--- sim-public + api requests (finished)
+    691ms fin      7ms       160B enc=- cache=no-store /api/v1/platform/settings
+    713ms fin     22ms        15B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/avatar/circles
+    719ms fin     28ms      6759B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/videos
+    721ms fin     29ms      1567B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f
+    730ms fin     39ms        99B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/share
+    742ms fin     51ms     22581B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/editor-state
+    829ms fin      6ms         2B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/markers
+    862ms fin     13ms       126B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share
+    862ms fin     22ms       126B enc=- cache=no-store /api/v1/projects/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/library-share
+    863ms fin      5ms     29601B enc=- cache=no-cache, must-revalidate /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    866ms fin      4ms      6530B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    867ms fin      5ms      4147B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    868ms fin      5ms     44207B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    871ms fin      8ms      3682B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    872ms fin      8ms     14426B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    875ms fin      9ms       485B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    876ms fin      9ms    568700B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    876ms fin     10ms      6152B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    877ms fin      8ms    640466B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+    877ms fin     10ms     85795B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   1773ms fin    788ms  29719784B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   1827ms fin     21ms   5492776B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -976B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -959B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -973B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -974B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -974B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -972B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -971B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -973B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6809ms fin      0ms      -975B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6817ms fin      8ms         0B enc=- cache=no-cache, must-revalidate /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   6937ms fin      2ms      -923B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94
+   7213ms fin    298ms  29719784B enc=- cache=public, max-age=31536000, immutable /sim-public/simulations/6bf5b36b-2dfc-4dbe-9dc4-4f17c56de79f/7a9024cb-ed8a-4e9e-9dc1-cdb4ad158ab7/revisions/94

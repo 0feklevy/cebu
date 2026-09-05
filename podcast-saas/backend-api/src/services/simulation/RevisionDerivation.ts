@@ -50,6 +50,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { sim_revisions, simulations } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
+import { mapWithLimit } from '../../lib/mapWithLimit.js';
 import type { StorageService } from '../storage/StorageService.js';
 import { RevisionService, type RevisionDbTx } from './RevisionService.js';
 import { revisionFileKey, revisionManifestKey } from 'shared/sim/simRevision';
@@ -166,6 +167,14 @@ function derivationAbortError(): Error {
   err.name = 'AbortError';
   return err;
 }
+
+/**
+ * Fan-out width for staging a derived revision (read from the base + write to storage).
+ * Same reasoning as SimulationService's REVISION_UPLOAD_CONCURRENCY: each worker holds one
+ * file in memory, so the cap keeps peak memory and storage connections bounded while a
+ * many-file package stops being a chain of serial round trips.
+ */
+const DERIVATION_UPLOAD_CONCURRENCY = 8;
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw derivationAbortError();
@@ -390,16 +399,21 @@ export async function deriveRevision(opts: {
   const uploading = await revisions.beginUpload(opts.simulationId, draft.id);
 
   const files: SimManifestFile[] = [];
+  const uploadStartedAt = Date.now();
   try {
-    for (const item of plan.files) {
+    // Bounded fan-out (order-preserving), not a serial loop: each item is a base-package read
+    // followed by a storage write, and chaining them one at a time made a 30MB derivation a
+    // long file-by-file crawl on cloud storage. Abort semantics are unchanged — checked per
+    // item, first failure rejects the stage and the draft is marked failed below.
+    files.push(...await mapWithLimit(plan.files, DERIVATION_UPLOAD_CONCURRENCY, async (item) => {
       throwIfAborted(opts.signal);
-      files.push(await revisions.writeFile(uploading, storagePrefix, {
+      return revisions.writeFile(uploading, storagePrefix, {
         manifestPath: item.manifestPath,
         bytes: await item.read(),
         contentType: item.contentType,
         role: item.role,
-      }));
-    }
+      });
+    }));
   } catch (err) {
     // Abandoned where it stands: bytes in a never-referenced prefix, row failed, live package
     // untouched. The GC sweeps the prefix; the row records what made it.
@@ -407,6 +421,13 @@ export async function deriveRevision(opts: {
       .catch(() => undefined);
     throw err;
   }
+  // Publish observability: where a slow derivation actually spends its time (one line per publish).
+  logger.info({
+    simulationId: opts.simulationId, revisionId: draft.id, trigger: opts.trigger,
+    fileCount: files.length,
+    totalBytes: files.reduce((a, f) => a + f.bytes, 0),
+    uploadMs: Date.now() - uploadStartedAt,
+  }, 'sim publish: derived revision files staged');
 
   const validating = await revisions.finishUpload(opts.simulationId, draft.id);
   const manifest = buildDerivedManifest({

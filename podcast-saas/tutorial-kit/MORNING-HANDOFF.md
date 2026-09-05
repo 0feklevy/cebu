@@ -1,0 +1,59 @@
+> ⚠️ **SUPERSEDED (2026-09-05 midday)** — the owner reviewed this cut and rejected it ("stuck and boring").
+> A v3 overhaul is in progress: live mid-roll simulation windows instead of captured footage,
+> scripts rewritten, driving music, energetic free-voice narration, layout-driven template,
+> editor sim-loading performance fix. Follow `PRODUCTION-PLAN.md` § "v3 PIVOT" and
+> `CREATIVE-BRIEF.md` (v4 header) for the current truth; this file is kept as the record of cut 1.
+
+# בוקר טוב — דוח המסירה של ריצת הלילה (2026-09-05)
+
+## מה מחכה לך
+
+**חוויית ה-Welcome המלאה חיה מקומית** — פתח ותיגע:
+- 🎬 **הפרויקט**: http://localhost:3000/welcome-flow-video (או דרך TEMPLATE.json → demo.shareUrl)
+- 📃 **הפלייליסט** (4 פריטים): ראה `seeding/TEMPLATE.json → playlist.url`
+- 🔀 **ה-PR**: https://github.com/0feklevy/cebu/pull/192
+
+המסע כולו עובד ואומת חי: טיזר → **הלהקה חיה, גע בה** → "חזרה" ממשיכה **קדימה** אל
+הטוטוריאל (תיקון מוצר אמיתי שנולד הלילה) → מערכת השמש (שנבנתה מול המצלמה בטוטוריאל,
+עם אותו פרומפט מוטמע מילה-במילה) → Orbit Lab (שגר פלנטות, וקטורי כוח) → לוח גלטון
+הבהיר (הגיוון שביקשת) → דלתות "?What next" אל סרטי הנישה.
+
+**ההטמעה לכל-משתמש עובדת (E2E PASS)**: משתמש חדש מקבל שיבוט פרטי עריך + פלייליסט אישי
+שפריטו הראשון הוא השיבוט שלו. חשוך לחלוטין עד שמדליקים (env + דגל אדמין + מזהה תבנית).
+
+## חמשת הסרטים (assembly/out/*.SCRATCH.mp4)
+טיזר 72ש · טוטוריאל 2:13 · כבד 78ש · כוחות-צופה 72ש · שיתוף 64ש — כולם מצילומי מוצר
+אמיתיים, מוזיקה מקורית, שכבת מותג. **הקריינות היא סקראץ' (say) לתזמון בלבד** — ראה חסימה.
+
+## ⛔ שלוש פעולות שרק אתה יכול
+1. **מפתח ElevenLabs מקומי** — גם ב-env וגם ב-keystore יושב key-ID (לא מפתח `sk_`).
+   זה חוסם קריינות אמיתית + דיבוב ספרדית + אודיו תשובת-הקול בסרט. אחרי החלפה:
+   `tutorial-kit/narration/run-narration.sh --force` → הרכבה מחדש (5 פקודות `assemble-film`)
+   → `seeding/build-template.mjs` — הכול ירוץ נקי.
+2. **וטו/אישור טעם**: 5 התסריטים (עברו פאנל מבקרים כפול), המוזיקה, קול-ברירת-המחדל.
+3. **פרסום לפרוד** (כשתרצה): פרסום התבנית מול אחסון פרוד = צעד אופרטור מכוון
+   (seedGuards bypass — DESIGN.md PRE-BUILD FIX #2), ואז הדגלים. ה-PR לא נוגע בפרוד.
+
+## מה נבנה מתחת (הכול רגנרבילי — README = חוזה הרגנרציה)
+- **מוצר**: מיגרציה 085 + WelcomeSeedService (שכבות-חושך כפולות, idempotent, org-rehoming)
+  + מצב shareHeavyBytes בשכפול (אפס בייטים כבדים למשתמש) + טוגל אדמין; שני באגים רדומים
+  בשכפול תוקנו (sim_files, poster-jsonb); תיקון ה-viewer (post-roll advance) — מוגדר מחדש
+  לפי חוזה-הטסטים הקיים אחרי שביקורת-ההשלמה תפסה רגרסיה (1988/1988 ירוקים).
+- **הקיט**: 3 סימים מקוריים (Murmuration 3D, Orbit Lab, מערכת שמש three.js) + זוג מהגיטהאב
+  שלך (גלטון + 5 מינים — יש שם עוד עשרות לעתיד!), מנוע צילום עם משמעת הוכחות-פריים,
+  הרכבה עם טיימליין נגזר-קריינות, פאנלי מבקרים לפני/אחרי כל שלב (הכול ב-PRODUCTION-PLAN).
+
+## פתוחים מתועדים (לא חוסמים)
+- ~~גלטון: ג'נרציה נכשלת~~ **נפתר בהמשך הבוקר**: הסיבה האמיתית — matter-js נטען מ-CDN
+  ומכולת-הקפצ'ר בלי רשת (השער צדק! ההודעה הכללית הסתירה). matter-js (MIT) הוטמע בחבילה +
+  נוסף לוג-קבע לשגיאת-הג'נרציה האמיתית (פער תצפיתיות). כל 4 הסקשנים מג'ונרטים + פוסטרים;
+  גלטון רץ חי עם Simple UI (כרטיס סטטיסטיקה בלבד) וכדורים נופלים ב-auto-script — ראה
+  seeding/proof/galton-minimal-ui.png.
+- overlays שטוחים (תמונה/סטינג) לא מוצגים ב-branching viewer (מגבלת Phase-2) — התקבל;
+  הם משרתים את סצנות העורך בסרטים.
+- שאלות-מאזינים נשמרות אך אין UI ליוצר (הוסר 2026-09-03) — פיצ'ר עתידי זול.
+- CI: **9/9 ירוקים ✅** אחרי 4 סבבי תיקונים אמיתיים (ראצ'ט-טיפוסים, a11y, רגרסיית-הנגן
+  שנתפסה בביקורת-ההשלמה ותוקנה לפי חוזה-הטסטים, רשימת-מיגרציות כפולה ב-check-db) + עוד
+  flake אחד של webkit שהוכח כ-flake ב-rerun. ה-PR מוכן לביקורת שלך.
+
+*כל הכרעה אוטונומית מהלילה רשומה ב-PRODUCTION-PLAN.md + DECISIONS.md.*

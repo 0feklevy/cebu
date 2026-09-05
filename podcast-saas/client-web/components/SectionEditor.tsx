@@ -1111,7 +1111,14 @@ export function SectionEditor({
       if (event === 'status') {
         try { setGenerationStatus((JSON.parse(dataStr) as { status: string }).status); } catch { /* ignore */ }
       } else if (event === 'token') {
-        setGenerationStatus(prev => (prev && !prev.endsWith('…') ? prev + '…' : (prev ?? 'Generating bridge script…')));
+        // Streamed tokens = the model is writing. Keep the status ALIVE but bounded: cycle one to
+        // three dots instead of growing an ellipsis chain forever (the old `prev + '…'` produced
+        // "Generating bridge script…………………" on long generations — ui-ux review 2026-09-05).
+        setGenerationStatus(prev => {
+          const base = (prev ?? 'Generating bridge script').replace(/[.…]+$/, '');
+          const dots = ((prev?.match(/\.+$/)?.[0].length ?? 0) % 3) + 1;
+          return base + '.'.repeat(dots);
+        });
       } else if (event === 'done') {
         errorHandled = true;
         try { applyDone((JSON.parse(dataStr) as { section: TimelineSection }).section); } catch { /* ignore */ }
@@ -2306,8 +2313,7 @@ export function SectionEditor({
                   <div style={cardStyle('#f59e0b')}>
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span aria-hidden style={{ fontSize: 14 }}>✦</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>This moment</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: 'hsl(var(--foreground))' }}>Generate mini model</span>
                       </div>
                       <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0', lineHeight: 1.5 }}>
                         What the viewer sees and can touch while this section plays. Describe it, or just

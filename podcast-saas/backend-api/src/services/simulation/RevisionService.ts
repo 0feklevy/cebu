@@ -37,6 +37,7 @@ import { simulations, sim_revisions } from '../../db/schema.js';
 import type { StorageService, StoredObjectHead } from '../storage/StorageService.js';
 import { getStorageAdapter } from '../storage/getStorageAdapter.js';
 import { logger } from '../../lib/logger.js';
+import { mapWithLimit } from '../../lib/mapWithLimit.js';
 import { loadTrustedRegistry } from '../export/capture/dependencies/trustedRegistry.js';
 import {
   validateCaptureCompatibility,
@@ -91,6 +92,14 @@ export class RevisionConflict extends Error {
  * exactly the `tx` a `db.transaction(async (tx) => …)` callback receives.
  */
 export type RevisionDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Fan-out width for the post-upload read-back (GET + hash + HEAD per manifest file). Bounded for
+ * the same reason as the upload waves: parallel enough that verifying a many-file package is not
+ * a chain of serial round trips, capped so verification cannot monopolise storage connections and
+ * at most this many files are buffered in flight beyond what the capture gate retains anyway.
+ */
+const READBACK_CONCURRENCY = 8;
 
 /** A published file failed verification. Publication must not proceed. */
 export interface VerificationProblem {
@@ -393,23 +402,38 @@ export class RevisionService {
     rev: SimRevisionRecord,
     storagePrefix: string,
     manifest: SimManifest,
+    /**
+     * Bytes already read back by the verification pass (validate() supplies them), so this gate
+     * no longer re-streams the whole package from storage a second time. `readError` is set when
+     * any capture-relevant file could not be read — the same fail-closed answer the old serial
+     * read produced. Callers without pre-read bytes (none today, but the direct path is kept so
+     * the gate never silently depends on the verifier having run) fall back to reading storage.
+     */
+    preRead?: { files: Map<string, Buffer>; readError?: string },
   ): Promise<CaptureCompatibilityReport> {
-    const files = new Map<string, Buffer>();
-    try {
-      for (const file of manifest.files) {
-        // Only what the module graph and the document can reference — posters and canary evidence
-        // are not part of what renders.
-        if (file.role === 'poster' || file.role === 'canary') continue;
-        files.set(file.path, await this.storage.readObject(revisionFileKey(storagePrefix, rev.id, file.path)));
+    const couldNotEvaluate = (message: string): CaptureCompatibilityReport => ({
+      verdict: 'incompatible',
+      reasons: [`capture compatibility could not be evaluated: ${message}`],
+      requiredPacks: [],
+      external: [],
+      missingLocalRefs: [],
+    });
+    let files: Map<string, Buffer>;
+    if (preRead) {
+      if (preRead.readError !== undefined) return couldNotEvaluate(preRead.readError);
+      files = preRead.files;
+    } else {
+      files = new Map<string, Buffer>();
+      try {
+        for (const file of manifest.files) {
+          // Only what the module graph and the document can reference — posters and canary evidence
+          // are not part of what renders.
+          if (file.role === 'poster' || file.role === 'canary') continue;
+          files.set(file.path, await this.storage.readObject(revisionFileKey(storagePrefix, rev.id, file.path)));
+        }
+      } catch (err) {
+        return couldNotEvaluate(err instanceof Error ? err.message : String(err));
       }
-    } catch (err) {
-      return {
-        verdict: 'incompatible',
-        reasons: [`capture compatibility could not be evaluated: ${err instanceof Error ? err.message : String(err)}`],
-        requiredPacks: [],
-        external: [],
-        missingLocalRefs: [],
-      };
     }
     const registry = await loadTrustedRegistry();
     return validateCaptureCompatibility({ entryPath: manifest.entry, files }, registry.descriptors());
@@ -422,14 +446,33 @@ export class RevisionService {
     opts: { manifest: SimManifest; referencedPaths?: ReadonlySet<string> },
   ): Promise<{ ok: boolean; problems: ManifestProblem[]; verified: VerificationReport }> {
     const problems = validateManifest(opts.manifest, opts.referencedPaths ?? new Set());
-    const verified = await this.verifyStoredBytes(rev, storagePrefix, opts.manifest);
+    // ONE read-back pass. Verification and the capture gate both need the stored bytes; reading
+    // the whole package twice (GET+hash+HEAD per file, then a second GET per capture-relevant
+    // file — all serial) was the dominant cost of publishing a large package: ~3× the package
+    // re-streamed per publish. The bytes the capture gate evaluates are the very buffers the
+    // verifier hashed, so the two verdicts now describe the SAME stored bytes by construction.
+    const readBackStartedAt = Date.now();
+    const pass = await this.readBackPass(rev, storagePrefix, opts.manifest, { retainCaptureBytes: true });
+    const verified = pass.report;
 
     // CAPTURE COMPATIBILITY — asked HERE, before the revision can become active, because the
     // alternative is what the v0.1.26 incident actually was: a package naming a CDN published
     // green, served fine in the viewer (which has a network), and only failed months later inside
     // the network-less capture container as a dead black canvas with no explanation. Generation
     // guidance can ask authors not to do this; only a gate can stop it shipping unnoticed.
-    const capture = await this.checkCaptureCompatibility(rev, storagePrefix, opts.manifest);
+    const capture = await this.checkCaptureCompatibility(rev, storagePrefix, opts.manifest, {
+      files: pass.captureFiles,
+      readError: pass.captureReadError,
+    });
+    // Publish observability: where a slow validation actually spends its time (one line per publish).
+    logger.info({
+      revisionId: rev.id,
+      fileCount: opts.manifest.files.length,
+      readBackMs: Date.now() - readBackStartedAt,
+      bytesVerified: verified.bytesVerified,
+      storageProblems: verified.problems.length,
+      captureVerdict: capture.verdict,
+    }, 'sim publish: revision read back and verified');
     if (capture.verdict === 'incompatible') {
       await this.markFailed(
         simulationId,
@@ -506,37 +549,78 @@ export class RevisionService {
     storagePrefix: string,
     manifest: SimManifest,
   ): Promise<VerificationReport> {
+    return (await this.readBackPass(rev, storagePrefix, manifest, { retainCaptureBytes: false })).report;
+  }
+
+  /**
+   * The one read-back over a staged revision: bounded-concurrency GET (+ hash + HEAD) per
+   * manifest file, feeding BOTH the byte/metadata verification report and — when
+   * `retainCaptureBytes` is set — the capture-compatibility gate's file map, so validate() no
+   * longer streams the package from storage twice.
+   *
+   * Report semantics are byte-for-byte those of the old serial loop: same problem codes and
+   * detail strings, same skip rules (a size mismatch skips the hash, any byte problem skips the
+   * HEAD), and `problems` is assembled in manifest order regardless of completion order.
+   * `captureReadError` reproduces the old gate's fail-closed read: the FIRST (in manifest order)
+   * capture-relevant file whose read failed, in `Error.message` form.
+   *
+   * Only capture-relevant bytes (role ≠ poster/canary) are retained — posters are hashed and
+   * dropped — so peak memory matches what the old gate already held: the renderable package,
+   * plus at most `READBACK_CONCURRENCY` files in flight.
+   */
+  private async readBackPass(
+    rev: SimRevisionRecord,
+    storagePrefix: string,
+    manifest: SimManifest,
+    opts: { retainCaptureBytes: boolean },
+  ): Promise<{ report: VerificationReport; captureFiles: Map<string, Buffer>; captureReadError?: string }> {
     const report: VerificationReport = {
       bytesVerified: 0, metadataVerified: 0, metadataUnverified: 0, problems: [],
     };
+    const captureFiles = new Map<string, Buffer>();
 
-    for (const f of manifest.files) {
+    type FileOutcome = {
+      problems: VerificationReport['problems'];
+      bytesVerified: boolean;
+      metadataVerified: boolean;
+      metadataUnverified: boolean;
+      captureBytes?: Buffer;
+      captureReadError?: string;
+    };
+
+    const outcomes = await mapWithLimit(manifest.files, READBACK_CONCURRENCY, async (f): Promise<FileOutcome> => {
+      const out: FileOutcome = {
+        problems: [], bytesVerified: false, metadataVerified: false, metadataUnverified: false,
+      };
       const key = revisionFileKey(storagePrefix, rev.id, f.path);
+      const captureRelevant = f.role !== 'poster' && f.role !== 'canary';
 
       let back: Buffer;
       try {
         back = await this.storage.readObject(key);
       } catch (err) {
-        report.problems.push({ path: f.path, code: 'missing', detail: String(err).slice(0, 200) });
-        continue;
+        out.problems.push({ path: f.path, code: 'missing', detail: String(err).slice(0, 200) });
+        if (captureRelevant) out.captureReadError = err instanceof Error ? err.message : String(err);
+        return out;
       }
+      if (opts.retainCaptureBytes && captureRelevant) out.captureBytes = back;
 
       if (back.length !== f.bytes) {
-        report.problems.push({
+        out.problems.push({
           path: f.path, code: 'size-mismatch',
           detail: `stored ${back.length}, manifest ${f.bytes}`,
         });
-        continue;
+        return out;
       }
       const actual = sha256Bytes(back);
       if (actual !== f.hash) {
-        report.problems.push({
+        out.problems.push({
           path: f.path, code: 'hash-mismatch',
           detail: `stored ${actual.slice(0, 16)}…, manifest ${f.hash.slice(0, 16)}…`,
         });
-        continue;
+        return out;
       }
-      report.bytesVerified += 1;
+      out.bytesVerified = true;
 
       // Metadata is verified only where the adapter can observe it. Local disk stores none, so it
       // reports nulls — and those count as UNVERIFIED, never as a pass.
@@ -545,35 +629,49 @@ export class RevisionService {
         head = await this.storage.headObject(key);
       } catch (err) {
         logger.warn({ key, err }, 'revision verify: headObject failed; metadata unverified');
-        report.metadataUnverified += 1;
-        continue;
+        out.metadataUnverified = true;
+        return out;
       }
       if (!head || (head.contentType === null && head.cacheControl === null)) {
-        report.metadataUnverified += 1;
-        continue;
+        out.metadataUnverified = true;
+        return out;
       }
       let mismatched = false;
       const effectiveContentType = head.contentType === null
         ? null
         : this.storage.effectiveSimulationContentType?.(key, head.contentType) ?? head.contentType;
       if (effectiveContentType !== null && effectiveContentType !== f.contentType) {
-        report.problems.push({
+        out.problems.push({
           path: f.path, code: 'content-type-mismatch',
           detail: `stored ${head.contentType}, delivered ${effectiveContentType}, manifest ${f.contentType}`,
         });
         mismatched = true;
       }
       if (head.cacheControl !== null && head.cacheControl !== f.cacheControl) {
-        report.problems.push({
+        out.problems.push({
           path: f.path, code: 'cache-control-mismatch',
           detail: `stored ${head.cacheControl}, manifest ${f.cacheControl}`,
         });
         mismatched = true;
       }
-      if (!mismatched) report.metadataVerified += 1;
+      if (!mismatched) out.metadataVerified = true;
+      return out;
+    });
+
+    let captureReadError: string | undefined;
+    for (let i = 0; i < outcomes.length; i++) {
+      const o = outcomes[i];
+      report.problems.push(...o.problems);
+      if (o.bytesVerified) report.bytesVerified += 1;
+      if (o.metadataVerified) report.metadataVerified += 1;
+      if (o.metadataUnverified) report.metadataUnverified += 1;
+      if (o.captureBytes) captureFiles.set(manifest.files[i].path, o.captureBytes);
+      if (captureReadError === undefined && o.captureReadError !== undefined) {
+        captureReadError = o.captureReadError;
+      }
     }
 
-    return report;
+    return { report, captureFiles, captureReadError };
   }
 
   // ── Canary ─────────────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,104 @@
+{
+  "film": 5,
+  "grammar": "v3: VIDEO beats = narration + real UI captures. `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `zoom` = punch-in. Scenes follow SCRIPT-5-SHARE v3.2 (7 beats).",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f2-s8-share",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "note": "'It's built.' — the finished timeline with its section blocks",
+      "atBeat": "editor"
+    },
+    {
+      "scene": "2",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "atBeat": "sheet-open"
+        },
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.5,
+            "scale": 1.5
+          },
+          "atBeat": "public-tab"
+        },
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.5,
+            "scale": 1.5
+          },
+          "atBeat": "permalink-typed"
+        },
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.5,
+            "scale": 1.5
+          },
+          "atBeat": "published"
+        }
+      ],
+      "note": "Create link → the sheet → the three rows as the narration names them"
+    },
+    {
+      "scene": "3",
+      "source": "f2-s8-share",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "rows-hovered"
+    },
+    {
+      "scene": "4",
+      "source": "f5-s4-collab-access",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f2-s8-share",
+      "fallbackIn": 8.6,
+      "reshoot": "Collaborators invite",
+      "atBeat": "settings-open"
+    },
+    {
+      "scene": "5",
+      "source": "f5-s4-collab-access",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f2-s8-share",
+      "fallbackIn": 42.6,
+      "reshoot": "Access modes switched",
+      "atBeat": "access"
+    },
+    {
+      "scene": "6",
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 4,
+      "reshoot": "phone viewer playing (v3 template, no title card)",
+      "atBeat": "playing"
+    },
+    {
+      "scene": "7",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "start"
+    }
+  ]
+}

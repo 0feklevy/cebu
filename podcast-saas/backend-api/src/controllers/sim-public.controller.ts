@@ -331,21 +331,36 @@ export async function registerSimPublicRoutes(app: FastifyInstance): Promise<voi
           try {
             const raw = await readFile(filePath, 'utf8');
             const html = injectSimBootSnippet(raw);
-            return reply
+            // Strong ETag of the SERVED bytes (post-injection), exactly like the cloud text
+            // path: `no-cache` still forces revalidation on every mount, but an unchanged
+            // entry document now costs a 304 instead of a re-download.
+            const buf = Buffer.from(html, 'utf8');
+            const etag = strongEtag(buf);
+            reply
               .header('X-Content-Type-Options', 'nosniff')
               .header('Cross-Origin-Resource-Policy', 'cross-origin')
               .header('Access-Control-Allow-Origin', '*')
               .header('Content-Security-Policy', simCsp)
               .header('Cache-Control', revisionCacheControl ?? 'no-cache')
-              .header('Content-Type', contentType)
-              .send(html);
+              .header('ETag', etag);
+            if (etagMatches(request.headers['if-none-match'], etag)) {
+              return reply.code(304).send();
+            }
+            return reply.header('Content-Type', contentType).send(buf);
           } catch {
             return reply.code(404).send({ message: 'Not found' });
           }
         }
         return serveLocalFile(request, reply, filePath, contentType, {
-          // This branch previously emitted no Cache-Control at all — the only one that did not.
-          ...(revisionCacheControl ? { cacheControl: revisionCacheControl } : {}),
+          // Non-revision keys used to be served with NO Cache-Control and NO validator at all —
+          // nothing for the browser to revalidate with, so every editor/library preview mount
+          // re-downloaded the whole package (36.5MB for the kinesin sim, measured 2026-09-05).
+          // `no-cache` + the stat validators below turn every repeat load into cheap 304s while
+          // still revalidating on every use — replace-in-place is picked up immediately, so this
+          // cannot reintroduce the audited stale-immutable bug. Revision keys keep their
+          // verified policy (immutable for package files) exactly as before.
+          cacheControl: revisionCacheControl ?? 'no-cache',
+          statValidators: true,
           extraHeaders: {
             'X-Content-Type-Options': 'nosniff',
             'Cross-Origin-Resource-Policy': 'cross-origin',

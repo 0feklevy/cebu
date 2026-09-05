@@ -9,6 +9,7 @@ import { useProjectPlayer } from './useProjectPlayer';
 import { useCropOverlay } from './useCropOverlay';
 import { VideoLayer } from './VideoLayer';
 import { SimPoolOverlay } from './SimPoolOverlay';
+import { SimInviteChip } from './SimInviteChip';
 import { SimPresentationLayers } from './SimPresentationLayers';
 import type { PresentationDecision } from '../../lib/sim/presentationPolicy';
 import {
@@ -627,6 +628,14 @@ export function HLSPlayerShell({
         posterTransparent={state.simPosterTransparent}
         registerFrame={actions.registerSimFrame}
         onFrameLoad={actions.simFrameLoaded}
+      />
+      {/* The window invitation: the section's imperative label, once per activation, while the
+          live simulation is actually on screen. `badgeMode` leaves 'sim' on the viewer's first
+          touch (userInteraction), which is what dismisses it. */}
+      <SimInviteChip
+        label={state.badgeText}
+        active={poolVisible && state.badgeMode === 'sim'}
+        activationKey={state.activeSimUrl}
       />
       {simSurfaceMounted && (
         <SimPresentationLayers

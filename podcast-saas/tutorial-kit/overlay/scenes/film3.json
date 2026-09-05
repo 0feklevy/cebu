@@ -1,0 +1,22 @@
+{
+  "film": 3,
+  "title": "Drop In Anything (v3)",
+  "total": 51,
+  "scenes": [
+    {
+      "id": "f3-end-card",
+      "type": "end-card",
+      "t0": 44,
+      "dur": 7,
+      "anchorScene": "8",
+      "anchorOffset": 0.6,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Drop yours in.",
+        "primary": "Add a simulation"
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
+}

@@ -160,6 +160,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       // Best-effort: backfill a frame-placeholder thumbnail for videos that don't
       // have one yet (older videos predate auto-generation, or it never ran).
       void backfillMissingThumbnails(all);
+      // Welcome seeding (085) — heals users the signup trigger missed (feature enabled later,
+      // crash between commit and stamp, template swapped). Dark-gated + memoized inside.
+      if (!user.welcome_project_id) {
+        void import('../../services/project/WelcomeSeedService.js')
+          .then(({ seedWelcomeProject }) => seedWelcomeProject({ id: user.id, default_org_id: user.default_org_id }))
+          .catch(() => {});
+      }
       return reply.send(all.map((p) => ({
         ...p,
         collab_role: p.created_by === user.id ? 'owner' : 'collaborator',

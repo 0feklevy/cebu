@@ -1,0 +1,105 @@
+{
+  "film": 3,
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top (underneath runs a recording of that same simulation being driven, so the standalone film is never black). `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `zoom` = punch-in. Scenes follow SCRIPT-3-HEAVY-SIM (\"Drop In Anything\") v3.2 (8 beats).",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f3-s2-heavy-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "note": "'anything that runs in a browser': the Library with the dropped package among the cards",
+      "atBeat": "card"
+    },
+    {
+      "scene": "2",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [
+        {
+          "source": "f3-s2-heavy-drop",
+          "mode": "fit",
+          "atBeat": "dropped"
+        },
+        {
+          "source": "f3-s2-heavy-drop",
+          "mode": "fit",
+          "zoom": {
+            "cx": 0.3,
+            "cy": 0.5,
+            "scale": 1.5
+          },
+          "atBeat": "progress"
+        }
+      ],
+      "note": "Zip it. Drop it. — the drop (15.1) then the card landing"
+    },
+    {
+      "scene": "3",
+      "source": "f3-s3-simple-ui",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "drag across V1 → Simulation → the Generate mini model card; prompt typed verbatim",
+      "atBeat": "card"
+    },
+    {
+      "scene": "4",
+      "source": "f3-s3-simple-ui",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "both toggles flipped + Generate (new label)",
+      "atBeat": "minimal-ui"
+    },
+    {
+      "scene": "5",
+      "source": "f3-s4-iteration",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "follow-up typed into Generate mini model → Generate",
+      "atBeat": "typing"
+    },
+    {
+      "scene": "6",
+      "source": "plate-kinesin",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "7",
+      "source": "plate-kinesin",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 6,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "8",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "voDelay": 0.4,
+      "atBeat": "start"
+    }
+  ]
+}

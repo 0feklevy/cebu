@@ -449,6 +449,61 @@
   to { transform: rotate(360deg); }
 }
 
+/* ── Window invitation ─────────────────────────────────────
+   Shown once when a live simulation reveals over the film: the section's imperative label in a
+   quiet pill, low on the frame (above the controls hover strip), with a ring that pulses twice.
+   Never catches pointer events — the simulation underneath is the thing to touch. */
+.sim-invite {
+  position: absolute;
+  left: 50%;
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 96px);
+  transform: translateX(-50%);
+  z-index: var(--z-viewer-sim-wait);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 20px 11px 14px;
+  border-radius: 999px;
+  background: rgba(10, 12, 18, 0.92);
+  color: #fff;
+  font-size: clamp(16px, 1.25vw, 22px);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  animation: sim-invite-in .28s ease-out both;
+}
+.sim-invite-ring {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  flex: none;
+}
+.sim-invite-ring::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  animation: sim-invite-pulse 1.1s ease-out 0.25s 2 both;
+}
+@keyframes sim-invite-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes sim-invite-pulse {
+  0%   { transform: scale(0.7); opacity: 0.95; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sim-invite { animation: none; }
+  .sim-invite-ring::after { animation: none; opacity: 0; }
+}
+
 /* Bottom hover strip that reveals the controls bar over a simulation. Sits above the
    sim overlay (z 20) but below the controls bar (z 55); pointer-events are toggled in
    JS so it only catches hover while the bar is hidden. */

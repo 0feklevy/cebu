@@ -21,6 +21,7 @@ type Controls = Pick<
   | 'sim_boundary_sentinel'
   | 'sim_transition_coordinator'
   | 'rum_sample_rate'
+  | 'welcome_seed_enabled'
 >;
 
 export default function ControlsPage() {
@@ -45,6 +46,7 @@ export default function ControlsPage() {
           sim_boundary_sentinel: s.sim_boundary_sentinel,
           sim_transition_coordinator: s.sim_transition_coordinator,
           rum_sample_rate: s.rum_sample_rate,
+          welcome_seed_enabled: s.welcome_seed_enabled,
         }),
       )
       .catch((e) => setError(e.message));
@@ -209,6 +211,13 @@ export default function ControlsPage() {
           description="Watches the section boundary with requestVideoFrameCallback so a handoff cannot be missed between animation frames."
           enabled={form.sim_boundary_sentinel}
           onToggle={(v) => set('sim_boundary_sentinel', v)}
+        />
+
+        <FlagCard
+          title="Welcome project seeding"
+          description="Give every new user an editable copy of the Welcome to Flow Video template and its playlist. Requires WELCOME_TEMPLATE_PROJECT_ID on the server; the WELCOME_SEED_ENABLED env var overrides this switch when set."
+          enabled={form.welcome_seed_enabled}
+          onToggle={(v) => set('welcome_seed_enabled', v)}
         />
 
         <div className="rounded-lg border border-border bg-card p-5">

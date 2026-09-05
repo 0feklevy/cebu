@@ -1,0 +1,23 @@
+{
+  "film": 2,
+  "title": "Tutorial \u2014 Make Yours (v3)",
+  "total": 96,
+  "scenes": [
+    {
+      "id": "f2-end-card",
+      "type": "end-card",
+      "t0": 90,
+      "dur": 6,
+      "anchorScene": "12",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Change one word.",
+        "primary": "Edit this section",
+        "secondary": "New project"
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
+}

@@ -1,0 +1,125 @@
+{
+  "film": 4,
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top (underneath runs a recording of that same simulation being driven, so the standalone film is never black). `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `silence` = the bed drops under a ∅ beat (the viewer's spoken question is mixed there). Scenes follow SCRIPT-4-VIEWER-POWERS v3.2 (11 beats; window [3,15]).",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "the public page PLAYING",
+      "atBeat": "start"
+    },
+    {
+      "scene": "2",
+      "source": "plate-orbitlab",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "3",
+      "source": "plate-orbitlab",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 6,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "4",
+      "source": "f1-s3-ask-surface",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 6,
+      "voDelay": 0.4,
+      "reshoot": "ask surface opens (panel + chips)",
+      "atBeat": "ask-hover"
+    },
+    {
+      "scene": "5",
+      "source": "f1-s3-ask-surface",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 12,
+      "slot": [
+        19,
+        25
+      ],
+      "silence": true,
+      "reshoot": "the typed question + the answer starting to stream; never an error card",
+      "atBeat": "click"
+    },
+    {
+      "scene": "6",
+      "source": "f1-s3-ask-surface",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 18,
+      "atBeat": "panel-open"
+    },
+    {
+      "scene": "7",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "doors overlay on the v3 template",
+      "sources": [
+        {
+          "source": "f4-s4-branching",
+          "mode": "fit",
+          "in": 29,
+          "fallback": "captures/props/lesson-waves.mp4"
+        },
+        {
+          "source": "f4-s4-branching",
+          "mode": "fit",
+          "in": 32.5,
+          "fallback": "captures/props/lesson-waves.mp4",
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.5,
+            "scale": 1.3
+          }
+        }
+      ]
+    },
+    {
+      "scene": "8",
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "phone: the vertical render playing (no title card)",
+      "atBeat": "playing"
+    },
+    {
+      "scene": "9",
+      "source": "f5-s5-phone",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "Audio language menu + CC toggle",
+      "atBeat": "cc-reach"
+    },
+    {
+      "scene": "10",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "start"
+    },
+    {
+      "scene": "11",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "start"
+    }
+  ]
+}

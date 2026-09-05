@@ -1,0 +1,32 @@
+{
+  "film": 4,
+  "title": "Viewer Superpowers (v3)",
+  "total": 57,
+  "scenes": [
+    {
+      "id": "f4-grid",
+      "type": "four-grid-labels",
+      "t0": 49,
+      "dur": 5,
+      "anchorScene": "10",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {}
+    },
+    {
+      "id": "f4-end-card",
+      "type": "end-card",
+      "t0": 54,
+      "dur": 3,
+      "anchorScene": "11",
+      "anchorOffset": 0,
+      "holdToSceneEnd": true,
+      "props": {
+        "ground": "card",
+        "line": "Four powers. One link.",
+        "arrow": true
+      }
+    }
+  ],
+  "comment": "v3: no logo intro (films open fast); cues anchor to script beats and re-time at assembly."
+}

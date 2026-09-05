@@ -2309,3 +2309,103 @@ nginx and systemd, but **not `.github/workflows/`**. So this very PR — which e
 pipeline's own verification gate — does not require human approval, while a one-line `APP_VERSION`
 change to compose did. If deployment configuration deserves an eye, the pipeline that decides what
 deploys deserves one at least as much.
+
+## 2026-09-05 — Welcome playlist / flagship tutorial films (overnight run, feat/welcome-tutorial-kit)
+- 🟢 SHIPPED-TO-BRANCH: seeding feature — migration 085 + WelcomeSeedService (dark-gated:
+  env WELCOME_SEED_ENABLED over admin flag + WELCOME_TEMPLATE_PROJECT_ID; per-user editable
+  clone via new shareHeavyBytes duplication mode; playlist swap). 10 unit tests. Commit 6f62774.
+- 🟢 FIXED: ProjectDuplicationService never carried sim_files (latent for any imported-sim
+  duplication; found by seeding design as pre-build fix #1). Commit b4ed201..dda4921 range.
+- 🟢 BUILT: tutorial-kit production line — 5 gated scripts (3-critic panel pre+post), 3 original
+  multi-file sims (Murmuration 3D, Orbit Lab w/ force vectors, Solar System in flight), original
+  music beds (verified -32 LUFS), overlay rig (product palette, chroma-keyed), capture engine
+  (persistent anonymous profile), assembly pipeline PROVEN (film1 72s scratch cut renders with
+  logo intro + chroma end-card over live sim footage).
+- 🔴 OPEN (owner action): local ElevenLabs credential is a key-ID, not an sk_ key — blocks real
+  narration TTS, Spanish dub, and the film's voice-answer audio. Scratch VO (macOS say) stands in
+  for timing; one command re-renders when a valid key lands (narration/run-narration.sh).
+- 🔴 OPEN (product gap, logged from film-4 accuracy panel): listener questions are recorded but
+  have NO creator-facing list UI since the 2026-09-03 removal (audioEdition.controller.ts:370) —
+  cheap future feature, scripts now honest about it.
+- 📄 Ledger of record for the whole run: podcast-saas/tutorial-kit/PRODUCTION-PLAN.md (+
+  CHECKLIST.md task-tracker audit). Owner decisions taken autonomously logged there (voice =
+  admin default; music = original synthesis; kinesin = film-captures only).
+- 🟢 PR OPENED: #192 "Welcome playlist: flagship demo project + per-user seeding (085)" —
+  product code (085 + WelcomeSeedService + share-mode duplication + viewer post-roll-advance
+  fix + two latent duplication bugs) + the regenerable tutorial-kit factory. Seeding E2E PASS
+  locally (clone + personal playlist + idempotency). Branch history rewritten pre-push to drop
+  ~1.5GB of accidentally-committed chrome-profile/work artifacts (local-only branch; census
+  taken first; .gitignore added).
+- 🔴 OPEN (product): Galton Board This-moment generation fails twice ("simplify prompt" class);
+  the section presents with full UI regardless (verified live). Investigate the generator vs
+  that package's DOM.
+- 🔴 OPEN (viewer asserts): build-template's "two sim sections present" assert counts only the
+  teaser-anchored sections in the share config — stale vs the film2-anchored tail layout; the
+  live journey + posters verify the truth. Update the assert next pass.
+- 🟢 CI GREEN: PR #192 all 9 checks pass (after 4 real fix rounds the gates earned: test-typecheck
+  ratchet, a11y switch roster, the player exit-contract regression — respecified per the existing
+  suites, check-db's second migration list; plus one proven webkit flake). Local: backend full
+  suite exit 0, client 1988/1988. Ready for owner review; production template publish + flags
+  remain the deliberate operator step.
+
+## 2026-09-05 midday — owner review of the first cut: REJECTED ("stuck and boring") → overhaul in progress
+- 🔴 VERDICT (owner, verbatim force): films captured sims as footage + piled sections post-roll —
+  wrong architecture. Scripts not marketing-strong; pace/music/narration/embedding all rejected;
+  "The Heavy Simulation" has no practical point; editor sim loading "takes hours".
+- 🟢 GRAMMAR VERIFIED (code + live): MID-ROLL live windows — section inside the video presents
+  the real sim while video+narration continue underneath, auto-exits at window end. New layout
+  of record: tutorial-kit/seeding/layout-v3.json (windows at beats; tutorial its own project;
+  kinesin embedded for the LOCAL review build — public seeding still needs license clearance).
+- 🟢 PRODUCT FIXES SHIPPED-TO-BRANCH: "✦ This moment" → "Generate mini model" (no star); header
+  "?" right of Create link; TimelinePanel adds sections at the PLAYHEAD (was append-to-end — the
+  root mechanism of the tail pileup); ChoiceOverlay focuses the first door; generation status
+  ellipsis bounded (was growing forever). Client 1988/1988 green.
+- 🟡 IN FLIGHT (agent fleet): editor sim-loading perf root-cause+fix; scripts v3 (marketing-hard,
+  window grammar, "Drop In Anything" replaces heavy-sim); driving music beds; performance review
+  of the sim serving path; layout-driven build-template v3; narration voice audition (free Edge
+  neural for the review phase — owner ruling; ElevenLabs after sign-off); reference research →
+  CREATIVE-DIRECTION-v3.md.
+
+## 2026-09-05 afternoon — v3 production: product defects fixed at the source, invitation layer, ElevenLabs
+- 🟢 BACKEND DEFECT FIXED (verified in code + tests): the section-generation prompt promised a
+  prelude (`_hidden/_hide/_restoreAll/_ivs/_listeners/_injected`) that neither bridge wrapper
+  declared — a body relying on it threw ReferenceError on activation and the viewer played the film
+  through the whole live window (2 of 6 generated bodies in the v3 build; the builder had only
+  gated + re-prompted around it). `BRIDGE_BODY_PRELUDE` now lives in the enclosing scope of both
+  `wrapBridgeMainBody` and `wrapBridgeCombined`, drained by the standard stopScript; prompt says so;
+  4 regression tests (prelude-reliant / own-var / template-const bodies; single + combined).
+- 🟢 EDITOR SIM LOADING PERF (agent, audited 21/22 DONE, the missing P2 measurement log added):
+  publish read-back parallelized (`mapWithLimit` 8-wide, one pass feeding both verifiers), upload
+  loops bounded-concurrent, sim-public serves ETag/Last-Modified + 304 (12/13 files cached on a
+  warm reopen); kinesin editor preview cold 0.45 s / warm 0.17 s. Report: tutorial-kit/EDITOR-PERF.md.
+- 🟢 VIEWER: window-invitation chip (`SimInviteChip`) — the section's imperative label ("Touch the
+  motor") in a quiet pill over a live window, two-pulse ring, hides on first touch (userInteraction)
+  or after 4.5 s, once per activation; verified live on the demo's first window. 4 unit tests.
+- 🟢 SEEDING BUILDER: windows follow the CUT (assembler writes LIVE-WINDOW beat times into
+  assembly/work/<film>/timeline.json; builder prefers them over the layout's estimate); demo doors =
+  "Make yours" (tutorial) + Viewer Superpowers + Drop In Anything, no "Watch again"; tutorial project
+  gets the library extras (F2 beat 3's "or one already in your Library" is true on camera).
+- 🟡 IN FLIGHT: ElevenLabs narration (owner's temporary one-day key, stored outside the repo; audition
+  → 48 lines), ElevenLabs Music beds + SFX pack, product-UI reshoots (12 shots), four-angle critique
+  panel (PM/sales delivered: MUST-FIX list in tutorial-kit/critique/round-3-pre/pm-sales.md).
+- 🟢 CRITIQUE ROUND 3 CLOSED (four panels, reports in tutorial-kit/critique/round-3-pre/): scripts
+  rewritten to v3.3 — the CTA lands ("Your turn."), the word "doors" is gone, POV whiplash fixed,
+  the "I have no simulation" objection answered, F4's window moved to [3,15]; and three surfaces the
+  product does NOT have were removed (the Ask panel is a voice-only avatar call — no chips, no text
+  box; collaborators and access live in Settings, not the share sheet; there is no dub to switch to).
+- 🟢 THE FILMS' REAL DEFECT, found by looking at a contact sheet rather than at the plan: ~23 of the
+  teaser's 61 seconds were PURE BLACK. Live-window beats sat on a black plate because the product's
+  live simulation covers them — true in the viewer, false in the MP4 the owner actually reviews.
+  Each window now sits on a recording of that same simulation being driven. The guard that should
+  have caught it had an exemption for exactly the plate that was black; the exemption is gone and
+  the measure is frame flatness over the full range (a starfield is dark AND has content; a page-load
+  flash is bright AND has none).
+- 🟢 AUDIO REBUILT with the owner's temporary key (expires 2026-09-06): ElevenLabs narration (Liam,
+  48 lines, uniform −24 LUFS — linear gain cannot put 18 dB-crest speech at −19 under a −3 dBTP
+  ceiling, so the film's voice bus does the levelling), five ElevenLabs music beds, an SFX pack.
+  Films master −16.2…−18.0 LUFS at −2 dBTP with LRA 3–5, and the music goes behind a low-pass in a
+  window instead of cutting dead — the film IS still running under the simulation. Verified on the
+  delivered file: level drops inside each window, riser lifts into the return, film comes back.
+- 🟡 OWNER ACTIONS: (1) the ask-surface shot needs working avatar credentials on the local stack —
+  the session is refused ~0.6 s after the click and the capture director will not film the failure
+  card; (2) production template publish + flag enable remain the deliberate operator step.

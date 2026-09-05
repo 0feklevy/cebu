@@ -1,0 +1,7686 @@
+{
+  "clips": {
+    "f1-s1": {
+      "id": "f1-s1",
+      "film": 1,
+      "scene": "1",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "This looks like a video.",
+      "chars": 24,
+      "charsBilled": 24,
+      "attempts": 1,
+      "characterCost": 13,
+      "requestId": "pkjK30W79RkyktlxhHVd",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": "It isn't. Go on — touch it. Grab the motor… spin it.",
+      "dur": 1.114558,
+      "rawDur": 1.114558,
+      "slot": 4,
+      "budget": 3.5,
+      "over": -2.39,
+      "actions": [
+        "loudnorm linear -23.39 → -18.99 LUFS (gain +4.39 dB, TP -4.33 dBTP)"
+      ],
+      "measure": {
+        "rms": -25.248617,
+        "peak": -9.922735,
+        "truePeak": -9.8,
+        "lufs": -24.4,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0,
+        "innerGaps": [],
+        "tp": -9.8
+      },
+      "words": [
+        {
+          "text": "This",
+          "t0": 0,
+          "t1": 0.232,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "looks",
+          "t0": 0.279,
+          "t1": 0.453,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "like",
+          "t0": 0.488,
+          "t1": 0.615,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 0.65,
+          "t1": 0.673,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "video.",
+          "t0": 0.72,
+          "t1": 1.01,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:11:46.707Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24,
+        "tp": -9.6,
+        "gainDb": -4.49,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -19.51,
+          "tp": -5.11,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:20.842Z",
+        "uniform": true
+      },
+      "textSha1": "59732079312c7bc71c77619a6cc620b29a63f36e"
+    },
+    "f1-s2": {
+      "id": "f1-s2",
+      "film": 1,
+      "scene": "2",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "It isn't. Go on — touch it. Drag the slider… you're walking the motor.",
+      "textSha1": "7951be793116beb4efd74605a617c9aa44f09a09",
+      "chars": 70,
+      "charsBilled": 70,
+      "attempts": 1,
+      "characterCost": 39,
+      "requestId": "7f6PgJcll7wLC0QwgrEZ",
+      "endpoint": "with-timestamps",
+      "previousText": "This looks like a video.",
+      "nextText": "You're driving a molecular machine inside a video. This is Flow Video.",
+      "dur": 5.665669,
+      "rawDur": 5.665669,
+      "slot": 8,
+      "budget": 7.5,
+      "over": -1.83,
+      "actions": [
+        "loudnorm linear -23.73 → -20.74 LUFS (gain +3.13 dB, TP -3.02 dBTP); target backed off 1.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.13,
+        "tp": -6.41,
+        "gainDb": -2.95,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.05,
+          "tp": -3.45,
+          "lra": 0.5
+        },
+        "at": "2026-09-05T18:33:21.100Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.717749,
+        "peak": -6.871913,
+        "truePeak": -6.9,
+        "tp": -6.9,
+        "lufs": -24.6,
+        "lra": 1.3,
+        "lead": 0,
+        "tail": 0.519,
+        "innerGaps": [
+          806,
+          329,
+          436,
+          594
+        ]
+      },
+      "words": [
+        {
+          "text": "It",
+          "t0": 0,
+          "t1": 0.174,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "isn't.",
+          "t0": 0.232,
+          "t1": 0.534,
+          "trail": ".",
+          "gapAfterMs": 778
+        },
+        {
+          "text": "Go",
+          "t0": 1.312,
+          "t1": 1.474,
+          "trail": "",
+          "gapAfterMs": 117
+        },
+        {
+          "text": "on",
+          "t0": 1.591,
+          "t1": 1.753,
+          "trail": " —",
+          "gapAfterMs": 325
+        },
+        {
+          "text": "touch",
+          "t0": 2.078,
+          "t1": 2.322,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "it.",
+          "t0": 2.38,
+          "t1": 2.496,
+          "trail": ".",
+          "gapAfterMs": 360
+        },
+        {
+          "text": "Drag",
+          "t0": 2.856,
+          "t1": 3.123,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "the",
+          "t0": 3.17,
+          "t1": 3.239,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "slider…",
+          "t0": 3.274,
+          "t1": 3.657,
+          "trail": "…",
+          "gapAfterMs": 581
+        },
+        {
+          "text": "you're",
+          "t0": 4.238,
+          "t1": 4.423,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "walking",
+          "t0": 4.458,
+          "t1": 4.748,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 4.783,
+          "t1": 4.853,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "motor.",
+          "t0": 4.888,
+          "t1": 5.178,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:33.430Z"
+    },
+    "f1-s3": {
+      "id": "f1-s3",
+      "film": 1,
+      "scene": "3",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "You're driving a molecular machine inside a video. This is Flow Video.",
+      "textSha1": "e19991891df05bce56ab55075f4d04fdfc033e27",
+      "chars": 70,
+      "charsBilled": 70,
+      "attempts": 1,
+      "characterCost": 39,
+      "requestId": "uUlr4gTzQsrWYtIToZaB",
+      "endpoint": "with-timestamps",
+      "previousText": "It isn't. Go on — touch it. Drag the slider… you're walking the motor.",
+      "nextText": "Questions? Ask out loud. It answers from this lesson.",
+      "dur": 3.706009,
+      "rawDur": 4.318912,
+      "slot": 4,
+      "budget": 3.5,
+      "over": 0.21,
+      "actions": [
+        "trim by alignment 4.32→3.71s",
+        "loudnorm linear -24.74 → -20.52 LUFS (gain +3.74 dB, TP -3.05 dBTP); target backed off 2.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.53,
+        "tp": -6.06,
+        "gainDb": -2.55,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.45,
+          "tp": -3.51,
+          "lra": 1.5
+        },
+        "at": "2026-09-05T18:33:21.305Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -24.592165,
+        "peak": -6.522877,
+        "truePeak": -6.5,
+        "tp": -6.5,
+        "lufs": -24,
+        "lra": 1.7,
+        "lead": 0,
+        "tail": 0.226,
+        "innerGaps": [
+          410
+        ]
+      },
+      "words": [
+        {
+          "text": "You're",
+          "t0": 0,
+          "t1": 0.221,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "driving",
+          "t0": 0.244,
+          "t1": 0.522,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 0.557,
+          "t1": 0.58,
+          "trail": "",
+          "gapAfterMs": 59
+        },
+        {
+          "text": "molecular",
+          "t0": 0.639,
+          "t1": 1.091,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "machine",
+          "t0": 1.126,
+          "t1": 1.428,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "inside",
+          "t0": 1.463,
+          "t1": 1.741,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 1.776,
+          "t1": 1.8,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video.",
+          "t0": 1.846,
+          "t1": 2.218,
+          "trail": ".",
+          "gapAfterMs": 336
+        },
+        {
+          "text": "This",
+          "t0": 2.554,
+          "t1": 2.74,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "is",
+          "t0": 2.786,
+          "t1": 2.856,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Flow",
+          "t0": 2.914,
+          "t1": 3.111,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "Video.",
+          "t0": 3.146,
+          "t1": 3.506,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:35.480Z"
+    },
+    "f1-s4": {
+      "id": "f1-s4",
+      "film": 1,
+      "scene": "4",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Questions? Ask out loud. It answers from this lesson.",
+      "textSha1": "3877b924d10f9f52b74a2973f7a9a6f65e39a1eb",
+      "chars": 53,
+      "charsBilled": 106,
+      "attempts": 2,
+      "characterCost": 29,
+      "requestId": "ZkCO0jNblb4fRVDXg5ZQ",
+      "endpoint": "with-timestamps",
+      "previousText": "You're driving a molecular machine inside a video. This is Flow Video.",
+      "nextText": "And when the story forks… you pick the road.",
+      "dur": 3.579841,
+      "rawDur": 5.387029,
+      "slot": 4,
+      "budget": 3.5,
+      "over": 0.08,
+      "actions": [
+        "trim lead/tail silence 5.39→4.55s",
+        "loudnorm linear -24.74 → -22.65 LUFS (gain +1.94 dB, TP -3.05 dBTP); target backed off 3.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly",
+        "--refit pass",
+        "retake 1 at speed 1.12 (+53 chars)",
+        "trim by alignment 3.67→3.58s",
+        "loudnorm linear -24.46 → -20.47 LUFS (gain +3.86 dB, TP -3.03 dBTP); target backed off 1.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.88,
+        "tp": -6.36,
+        "gainDb": -2.92,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.08,
+          "tp": -3.43,
+          "lra": 0.4
+        },
+        "at": "2026-09-05T18:33:21.504Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.154791,
+        "peak": -6.81932,
+        "truePeak": -6.8,
+        "tp": -6.8,
+        "lufs": -24.3,
+        "lra": 0.6,
+        "lead": 0,
+        "tail": 0.202,
+        "innerGaps": [
+          330,
+          692
+        ]
+      },
+      "words": [
+        {
+          "text": "Questions?",
+          "t0": 0,
+          "t1": 0.522,
+          "trail": "?",
+          "gapAfterMs": 291
+        },
+        {
+          "text": "Ask",
+          "t0": 0.813,
+          "t1": 1.057,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "out",
+          "t0": 1.091,
+          "t1": 1.207,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "loud.",
+          "t0": 1.254,
+          "t1": 1.521,
+          "trail": ".",
+          "gapAfterMs": 638
+        },
+        {
+          "text": "It",
+          "t0": 2.159,
+          "t1": 2.264,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "answers",
+          "t0": 2.31,
+          "t1": 2.589,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "from",
+          "t0": 2.635,
+          "t1": 2.775,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "this",
+          "t0": 2.844,
+          "t1": 2.995,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "lesson.",
+          "t0": 3.053,
+          "t1": 3.379,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:11:51.755Z",
+      "refitAt": "2026-09-05T18:27:02.129Z"
+    },
+    "f1-s5": {
+      "id": "f1-s5",
+      "film": 1,
+      "scene": "5",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "And when the story forks… you pick the road.",
+      "textSha1": "7d0c1eb89f5a0235e9c97f3f38243d72ec8ed09d",
+      "chars": 44,
+      "charsBilled": 44,
+      "attempts": 1,
+      "characterCost": 24,
+      "requestId": "9kaZgAHvvTEV5Lic14XO",
+      "endpoint": "with-timestamps",
+      "previousText": "Questions? Ask out loud. It answers from this lesson.",
+      "nextText": "Round two — a solar system. Tap any planet. Go ahead… I'll wait.",
+      "dur": 3.390113,
+      "rawDur": 3.390113,
+      "slot": 5,
+      "budget": 4.5,
+      "over": -1.11,
+      "actions": [
+        "loudnorm linear -26.19 → -20.01 LUFS (gain +5.79 dB, TP -3.07 dBTP); target backed off 1.4 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.6,
+        "tp": -6.69,
+        "gainDb": -3.15,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.85,
+          "tp": -3.52,
+          "lra": 1.6
+        },
+        "at": "2026-09-05T18:33:21.775Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.145379,
+        "peak": -7.236764,
+        "truePeak": -7.2,
+        "tp": -7.2,
+        "lufs": -23.9,
+        "lra": 20.4,
+        "lead": 0,
+        "tail": 0.933,
+        "innerGaps": [
+          586
+        ]
+      },
+      "words": [
+        {
+          "text": "And",
+          "t0": 0,
+          "t1": 0.151,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "when",
+          "t0": 0.186,
+          "t1": 0.29,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "the",
+          "t0": 0.313,
+          "t1": 0.383,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "story",
+          "t0": 0.418,
+          "t1": 0.72,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "forks…",
+          "t0": 0.789,
+          "t1": 1.138,
+          "trail": "…",
+          "gapAfterMs": 580
+        },
+        {
+          "text": "you",
+          "t0": 1.718,
+          "t1": 1.834,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "pick",
+          "t0": 1.904,
+          "t1": 2.055,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "the",
+          "t0": 2.101,
+          "t1": 2.171,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "road.",
+          "t0": 2.229,
+          "t1": 2.485,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:37.901Z"
+    },
+    "f1-s6": {
+      "id": "f1-s6",
+      "film": 1,
+      "scene": "6",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Round two — a solar system. Tap any planet. Go ahead… I'll wait.",
+      "chars": 64,
+      "charsBilled": 64,
+      "attempts": 1,
+      "characterCost": 35,
+      "requestId": "aeRdwA8hPfvRwd30HyvZ",
+      "endpoint": "with-timestamps",
+      "previousText": "And when the story forks… your viewers steer.",
+      "nextText": "There you go. They fly… you keep teaching.",
+      "dur": 5.758549,
+      "rawDur": 5.758549,
+      "slot": 8,
+      "budget": 7.5,
+      "over": -1.74,
+      "actions": [
+        "loudnorm linear -24.07 → -24.01 LUFS (gain +0.27 dB, TP -3.11 dBTP); target backed off 4.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -26.582842,
+        "peak": -3.463453,
+        "truePeak": -3.4,
+        "lufs": -24.6,
+        "lra": 1.8,
+        "lead": 0,
+        "tail": 0.868,
+        "innerGaps": [
+          324,
+          472,
+          872,
+          497
+        ],
+        "tp": -3.4
+      },
+      "words": [
+        {
+          "text": "Round",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "two",
+          "t0": 0.29,
+          "t1": 0.511,
+          "trail": " —",
+          "gapAfterMs": 348
+        },
+        {
+          "text": "a",
+          "t0": 0.859,
+          "t1": 0.917,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "solar",
+          "t0": 0.987,
+          "t1": 1.254,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "system.",
+          "t0": 1.3,
+          "t1": 1.625,
+          "trail": ".",
+          "gapAfterMs": 430
+        },
+        {
+          "text": "Tap",
+          "t0": 2.055,
+          "t1": 2.299,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "any",
+          "t0": 2.357,
+          "t1": 2.473,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "planet.",
+          "t0": 2.519,
+          "t1": 2.891,
+          "trail": ".",
+          "gapAfterMs": 778
+        },
+        {
+          "text": "Go",
+          "t0": 3.669,
+          "t1": 3.796,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "ahead…",
+          "t0": 3.843,
+          "t1": 4.087,
+          "trail": "…",
+          "gapAfterMs": 464
+        },
+        {
+          "text": "I'll",
+          "t0": 4.551,
+          "t1": 4.714,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "wait.",
+          "t0": 4.748,
+          "t1": 4.981,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:11:55.084Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.2,
+        "tp": -3.14,
+        "gainDb": 0.24,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -24.24,
+          "tp": -3.36,
+          "lra": 2
+        },
+        "at": "2026-09-05T18:33:22.045Z",
+        "uniform": true
+      },
+      "textSha1": "1d44e4c25b65c255d41226e7911c3dee884746a1"
+    },
+    "f1-s7": {
+      "id": "f1-s7",
+      "film": 1,
+      "scene": "7",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "There you go. You flew… and the video never stopped.",
+      "textSha1": "f4bcd4dd9a32e99f43bd1cc5939340af1bfe1a93",
+      "chars": 52,
+      "charsBilled": 52,
+      "attempts": 1,
+      "characterCost": 29,
+      "requestId": "JTI3XuIB0PJHyJ3XveH1",
+      "endpoint": "with-timestamps",
+      "previousText": "Round two — a solar system. Tap any planet. Go ahead… I'll wait.",
+      "nextText": "Want one? Drop in footage — and anything interactive. Tell the AI what viewers touch. No code. One link. That's a Flow Video.",
+      "dur": 3.277007,
+      "rawDur": 3.761633,
+      "slot": 3,
+      "budget": 2.5,
+      "over": 0.78,
+      "actions": [
+        "trim by alignment 3.76→3.28s",
+        "loudnorm linear -25.01 → -19.25 LUFS (gain +5.51 dB, TP -3.23 dBTP); target backed off 0.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.74,
+        "tp": -7.71,
+        "gainDb": -4.04,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -19.96,
+          "tp": -3.68,
+          "lra": 1
+        },
+        "at": "2026-09-05T18:33:22.237Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -24.486212,
+        "peak": -8.186458,
+        "truePeak": -8.2,
+        "tp": -8.2,
+        "lufs": -24.2,
+        "lra": 20.1,
+        "lead": 0,
+        "tail": 0.23,
+        "innerGaps": [
+          515,
+          240
+        ]
+      },
+      "words": [
+        {
+          "text": "There",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "you",
+          "t0": 0.279,
+          "t1": 0.348,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "go.",
+          "t0": 0.406,
+          "t1": 0.569,
+          "trail": ".",
+          "gapAfterMs": 522
+        },
+        {
+          "text": "You",
+          "t0": 1.091,
+          "t1": 1.231,
+          "trail": "",
+          "gapAfterMs": 93
+        },
+        {
+          "text": "flew…",
+          "t0": 1.324,
+          "t1": 1.602,
+          "trail": "…",
+          "gapAfterMs": 174
+        },
+        {
+          "text": "and",
+          "t0": 1.776,
+          "t1": 1.904,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 1.939,
+          "t1": 2.009,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video",
+          "t0": 2.055,
+          "t1": 2.334,
+          "trail": "",
+          "gapAfterMs": 92
+        },
+        {
+          "text": "never",
+          "t0": 2.426,
+          "t1": 2.624,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "stopped.",
+          "t0": 2.682,
+          "t1": 3.077,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:40.569Z"
+    },
+    "f1-s8": {
+      "id": "f1-s8",
+      "film": 1,
+      "scene": "8",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Want one? Drop in footage — and anything interactive. Tell the AI what viewers touch. No code. One link. That's a Flow Video.",
+      "textSha1": "ff0a637f9b04cab9253aecc581f5d6d9eaf53e1b",
+      "chars": 125,
+      "charsBilled": 375,
+      "attempts": 3,
+      "characterCost": 69,
+      "requestId": "4OI7i4haFMfCJc5T0Hpb",
+      "endpoint": "with-timestamps",
+      "previousText": "There you go. You flew… and the video never stopped.",
+      "nextText": "Last one. Steer the flock… then hit Scatter.",
+      "dur": 8.442993,
+      "rawDur": 10.820499,
+      "slot": 9,
+      "budget": 8.5,
+      "over": -0.06,
+      "actions": [
+        "trim by alignment 10.82→10.21s",
+        "retake 1 at speed 1.12 (+125 chars)",
+        "trim by alignment 10.31→9.74s",
+        "retake 2 at speed 1.12 (+125 chars)",
+        "trim by alignment 8.92→8.44s",
+        "loudnorm linear -25.39 → -23.37 LUFS (gain +1.69 dB, TP -3.07 dBTP); target backed off 4.7 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.63,
+        "tp": -3.35,
+        "gainDb": 0.19,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -24.19,
+          "tp": -3.54,
+          "lra": 3.4
+        },
+        "at": "2026-09-05T18:33:22.577Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.25415,
+        "peak": -3.804429,
+        "truePeak": -3.8,
+        "tp": -3.8,
+        "lufs": -24.1,
+        "lra": 3.4,
+        "lead": 0,
+        "tail": 0.233,
+        "innerGaps": [
+          742,
+          200,
+          481,
+          622,
+          503,
+          859
+        ]
+      },
+      "words": [
+        {
+          "text": "Want",
+          "t0": 0,
+          "t1": 0.209,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "one?",
+          "t0": 0.255,
+          "t1": 0.464,
+          "trail": "?",
+          "gapAfterMs": 639
+        },
+        {
+          "text": "Drop",
+          "t0": 1.103,
+          "t1": 1.312,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "in",
+          "t0": 1.358,
+          "t1": 1.416,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "footage",
+          "t0": 1.463,
+          "t1": 1.765,
+          "trail": " —",
+          "gapAfterMs": 104
+        },
+        {
+          "text": "and",
+          "t0": 1.869,
+          "t1": 2.043,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "anything",
+          "t0": 2.09,
+          "t1": 2.368,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "interactive.",
+          "t0": 2.415,
+          "t1": 2.984,
+          "trail": ".",
+          "gapAfterMs": 336
+        },
+        {
+          "text": "Tell",
+          "t0": 3.32,
+          "t1": 3.506,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "the",
+          "t0": 3.553,
+          "t1": 3.622,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "AI",
+          "t0": 3.669,
+          "t1": 3.901,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "what",
+          "t0": 3.959,
+          "t1": 4.087,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "viewers",
+          "t0": 4.133,
+          "t1": 4.435,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "touch.",
+          "t0": 4.47,
+          "t1": 4.725,
+          "trail": ".",
+          "gapAfterMs": 604
+        },
+        {
+          "text": "No",
+          "t0": 5.329,
+          "t1": 5.445,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "code.",
+          "t0": 5.503,
+          "t1": 5.84,
+          "trail": ".",
+          "gapAfterMs": 395
+        },
+        {
+          "text": "One",
+          "t0": 6.235,
+          "t1": 6.409,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "link.",
+          "t0": 6.444,
+          "t1": 6.641,
+          "trail": ".",
+          "gapAfterMs": 766
+        },
+        {
+          "text": "That's",
+          "t0": 7.407,
+          "t1": 7.628,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "a",
+          "t0": 7.651,
+          "t1": 7.674,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "Flow",
+          "t0": 7.721,
+          "t1": 7.895,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "Video.",
+          "t0": 7.941,
+          "t1": 8.243,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:48.872Z"
+    },
+    "f1-s9": {
+      "id": "f1-s9",
+      "film": 1,
+      "scene": "9",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Last one. Steer the flock… then hit Scatter.",
+      "textSha1": "fa1a31bee31b896c61a0d0c11618042a1975b65f",
+      "chars": 44,
+      "charsBilled": 44,
+      "attempts": 1,
+      "characterCost": 24,
+      "requestId": "PYljRJkuUhbtxwP57QjR",
+      "endpoint": "with-timestamps",
+      "previousText": "Want one? Drop in footage — and anything interactive. Tell the AI what viewers touch. No code. One link. That's a Flow Video.",
+      "nextText": "That was you. Now pick what's next. — Touch it. Ask it. Steer it. — Flow Video.",
+      "dur": 3.390113,
+      "rawDur": 3.390113,
+      "slot": 7,
+      "budget": 6.5,
+      "over": -3.11,
+      "actions": [
+        "loudnorm linear -24.19 → -21.54 LUFS (gain +2.69 dB, TP -3.06 dBTP); target backed off 2.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.01,
+        "tp": -5.53,
+        "gainDb": -2.04,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.96,
+          "tp": -3.44,
+          "lra": 1
+        },
+        "at": "2026-09-05T18:33:22.773Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.889321,
+        "peak": -6.024881,
+        "truePeak": -6,
+        "tp": -6,
+        "lufs": -24.5,
+        "lra": 20.5,
+        "lead": 0,
+        "tail": 0.571,
+        "innerGaps": [
+          307,
+          477
+        ]
+      },
+      "words": [
+        {
+          "text": "Last",
+          "t0": 0,
+          "t1": 0.267,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "one.",
+          "t0": 0.337,
+          "t1": 0.569,
+          "trail": ".",
+          "gapAfterMs": 232
+        },
+        {
+          "text": "Steer",
+          "t0": 0.801,
+          "t1": 1.057,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "the",
+          "t0": 1.115,
+          "t1": 1.184,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "flock…",
+          "t0": 1.219,
+          "t1": 1.533,
+          "trail": "…",
+          "gapAfterMs": 452
+        },
+        {
+          "text": "then",
+          "t0": 1.985,
+          "t1": 2.171,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "hit",
+          "t0": 2.229,
+          "t1": 2.38,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "Scatter.",
+          "t0": 2.45,
+          "t1": 2.844,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:50.664Z"
+    },
+    "f1-s10": {
+      "id": "f1-s10",
+      "film": 1,
+      "scene": "10",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "That was you. Now pick what's next. — Touch it. Ask it. Steer it. — Flow Video.",
+      "textSha1": "11e0c6c33bac55ebe65d2bbd6e841e5f0177c07e",
+      "chars": 79,
+      "charsBilled": 79,
+      "attempts": 1,
+      "characterCost": 43,
+      "requestId": "Y96zEFyAqp0VVrG5udRB",
+      "endpoint": "with-timestamps",
+      "previousText": "Last one. Steer the flock… then hit Scatter.",
+      "nextText": null,
+      "dur": 6.201995,
+      "rawDur": 6.315828,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.7,
+      "actions": [
+        "trim by alignment 6.32→6.20s",
+        "loudnorm linear -24.65 → -22.01 LUFS (gain +2.55 dB, TP -3.08 dBTP); target backed off 3.1 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.89,
+        "tp": -4.9,
+        "gainDb": -1.41,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.59,
+          "tp": -3.47,
+          "lra": 1.3
+        },
+        "at": "2026-09-05T18:33:23.050Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.826014,
+        "peak": -5.370503,
+        "truePeak": -5.3,
+        "tp": -5.3,
+        "lufs": -24.3,
+        "lra": 1.4,
+        "lead": 0,
+        "tail": 0.232,
+        "innerGaps": [
+          521,
+          722,
+          500,
+          421,
+          472
+        ]
+      },
+      "words": [
+        {
+          "text": "That",
+          "t0": 0,
+          "t1": 0.221,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "was",
+          "t0": 0.255,
+          "t1": 0.36,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "you.",
+          "t0": 0.43,
+          "t1": 0.592,
+          "trail": ".",
+          "gapAfterMs": 511
+        },
+        {
+          "text": "Now",
+          "t0": 1.103,
+          "t1": 1.254,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "pick",
+          "t0": 1.312,
+          "t1": 1.451,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "what's",
+          "t0": 1.498,
+          "t1": 1.66,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "next.",
+          "t0": 1.707,
+          "t1": 2.02,
+          "trail": ". —",
+          "gapAfterMs": 685
+        },
+        {
+          "text": "Touch",
+          "t0": 2.705,
+          "t1": 2.972,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "it.",
+          "t0": 3.03,
+          "t1": 3.146,
+          "trail": ".",
+          "gapAfterMs": 383
+        },
+        {
+          "text": "Ask",
+          "t0": 3.529,
+          "t1": 3.808,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "it.",
+          "t0": 3.866,
+          "t1": 3.994,
+          "trail": ".",
+          "gapAfterMs": 406
+        },
+        {
+          "text": "Steer",
+          "t0": 4.4,
+          "t1": 4.69,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "it.",
+          "t0": 4.76,
+          "t1": 4.876,
+          "trail": ". —",
+          "gapAfterMs": 441
+        },
+        {
+          "text": "Flow",
+          "t0": 5.317,
+          "t1": 5.561,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Video.",
+          "t0": 5.619,
+          "t1": 6.002,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": {
+        "ok": true,
+        "method": "alignment+silencedetect",
+        "need": 3,
+        "beats": [
+          {
+            "beat": "Touch",
+            "after": "next.. —",
+            "gapMs": 685,
+            "silenceMs": 722
+          },
+          {
+            "beat": "Ask",
+            "after": "it..",
+            "gapMs": 383,
+            "silenceMs": 500
+          },
+          {
+            "beat": "Steer",
+            "after": "it..",
+            "gapMs": 406,
+            "silenceMs": 421
+          },
+          {
+            "beat": "Flow",
+            "after": "it.. —",
+            "gapMs": 441,
+            "silenceMs": 472
+          }
+        ]
+      },
+      "generatedAt": "2026-09-05T18:23:52.919Z"
+    },
+    "f2-s1": {
+      "id": "f2-s1",
+      "film": 2,
+      "scene": "1",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Remember the solar system? You're about to build it — start to share. No code. Watch.",
+      "chars": 85,
+      "charsBilled": 170,
+      "attempts": 2,
+      "characterCost": 47,
+      "requestId": "lPSiEPdjwxqoFY2MIqKi",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": "New project… and drop everything in at once — footage, images, audio, and a whole simulation, as one zip.",
+      "dur": 5.74322,
+      "rawDur": 7.012426,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.24,
+      "actions": [
+        "trim lead/tail silence 7.01→6.41s",
+        "re-synth speed 1.05→1.12 (+85 chars)",
+        "trim 6.32→5.74s",
+        "loudnorm linear -24.75 → -21.18 LUFS (gain +3.35 dB, TP -3.08 dBTP); target backed off 2.4 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.500613,
+        "peak": -6.028586,
+        "truePeak": -6,
+        "lufs": -24.2,
+        "lra": 2.3,
+        "lead": 0,
+        "tail": 0.225,
+        "innerGaps": [
+          573,
+          456,
+          672,
+          771
+        ],
+        "tp": -6
+      },
+      "words": [
+        {
+          "text": "Remember",
+          "t0": 0,
+          "t1": 0.337,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "the",
+          "t0": 0.383,
+          "t1": 0.453,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "solar",
+          "t0": 0.488,
+          "t1": 0.708,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "system?",
+          "t0": 0.755,
+          "t1": 1.045,
+          "trail": "?",
+          "gapAfterMs": 534
+        },
+        {
+          "text": "You're",
+          "t0": 1.579,
+          "t1": 1.776,
+          "trail": "",
+          "gapAfterMs": 24
+        },
+        {
+          "text": "about",
+          "t0": 1.8,
+          "t1": 1.962,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "to",
+          "t0": 1.985,
+          "t1": 2.032,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "build",
+          "t0": 2.078,
+          "t1": 2.276,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "it",
+          "t0": 2.322,
+          "t1": 2.415,
+          "trail": " —",
+          "gapAfterMs": 395
+        },
+        {
+          "text": "start",
+          "t0": 2.81,
+          "t1": 3.03,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "to",
+          "t0": 3.065,
+          "t1": 3.111,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "share.",
+          "t0": 3.158,
+          "t1": 3.46,
+          "trail": ".",
+          "gapAfterMs": 603
+        },
+        {
+          "text": "No",
+          "t0": 4.063,
+          "t1": 4.18,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "code.",
+          "t0": 4.238,
+          "t1": 4.551,
+          "trail": ".",
+          "gapAfterMs": 673
+        },
+        {
+          "text": "Watch.",
+          "t0": 5.224,
+          "t1": 5.526,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:06.135Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.71,
+        "tp": -5.57,
+        "gainDb": -2.09,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.91,
+          "tp": -3.45,
+          "lra": 1.9
+        },
+        "at": "2026-09-05T18:33:23.316Z",
+        "uniform": true
+      },
+      "textSha1": "4a4c501daf4daca513f96ca22f70508a9d3c412e"
+    },
+    "f2-s2": {
+      "id": "f2-s2",
+      "film": 2,
+      "scene": "2",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "New project… and drop everything in at once — footage, images, audio, and a whole simulation, as one zip.",
+      "chars": 105,
+      "charsBilled": 420,
+      "attempts": 4,
+      "characterCost": 58,
+      "requestId": "Gt2pjNZxgvvK9xRSQVg4",
+      "endpoint": "with-timestamps",
+      "previousText": "Remember the solar system? You're about to build it — start to share. No code. Watch.",
+      "nextText": "It sorts itself. That zip? Just a folder somebody built. You never touch code.",
+      "dur": 7.130998,
+      "rawDur": 8.544943,
+      "slot": 7,
+      "budget": 6.5,
+      "over": 0.63,
+      "actions": [
+        "trim by alignment 8.54→8.00s",
+        "retake 1 at speed 1.12 (+105 chars)",
+        "trim by alignment 8.59→8.00s",
+        "retake 1 not shorter — kept the 8.00s take",
+        "retake 2 at speed 1.12 (+105 chars)",
+        "trim by alignment 8.13→7.47s",
+        "--refit pass",
+        "retake 1 at speed 1.12 (+105 chars)",
+        "trim by alignment 7.71→7.13s",
+        "loudnorm linear -24.4 → -21.13 LUFS (gain +3.3 dB, TP -3.08 dBTP); target backed off 2.1 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.23378,
+        "peak": -6.520405,
+        "truePeak": -6.5,
+        "lufs": -24.5,
+        "lra": 1.9,
+        "lead": 0,
+        "tail": 0.209,
+        "innerGaps": [
+          730,
+          637,
+          217,
+          335
+        ],
+        "tp": -6.5
+      },
+      "words": [
+        {
+          "text": "New",
+          "t0": 0,
+          "t1": 0.163,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "project…",
+          "t0": 0.209,
+          "t1": 0.627,
+          "trail": "…",
+          "gapAfterMs": 650
+        },
+        {
+          "text": "and",
+          "t0": 1.277,
+          "t1": 1.416,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "drop",
+          "t0": 1.463,
+          "t1": 1.637,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "everything",
+          "t0": 1.683,
+          "t1": 1.985,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "in",
+          "t0": 2.032,
+          "t1": 2.09,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "at",
+          "t0": 2.125,
+          "t1": 2.183,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "once",
+          "t0": 2.229,
+          "t1": 2.543,
+          "trail": " —",
+          "gapAfterMs": 592
+        },
+        {
+          "text": "footage,",
+          "t0": 3.135,
+          "t1": 3.529,
+          "trail": ",",
+          "gapAfterMs": 105
+        },
+        {
+          "text": "images,",
+          "t0": 3.634,
+          "t1": 4.063,
+          "trail": ",",
+          "gapAfterMs": 209
+        },
+        {
+          "text": "audio,",
+          "t0": 4.272,
+          "t1": 4.737,
+          "trail": ",",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "and",
+          "t0": 4.818,
+          "t1": 5.016,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "a",
+          "t0": 5.074,
+          "t1": 5.132,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "whole",
+          "t0": 5.201,
+          "t1": 5.445,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "simulation,",
+          "t0": 5.48,
+          "t1": 6.026,
+          "trail": ",",
+          "gapAfterMs": 290
+        },
+        {
+          "text": "as",
+          "t0": 6.316,
+          "t1": 6.467,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "one",
+          "t0": 6.536,
+          "t1": 6.687,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "zip.",
+          "t0": 6.722,
+          "t1": 6.931,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:16:55.154Z",
+      "refitAt": "2026-09-05T13:19:22.225Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.04,
+        "tp": -5.96,
+        "gainDb": -2.47,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.53,
+          "tp": -3.45,
+          "lra": 1.1
+        },
+        "at": "2026-09-05T18:33:23.616Z",
+        "uniform": true
+      },
+      "textSha1": "2790814329a85f9fb94cc7a50ef52672b18450d1"
+    },
+    "f2-s3": {
+      "id": "f2-s3",
+      "film": 2,
+      "scene": "3",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "It sorts itself. That zip? Someone's folder — or one already in your Library. No code.",
+      "textSha1": "638c1f4ae91b85aaca6cd692266b4855fd1b8ee0",
+      "chars": 86,
+      "charsBilled": 172,
+      "attempts": 2,
+      "characterCost": 47,
+      "requestId": "nitOfi4kl3WqARTD5Wjg",
+      "endpoint": "with-timestamps",
+      "previousText": "New project… and drop everything in at once — footage, images, audio, and a whole simulation, as one zip.",
+      "nextText": "Find the moment your video should come alive… and drag across it. That's a section.",
+      "dur": 6.283991,
+      "rawDur": 7.801905,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.78,
+      "actions": [
+        "trim by alignment 7.80→7.28s",
+        "retake 1 at speed 1.12 (+86 chars)",
+        "trim by alignment 6.55→6.28s",
+        "loudnorm linear -23.87 → -20.67 LUFS (gain +3.37 dB, TP -3.11 dBTP); target backed off 1.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.17,
+        "tp": -6.61,
+        "gainDb": -3.07,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.93,
+          "tp": -3.46,
+          "lra": 1
+        },
+        "at": "2026-09-05T18:33:23.901Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -26.018452,
+        "peak": -7.028419,
+        "truePeak": -7,
+        "tp": -7,
+        "lufs": -24.6,
+        "lra": 2.2,
+        "lead": 0,
+        "tail": 0.294,
+        "innerGaps": [
+          601,
+          714,
+          527,
+          586
+        ]
+      },
+      "words": [
+        {
+          "text": "It",
+          "t0": 0,
+          "t1": 0.139,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "sorts",
+          "t0": 0.186,
+          "t1": 0.43,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "itself.",
+          "t0": 0.476,
+          "t1": 0.813,
+          "trail": ".",
+          "gapAfterMs": 545
+        },
+        {
+          "text": "That",
+          "t0": 1.358,
+          "t1": 1.556,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "zip?",
+          "t0": 1.614,
+          "t1": 1.846,
+          "trail": "?",
+          "gapAfterMs": 639
+        },
+        {
+          "text": "Someone's",
+          "t0": 2.485,
+          "t1": 2.844,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "folder",
+          "t0": 2.891,
+          "t1": 3.193,
+          "trail": " —",
+          "gapAfterMs": 499
+        },
+        {
+          "text": "or",
+          "t0": 3.692,
+          "t1": 3.82,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "one",
+          "t0": 3.889,
+          "t1": 4.017,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "already",
+          "t0": 4.052,
+          "t1": 4.354,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "in",
+          "t0": 4.389,
+          "t1": 4.435,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "your",
+          "t0": 4.47,
+          "t1": 4.574,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "Library.",
+          "t0": 4.621,
+          "t1": 5.039,
+          "trail": ".",
+          "gapAfterMs": 557
+        },
+        {
+          "text": "No",
+          "t0": 5.596,
+          "t1": 5.712,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "code.",
+          "t0": 5.782,
+          "t1": 6.084,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:23:58.919Z"
+    },
+    "f2-s4": {
+      "id": "f2-s4",
+      "film": 2,
+      "scene": "4",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Find the moment your video should come alive… and drag across it. That's a section.",
+      "chars": 83,
+      "charsBilled": 83,
+      "attempts": 1,
+      "characterCost": 46,
+      "requestId": "igDL2La4emwoce34VO7y",
+      "endpoint": "with-timestamps",
+      "previousText": "It sorts itself. That zip? Just a folder somebody built. You never touch code.",
+      "nextText": "Pick Simulation. Choose your package. Open Generate mini model — and tell it, in plain words, what this moment's for:",
+      "dur": 5.665669,
+      "rawDur": 5.665669,
+      "slot": 8,
+      "budget": 7.5,
+      "over": -1.83,
+      "actions": [
+        "loudnorm linear -24 → -21.07 LUFS (gain +2.8 dB, TP -3.02 dBTP); target backed off 2.2 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -26.015777,
+        "peak": -6.311013,
+        "truePeak": -6.3,
+        "lufs": -24.3,
+        "lra": 1.9,
+        "lead": 0,
+        "tail": 0.884,
+        "innerGaps": [
+          596,
+          836
+        ],
+        "tp": -6.3
+      },
+      "words": [
+        {
+          "text": "Find",
+          "t0": 0,
+          "t1": 0.267,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 0.302,
+          "t1": 0.372,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "moment",
+          "t0": 0.406,
+          "t1": 0.627,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "your",
+          "t0": 0.662,
+          "t1": 0.778,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video",
+          "t0": 0.824,
+          "t1": 1.068,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "should",
+          "t0": 1.126,
+          "t1": 1.289,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "come",
+          "t0": 1.324,
+          "t1": 1.463,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "alive…",
+          "t0": 1.498,
+          "t1": 1.927,
+          "trail": "…",
+          "gapAfterMs": 488
+        },
+        {
+          "text": "and",
+          "t0": 2.415,
+          "t1": 2.566,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "drag",
+          "t0": 2.635,
+          "t1": 2.914,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "across",
+          "t0": 2.961,
+          "t1": 3.309,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "it.",
+          "t0": 3.355,
+          "t1": 3.471,
+          "trail": ".",
+          "gapAfterMs": 674
+        },
+        {
+          "text": "That's",
+          "t0": 4.145,
+          "t1": 4.365,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 4.4,
+          "t1": 4.435,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "section.",
+          "t0": 4.47,
+          "t1": 4.853,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:14.595Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.88,
+        "tp": -5.84,
+        "gainDb": -2.36,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.64,
+          "tp": -3.48,
+          "lra": 2.4
+        },
+        "at": "2026-09-05T18:33:24.156Z",
+        "uniform": true
+      },
+      "textSha1": "dfe2b19d55490c94a3ecf6710b79ce266dfd4c77"
+    },
+    "f2-s5": {
+      "id": "f2-s5",
+      "film": 2,
+      "scene": "5",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Pick Simulation. Choose your package. Then, in plain words — what's this moment for?",
+      "textSha1": "f23e26b40eaaa2f2b063edc39bff69d04ef2bff7",
+      "chars": 84,
+      "charsBilled": 84,
+      "attempts": 1,
+      "characterCost": 46,
+      "requestId": "pzvtEJLci7pA7e5adN4A",
+      "endpoint": "with-timestamps",
+      "previousText": "Find the moment your video should come alive… and drag across it. That's a section.",
+      "nextText": "Give viewers the planets — let them speed up time and fly to any world.",
+      "dur": 7.709025,
+      "rawDur": 7.709025,
+      "slot": 8,
+      "budget": 7.5,
+      "over": 0.21,
+      "actions": [
+        "loudnorm linear -24.48 → -20.52 LUFS (gain +3.48 dB, TP -3.12 dBTP); target backed off 2.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.54,
+        "tp": -6.12,
+        "gainDb": -2.57,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.43,
+          "tp": -3.48,
+          "lra": 3.4
+        },
+        "at": "2026-09-05T18:33:24.473Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -26.581345,
+        "peak": -6.581988,
+        "truePeak": -6.5,
+        "tp": -6.5,
+        "lufs": -24,
+        "lra": 2.6,
+        "lead": 0,
+        "tail": 0.83,
+        "innerGaps": [
+          1095,
+          1019,
+          949
+        ]
+      },
+      "words": [
+        {
+          "text": "Pick",
+          "t0": 0,
+          "t1": 0.232,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "Simulation.",
+          "t0": 0.267,
+          "t1": 0.894,
+          "trail": ".",
+          "gapAfterMs": 1022
+        },
+        {
+          "text": "Choose",
+          "t0": 1.916,
+          "t1": 2.159,
+          "trail": "",
+          "gapAfterMs": 24
+        },
+        {
+          "text": "your",
+          "t0": 2.183,
+          "t1": 2.276,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "package.",
+          "t0": 2.322,
+          "t1": 2.786,
+          "trail": ".",
+          "gapAfterMs": 976
+        },
+        {
+          "text": "Then,",
+          "t0": 3.762,
+          "t1": 4.11,
+          "trail": ",",
+          "gapAfterMs": 93
+        },
+        {
+          "text": "in",
+          "t0": 4.203,
+          "t1": 4.342,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "plain",
+          "t0": 4.412,
+          "t1": 4.667,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "words",
+          "t0": 4.725,
+          "t1": 5.085,
+          "trail": " —",
+          "gapAfterMs": 917
+        },
+        {
+          "text": "what's",
+          "t0": 6.002,
+          "t1": 6.223,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "this",
+          "t0": 6.258,
+          "t1": 6.385,
+          "trail": "",
+          "gapAfterMs": 59
+        },
+        {
+          "text": "moment",
+          "t0": 6.444,
+          "t1": 6.687,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "for?",
+          "t0": 6.722,
+          "t1": 6.931,
+          "trail": "?",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:02.309Z"
+    },
+    "f2-s6": {
+      "id": "f2-s6",
+      "film": 2,
+      "scene": "6",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Give viewers the planets — let them speed up time and fly to any world.",
+      "chars": 71,
+      "charsBilled": 71,
+      "attempts": 1,
+      "characterCost": 39,
+      "requestId": "8xHLKVQdmsauZrHGzJ0I",
+      "endpoint": "with-timestamps",
+      "previousText": "Pick Simulation. Choose your package. Open Generate mini model — and tell it, in plain words, what this moment's for:",
+      "nextText": "Two switches. Simple UI — only your buttons. Auto Script — it performs for the ones who only watch. …Generate.",
+      "dur": 5.15483,
+      "rawDur": 5.15483,
+      "slot": 8,
+      "budget": 7.5,
+      "over": -2.35,
+      "actions": [
+        "loudnorm linear -23.98 → -22.56 LUFS (gain +1.58 dB, TP -3.06 dBTP); target backed off 3.4 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.771848,
+        "peak": -5.092526,
+        "truePeak": -5.1,
+        "lufs": -24.6,
+        "lra": 0.7,
+        "lead": 0,
+        "tail": 0.837,
+        "innerGaps": [
+          834
+        ],
+        "tp": -5.1
+      },
+      "words": [
+        {
+          "text": "Give",
+          "t0": 0,
+          "t1": 0.29,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "viewers",
+          "t0": 0.337,
+          "t1": 0.708,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "the",
+          "t0": 0.766,
+          "t1": 0.836,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "planets",
+          "t0": 0.871,
+          "t1": 1.3,
+          "trail": " —",
+          "gapAfterMs": 836
+        },
+        {
+          "text": "let",
+          "t0": 2.136,
+          "t1": 2.264,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "them",
+          "t0": 2.299,
+          "t1": 2.415,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "speed",
+          "t0": 2.473,
+          "t1": 2.705,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "up",
+          "t0": 2.74,
+          "t1": 2.821,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "time",
+          "t0": 2.868,
+          "t1": 3.17,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "and",
+          "t0": 3.204,
+          "t1": 3.274,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "fly",
+          "t0": 3.344,
+          "t1": 3.553,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "to",
+          "t0": 3.611,
+          "t1": 3.669,
+          "trail": "",
+          "gapAfterMs": 93
+        },
+        {
+          "text": "any",
+          "t0": 3.762,
+          "t1": 3.947,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "world.",
+          "t0": 4.005,
+          "t1": 4.365,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:18.252Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.15,
+        "tp": -4.69,
+        "gainDb": -1.16,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.84,
+          "tp": -3.5,
+          "lra": 0.4
+        },
+        "at": "2026-09-05T18:33:24.719Z",
+        "uniform": true
+      },
+      "textSha1": "941d6e8a640b14ac845f150bf8d0c7745c677b6d"
+    },
+    "f2-s7": {
+      "id": "f2-s7",
+      "film": 2,
+      "scene": "7",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Two switches. Simple UI — only your buttons. Auto Script — it performs for the ones who only watch. …Generate.",
+      "chars": 110,
+      "charsBilled": 220,
+      "attempts": 2,
+      "characterCost": 61,
+      "requestId": "azOeyxUNPJU4wlgSGmur",
+      "endpoint": "with-timestamps",
+      "previousText": "Give viewers the planets — let them speed up time and fly to any world.",
+      "nextText": "Done. …That's not a preview. Touch it.",
+      "dur": 8.266349,
+      "rawDur": 10.541859,
+      "slot": 8,
+      "budget": 7.5,
+      "over": 0.77,
+      "actions": [
+        "trim lead/tail silence 10.54→10.54s",
+        "re-synth speed 1.05→1.12 (+110 chars)",
+        "trim 8.27→8.27s",
+        "loudnorm linear -25.11 → -21.64 LUFS (gain +3.41 dB, TP -3.08 dBTP); target backed off 2.7 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.386253,
+        "peak": -5.837272,
+        "truePeak": -5.8,
+        "lufs": -24.4,
+        "lra": 2.4,
+        "lead": 0,
+        "tail": 0.715,
+        "innerGaps": [
+          346,
+          497,
+          709,
+          499,
+          659
+        ],
+        "tp": -5.8
+      },
+      "words": [
+        {
+          "text": "Two",
+          "t0": 0,
+          "t1": 0.186,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "switches.",
+          "t0": 0.232,
+          "t1": 0.662,
+          "trail": ".",
+          "gapAfterMs": 360
+        },
+        {
+          "text": "Simple",
+          "t0": 1.022,
+          "t1": 1.324,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "UI",
+          "t0": 1.37,
+          "t1": 1.66,
+          "trail": " —",
+          "gapAfterMs": 499
+        },
+        {
+          "text": "only",
+          "t0": 2.159,
+          "t1": 2.38,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "your",
+          "t0": 2.426,
+          "t1": 2.531,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "buttons.",
+          "t0": 2.566,
+          "t1": 2.914,
+          "trail": ".",
+          "gapAfterMs": 673
+        },
+        {
+          "text": "Auto",
+          "t0": 3.587,
+          "t1": 3.843,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Script",
+          "t0": 3.901,
+          "t1": 4.203,
+          "trail": " —",
+          "gapAfterMs": 453
+        },
+        {
+          "text": "it",
+          "t0": 4.656,
+          "t1": 4.76,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "performs",
+          "t0": 4.807,
+          "t1": 5.155,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "for",
+          "t0": 5.19,
+          "t1": 5.271,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 5.306,
+          "t1": 5.375,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "ones",
+          "t0": 5.433,
+          "t1": 5.631,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "who",
+          "t0": 5.677,
+          "t1": 5.793,
+          "trail": "",
+          "gapAfterMs": 105
+        },
+        {
+          "text": "only",
+          "t0": 5.898,
+          "t1": 6.142,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "watch.",
+          "t0": 6.2,
+          "t1": 6.536,
+          "trail": ".",
+          "gapAfterMs": 662
+        },
+        {
+          "text": "…Generate.",
+          "t0": 7.198,
+          "t1": 7.674,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:22.933Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.95,
+        "tp": -5.38,
+        "gainDb": -1.87,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.13,
+          "tp": -3.51,
+          "lra": 1.8
+        },
+        "at": "2026-09-05T18:33:25.050Z",
+        "uniform": true
+      },
+      "textSha1": "3ec83e6c1f022a64b0f04cd0c39bfa2954fe6c40"
+    },
+    "f2-s8": {
+      "id": "f2-s8",
+      "film": 2,
+      "scene": "8",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Done. …That's not a preview. Tap a planet.",
+      "textSha1": "bffd6c62b139191449788550b8cee1028385381e",
+      "chars": 42,
+      "charsBilled": 42,
+      "attempts": 1,
+      "characterCost": 23,
+      "requestId": "hi6NT5R1WV8xwGwgLk19",
+      "endpoint": "with-timestamps",
+      "previousText": "Two switches. Simple UI — only your buttons. Auto Script — it performs for the ones who only watch. …Generate.",
+      "nextText": "Now speed up time. Your viewers get exactly this — nothing in their way.",
+      "dur": 3.575873,
+      "rawDur": 3.575873,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -1.92,
+      "actions": [
+        "loudnorm linear -23.95 → -21.05 LUFS (gain +2.75 dB, TP -3.06 dBTP); target backed off 2.2 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.86,
+        "tp": -5.88,
+        "gainDb": -2.36,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.64,
+          "tp": -3.46,
+          "lra": 1
+        },
+        "at": "2026-09-05T18:33:25.246Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.471111,
+        "peak": -6.441376,
+        "truePeak": -6.4,
+        "tp": -6.4,
+        "lufs": -24.3,
+        "lra": 0.5,
+        "lead": 0,
+        "tail": 0.474,
+        "innerGaps": [
+          300,
+          337,
+          489
+        ]
+      },
+      "words": [
+        {
+          "text": "Done.",
+          "t0": 0,
+          "t1": 0.383,
+          "trail": ".",
+          "gapAfterMs": 755
+        },
+        {
+          "text": "…That's",
+          "t0": 1.138,
+          "t1": 1.405,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "not",
+          "t0": 1.44,
+          "t1": 1.544,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 1.579,
+          "t1": 1.602,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "preview.",
+          "t0": 1.625,
+          "t1": 1.997,
+          "trail": ".",
+          "gapAfterMs": 429
+        },
+        {
+          "text": "Tap",
+          "t0": 2.426,
+          "t1": 2.67,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "a",
+          "t0": 2.728,
+          "t1": 2.752,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "planet.",
+          "t0": 2.786,
+          "t1": 3.146,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:06.229Z"
+    },
+    "f2-s9": {
+      "id": "f2-s9",
+      "film": 2,
+      "scene": "9",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Now speed up time. Your viewers get exactly this — nothing in their way.",
+      "textSha1": "06c894cf052020119aaeec68b93d773986ea2ba4",
+      "chars": 72,
+      "charsBilled": 72,
+      "attempts": 1,
+      "characterCost": 40,
+      "requestId": "fiBlv0Mhfb9XqOiRgQYV",
+      "endpoint": "with-timestamps",
+      "previousText": "Done. …That's not a preview. Tap a planet.",
+      "nextText": "Hit Create link. That one link is the whole thing — the video, an audio edition, your library.",
+      "dur": 4.272472,
+      "rawDur": 4.272472,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -1.23,
+      "actions": [
+        "loudnorm linear -23.49 → -21.87 LUFS (gain +1.49 dB, TP -3.09 dBTP); target backed off 3.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.89,
+        "tp": -5.19,
+        "gainDb": -1.56,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.44,
+          "tp": -3.62,
+          "lra": 0.2
+        },
+        "at": "2026-09-05T18:33:25.463Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.020311,
+        "peak": -5.562135,
+        "truePeak": -5.6,
+        "tp": -5.6,
+        "lufs": -24.3,
+        "lra": 0.7,
+        "lead": 0,
+        "tail": 0.402,
+        "innerGaps": [
+          406,
+          493
+        ]
+      },
+      "words": [
+        {
+          "text": "Now",
+          "t0": 0,
+          "t1": 0.197,
+          "trail": "",
+          "gapAfterMs": 82
+        },
+        {
+          "text": "speed",
+          "t0": 0.279,
+          "t1": 0.522,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "up",
+          "t0": 0.557,
+          "t1": 0.639,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "time.",
+          "t0": 0.685,
+          "t1": 0.998,
+          "trail": ".",
+          "gapAfterMs": 267
+        },
+        {
+          "text": "Your",
+          "t0": 1.265,
+          "t1": 1.428,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "viewers",
+          "t0": 1.486,
+          "t1": 1.776,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "get",
+          "t0": 1.811,
+          "t1": 1.927,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "exactly",
+          "t0": 1.974,
+          "t1": 2.38,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "this",
+          "t0": 2.426,
+          "t1": 2.624,
+          "trail": " —",
+          "gapAfterMs": 546
+        },
+        {
+          "text": "nothing",
+          "t0": 3.17,
+          "t1": 3.437,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "in",
+          "t0": 3.471,
+          "t1": 3.518,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "their",
+          "t0": 3.553,
+          "t1": 3.68,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "way.",
+          "t0": 3.727,
+          "t1": 3.947,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:08.333Z"
+    },
+    "f2-s10": {
+      "id": "f2-s10",
+      "film": 2,
+      "scene": "10",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Hit Create link. That one link is the whole thing — the video, an audio edition, your library.",
+      "textSha1": "d9634adffda84ee771722505816bc1a0f38e1c10",
+      "chars": 94,
+      "charsBilled": 94,
+      "attempts": 1,
+      "characterCost": 52,
+      "requestId": "PGnpOZNHy9nL76gcKMWX",
+      "endpoint": "with-timestamps",
+      "previousText": "Now speed up time. Your viewers get exactly this — nothing in their way.",
+      "nextText": "This project? Already yours. The solar system below sits on your timeline right now.",
+      "dur": 6.919546,
+      "rawDur": 6.919546,
+      "slot": 7,
+      "budget": 6.5,
+      "over": 0.42,
+      "actions": [
+        "loudnorm linear -24.48 → -21.12 LUFS (gain +3.28 dB, TP -3.11 dBTP); target backed off 2.2 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.9,
+        "tp": -5.88,
+        "gainDb": -2.35,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.65,
+          "tp": -3.46,
+          "lra": 0.6
+        },
+        "at": "2026-09-05T18:33:25.754Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.280177,
+        "peak": -6.341178,
+        "truePeak": -6.3,
+        "tp": -6.3,
+        "lufs": -24.4,
+        "lra": 2.2,
+        "lead": 0,
+        "tail": 0.48,
+        "innerGaps": [
+          884,
+          483,
+          425
+        ]
+      },
+      "words": [
+        {
+          "text": "Hit",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Create",
+          "t0": 0.302,
+          "t1": 0.627,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "link.",
+          "t0": 0.662,
+          "t1": 0.882,
+          "trail": ".",
+          "gapAfterMs": 825
+        },
+        {
+          "text": "That",
+          "t0": 1.707,
+          "t1": 1.927,
+          "trail": "",
+          "gapAfterMs": 82
+        },
+        {
+          "text": "one",
+          "t0": 2.009,
+          "t1": 2.229,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "link",
+          "t0": 2.276,
+          "t1": 2.485,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "is",
+          "t0": 2.543,
+          "t1": 2.624,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "the",
+          "t0": 2.67,
+          "t1": 2.74,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "whole",
+          "t0": 2.786,
+          "t1": 2.995,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "thing",
+          "t0": 3.03,
+          "t1": 3.262,
+          "trail": " —",
+          "gapAfterMs": 500
+        },
+        {
+          "text": "the",
+          "t0": 3.762,
+          "t1": 3.855,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video,",
+          "t0": 3.901,
+          "t1": 4.319,
+          "trail": ",",
+          "gapAfterMs": 395
+        },
+        {
+          "text": "an",
+          "t0": 4.714,
+          "t1": 4.841,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "audio",
+          "t0": 4.899,
+          "t1": 5.19,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "edition,",
+          "t0": 5.224,
+          "t1": 5.642,
+          "trail": ",",
+          "gapAfterMs": 117
+        },
+        {
+          "text": "your",
+          "t0": 5.759,
+          "t1": 5.909,
+          "trail": "",
+          "gapAfterMs": 59
+        },
+        {
+          "text": "library.",
+          "t0": 5.968,
+          "t1": 6.455,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:10.862Z"
+    },
+    "f2-s11": {
+      "id": "f2-s11",
+      "film": 2,
+      "scene": "11",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "This project? Already yours. The solar system below sits on your timeline right now.",
+      "chars": 84,
+      "charsBilled": 84,
+      "attempts": 1,
+      "characterCost": 46,
+      "requestId": "x2vIceJNVIC3EwskJCgf",
+      "endpoint": "with-timestamps",
+      "previousText": "Hit Create link. One link is the whole experience — video, a podcast that answers voice questions, your library.",
+      "nextText": "Change one word of the prompt. Hit Generate… and watch it obey. — Flow Video.",
+      "dur": 5.758549,
+      "rawDur": 5.758549,
+      "slot": 7,
+      "budget": 6.5,
+      "over": -0.74,
+      "actions": [
+        "loudnorm linear -24.08 → -19.57 LUFS (gain +4.48 dB, TP -3.17 dBTP); target backed off 0.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.518137,
+        "peak": -7.928251,
+        "truePeak": -7.9,
+        "lufs": -24.4,
+        "lra": 1.6,
+        "lead": 0,
+        "tail": 0.381,
+        "innerGaps": [
+          847,
+          494
+        ],
+        "tp": -7.9
+      },
+      "words": [
+        {
+          "text": "This",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "project?",
+          "t0": 0.302,
+          "t1": 0.755,
+          "trail": "?",
+          "gapAfterMs": 778
+        },
+        {
+          "text": "Already",
+          "t0": 1.533,
+          "t1": 1.927,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "yours.",
+          "t0": 1.974,
+          "t1": 2.31,
+          "trail": ".",
+          "gapAfterMs": 430
+        },
+        {
+          "text": "The",
+          "t0": 2.74,
+          "t1": 2.868,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "solar",
+          "t0": 2.926,
+          "t1": 3.204,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "system",
+          "t0": 3.251,
+          "t1": 3.541,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "below",
+          "t0": 3.599,
+          "t1": 3.855,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "sits",
+          "t0": 3.936,
+          "t1": 4.133,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "on",
+          "t0": 4.168,
+          "t1": 4.226,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "your",
+          "t0": 4.272,
+          "t1": 4.377,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "timeline",
+          "t0": 4.423,
+          "t1": 4.911,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "right",
+          "t0": 4.946,
+          "t1": 5.132,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "now.",
+          "t0": 5.178,
+          "t1": 5.364,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:31.916Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.97,
+        "tp": -7.53,
+        "gainDb": -3.95,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.05,
+          "tp": -3.54,
+          "lra": 1.1
+        },
+        "at": "2026-09-05T18:33:26.016Z",
+        "uniform": true
+      },
+      "textSha1": "7aba46a5d78a5806d060b859ad159f5c25ee632b"
+    },
+    "f2-s12": {
+      "id": "f2-s12",
+      "film": 2,
+      "scene": "12",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Change one word of the prompt. Hit Generate… and watch it obey. — Flow Video.",
+      "chars": 77,
+      "charsBilled": 77,
+      "attempts": 1,
+      "characterCost": 42,
+      "requestId": "irkp2dB1Hywt8qQJIUvw",
+      "endpoint": "with-timestamps",
+      "previousText": "This project? Already yours. The solar system below sits on your timeline right now.",
+      "nextText": null,
+      "dur": 5.34059,
+      "rawDur": 5.34059,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.16,
+      "actions": [
+        "loudnorm linear -23.83 → -21.77 LUFS (gain +1.63 dB, TP -3.14 dBTP); target backed off 3.2 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.067386,
+        "peak": -5.314338,
+        "truePeak": -5.3,
+        "lufs": -24,
+        "lra": 1.3,
+        "lead": 0,
+        "tail": 0.332,
+        "innerGaps": [
+          543,
+          566,
+          594
+        ],
+        "tp": -5.3
+      },
+      "words": [
+        {
+          "text": "Change",
+          "t0": 0,
+          "t1": 0.372,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "one",
+          "t0": 0.418,
+          "t1": 0.615,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "word",
+          "t0": 0.65,
+          "t1": 0.824,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "of",
+          "t0": 0.859,
+          "t1": 0.906,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "the",
+          "t0": 0.94,
+          "t1": 1.01,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "prompt.",
+          "t0": 1.033,
+          "t1": 1.37,
+          "trail": ".",
+          "gapAfterMs": 453
+        },
+        {
+          "text": "Hit",
+          "t0": 1.823,
+          "t1": 2.02,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "Generate…",
+          "t0": 2.09,
+          "t1": 2.624,
+          "trail": "…",
+          "gapAfterMs": 441
+        },
+        {
+          "text": "and",
+          "t0": 3.065,
+          "t1": 3.193,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "watch",
+          "t0": 3.251,
+          "t1": 3.448,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "it",
+          "t0": 3.483,
+          "t1": 3.541,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "obey.",
+          "t0": 3.576,
+          "t1": 3.901,
+          "trail": ". —",
+          "gapAfterMs": 569
+        },
+        {
+          "text": "Flow",
+          "t0": 4.47,
+          "t1": 4.69,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "Video.",
+          "t0": 4.737,
+          "t1": 5.05,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:33.317Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.56,
+        "tp": -4.9,
+        "gainDb": -1.35,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.65,
+          "tp": -3.49,
+          "lra": 2.3
+        },
+        "at": "2026-09-05T18:33:26.264Z",
+        "uniform": true
+      },
+      "textSha1": "599ef33a5a425a3d1c3688264b6b8511facad52d"
+    },
+    "f3-s1": {
+      "id": "f3-s1",
+      "film": 3,
+      "scene": "1",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Anything that runs in a browser… can run inside your video.",
+      "textSha1": "b9941b1af0ab3fd5cbb446bd5e842cc5e651b2ef",
+      "chars": 59,
+      "charsBilled": 59,
+      "attempts": 1,
+      "characterCost": 32,
+      "requestId": "vbfGcyOdjrxRHFoQgt2B",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": "Got one? Zip it. Drop it. That's the entire import.",
+      "dur": 3.808073,
+      "rawDur": 3.808073,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -1.69,
+      "actions": [
+        "loudnorm linear -23.88 → -21.25 LUFS (gain +2.08 dB, TP -3.09 dBTP); target backed off 2.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.45,
+        "tp": -5.4,
+        "gainDb": -1.74,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.26,
+          "tp": -3.66,
+          "lra": 2.5
+        },
+        "at": "2026-09-05T18:33:26.470Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -24.984984,
+        "peak": -5.874349,
+        "truePeak": -5.9,
+        "tp": -5.9,
+        "lufs": -23.9,
+        "lra": 2.2,
+        "lead": 0,
+        "tail": 0.781,
+        "innerGaps": [
+          379
+        ]
+      },
+      "words": [
+        {
+          "text": "Anything",
+          "t0": 0,
+          "t1": 0.36,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "that",
+          "t0": 0.406,
+          "t1": 0.511,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "runs",
+          "t0": 0.569,
+          "t1": 0.778,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "in",
+          "t0": 0.813,
+          "t1": 0.871,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 0.906,
+          "t1": 0.929,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "browser…",
+          "t0": 0.964,
+          "t1": 1.405,
+          "trail": "…",
+          "gapAfterMs": 418
+        },
+        {
+          "text": "can",
+          "t0": 1.823,
+          "t1": 1.95,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "run",
+          "t0": 1.997,
+          "t1": 2.125,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "inside",
+          "t0": 2.171,
+          "t1": 2.473,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "your",
+          "t0": 2.496,
+          "t1": 2.589,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video.",
+          "t0": 2.635,
+          "t1": 2.995,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:14.204Z"
+    },
+    "f3-s2": {
+      "id": "f3-s2",
+      "film": 3,
+      "scene": "2",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Got one? Zip it. Drop it. That's the entire import.",
+      "textSha1": "d7766fa9f67df2125b82e980d55a86c817241fa5",
+      "chars": 51,
+      "charsBilled": 51,
+      "attempts": 1,
+      "characterCost": 28,
+      "requestId": "mdoZ8yKPuf1GY6PQTheU",
+      "endpoint": "with-timestamps",
+      "previousText": "Anything that runs in a browser… can run inside your video.",
+      "nextText": "Drag across the timeline where it belongs. Then tell it, plain words, what viewers should do.",
+      "dur": 4.504671,
+      "rawDur": 4.504671,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -1,
+      "actions": [
+        "loudnorm linear -24.3 → -21.82 LUFS (gain +2.5 dB, TP -3.05 dBTP); target backed off 2.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.01,
+        "tp": -5.2,
+        "gainDb": -1.72,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.28,
+          "tp": -3.44,
+          "lra": 1.5
+        },
+        "at": "2026-09-05T18:33:26.695Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -26.146069,
+        "peak": -5.672987,
+        "truePeak": -5.6,
+        "tp": -5.6,
+        "lufs": -24.5,
+        "lra": 1.5,
+        "lead": 0,
+        "tail": 0.436,
+        "innerGaps": [
+          764,
+          508,
+          531
+        ]
+      },
+      "words": [
+        {
+          "text": "Got",
+          "t0": 0,
+          "t1": 0.232,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "one?",
+          "t0": 0.29,
+          "t1": 0.499,
+          "trail": "?",
+          "gapAfterMs": 720
+        },
+        {
+          "text": "Zip",
+          "t0": 1.219,
+          "t1": 1.44,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "it.",
+          "t0": 1.498,
+          "t1": 1.614,
+          "trail": ".",
+          "gapAfterMs": 429
+        },
+        {
+          "text": "Drop",
+          "t0": 2.043,
+          "t1": 2.31,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "it.",
+          "t0": 2.368,
+          "t1": 2.485,
+          "trail": ".",
+          "gapAfterMs": 429
+        },
+        {
+          "text": "That's",
+          "t0": 2.914,
+          "t1": 3.146,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 3.181,
+          "t1": 3.251,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "entire",
+          "t0": 3.297,
+          "t1": 3.669,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "import.",
+          "t0": 3.715,
+          "t1": 4.098,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:16.161Z"
+    },
+    "f3-s3": {
+      "id": "f3-s3",
+      "film": 3,
+      "scene": "3",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Drag across the timeline where it belongs. Then tell it, plain words, what viewers should do.",
+      "chars": 93,
+      "charsBilled": 93,
+      "attempts": 1,
+      "characterCost": 51,
+      "requestId": "qBe5AA7v5zxwBqf9K3cm",
+      "endpoint": "with-timestamps",
+      "previousText": "Free it. Zip it. Drop it. That's the entire import.",
+      "nextText": "Simple UI — only your buttons. Auto Script — it demos itself. …Generate.",
+      "dur": 7.291066,
+      "rawDur": 7.291066,
+      "slot": 8,
+      "budget": 7.5,
+      "over": -0.21,
+      "actions": [
+        "loudnorm linear -24.2 → -20.45 LUFS (gain +3.6 dB, TP -3.04 dBTP); target backed off 1.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.637031,
+        "peak": -6.90263,
+        "truePeak": -6.9,
+        "lufs": -24.3,
+        "lra": 2.3,
+        "lead": 0,
+        "tail": 0,
+        "innerGaps": [
+          1207,
+          260,
+          282,
+          852
+        ],
+        "tp": -6.9
+      },
+      "words": [
+        {
+          "text": "Drag",
+          "t0": 0,
+          "t1": 0.337,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "across",
+          "t0": 0.383,
+          "t1": 0.708,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 0.743,
+          "t1": 0.813,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "timeline",
+          "t0": 0.848,
+          "t1": 1.347,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "where",
+          "t0": 1.37,
+          "t1": 1.567,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "it",
+          "t0": 1.602,
+          "t1": 1.672,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "belongs.",
+          "t0": 1.718,
+          "t1": 2.241,
+          "trail": ".",
+          "gapAfterMs": 1196
+        },
+        {
+          "text": "Then",
+          "t0": 3.437,
+          "t1": 3.657,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "tell",
+          "t0": 3.715,
+          "t1": 3.913,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "it,",
+          "t0": 3.982,
+          "t1": 4.11,
+          "trail": ",",
+          "gapAfterMs": 186
+        },
+        {
+          "text": "plain",
+          "t0": 4.296,
+          "t1": 4.563,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "words,",
+          "t0": 4.621,
+          "t1": 4.969,
+          "trail": ",",
+          "gapAfterMs": 279
+        },
+        {
+          "text": "what",
+          "t0": 5.248,
+          "t1": 5.468,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "viewers",
+          "t0": 5.538,
+          "t1": 5.898,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "should",
+          "t0": 5.944,
+          "t1": 6.165,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "do.",
+          "t0": 6.211,
+          "t1": 6.397,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:38.490Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.85,
+        "tp": -6.43,
+        "gainDb": -2.94,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.06,
+          "tp": -3.49,
+          "lra": 1.3
+        },
+        "at": "2026-09-05T18:33:26.998Z",
+        "uniform": true
+      },
+      "textSha1": "127c84db397d5db65c390d7776fac71539fe2ef5"
+    },
+    "f3-s4": {
+      "id": "f3-s4",
+      "film": 3,
+      "scene": "4",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Simple UI — only your buttons. Auto Script — it demos itself. …Generate.",
+      "chars": 72,
+      "charsBilled": 144,
+      "attempts": 2,
+      "characterCost": 40,
+      "requestId": "gR0AIiGApyy2urXPgr21",
+      "endpoint": "with-timestamps",
+      "previousText": "Drag across the timeline where it belongs. Then tell it, plain words, what viewers should do.",
+      "nextText": "Second thoughts? Type them. Bigger timeline… hide that toggle. It remembers — and rewires.",
+      "dur": 6.176553,
+      "rawDur": 8.637823,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.68,
+      "actions": [
+        "trim lead/tail silence 8.64→8.64s",
+        "re-synth speed 1.05→1.12 (+72 chars)",
+        "trim 6.18→6.18s",
+        "loudnorm linear -25.07 → -22.48 LUFS (gain +2.57 dB, TP -3.05 dBTP); target backed off 3.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.9906,
+        "peak": -4.907516,
+        "truePeak": -4.9,
+        "lufs": -24.4,
+        "lra": 1.7,
+        "lead": 0,
+        "tail": 0.191,
+        "innerGaps": [
+          553,
+          806,
+          560,
+          877
+        ],
+        "tp": -4.9
+      },
+      "words": [
+        {
+          "text": "Simple",
+          "t0": 0,
+          "t1": 0.337,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "UI",
+          "t0": 0.383,
+          "t1": 0.673,
+          "trail": " —",
+          "gapAfterMs": 558
+        },
+        {
+          "text": "only",
+          "t0": 1.231,
+          "t1": 1.44,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "your",
+          "t0": 1.474,
+          "t1": 1.579,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "buttons.",
+          "t0": 1.614,
+          "t1": 1.95,
+          "trail": ".",
+          "gapAfterMs": 767
+        },
+        {
+          "text": "Auto",
+          "t0": 2.717,
+          "t1": 2.961,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Script",
+          "t0": 3.019,
+          "t1": 3.309,
+          "trail": " —",
+          "gapAfterMs": 522
+        },
+        {
+          "text": "it",
+          "t0": 3.831,
+          "t1": 3.947,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "demos",
+          "t0": 4.005,
+          "t1": 4.307,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "itself.",
+          "t0": 4.354,
+          "t1": 4.714,
+          "trail": ".",
+          "gapAfterMs": 325
+        },
+        {
+          "text": "…Generate.",
+          "t0": 5.039,
+          "t1": 6.072,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:42.836Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.96,
+        "tp": -4.45,
+        "gainDb": -1.02,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.98,
+          "tp": -3.41,
+          "lra": 1.5
+        },
+        "at": "2026-09-05T18:33:27.270Z",
+        "uniform": true
+      },
+      "textSha1": "c2b0f69ff986cbc3d8d01ae022c6059081f67eb5"
+    },
+    "f3-s5": {
+      "id": "f3-s5",
+      "film": 3,
+      "scene": "5",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Second thoughts? Type them. Bigger timeline… hide that toggle. It remembers — and rewires.",
+      "textSha1": "6c72f82d66771708a2852d0af13979462046d539",
+      "chars": 90,
+      "charsBilled": 720,
+      "attempts": 8,
+      "characterCost": 49,
+      "requestId": "zKkrUcbi3pY2Q0xZYVvH",
+      "endpoint": "with-timestamps",
+      "previousText": "Simple UI — only your buttons. Auto Script — it demos itself. …Generate.",
+      "nextText": "Your viewers' side. Go on — drag the slider.",
+      "dur": 5.632993,
+      "rawDur": 6.548027,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.13,
+      "actions": [
+        "trim by alignment 6.55→6.44s",
+        "retake 1 at speed 1.12 (+90 chars)",
+        "trim by alignment 7.57→6.91s",
+        "retake 1 not shorter — kept the 6.44s take",
+        "retake 2 at speed 1.12 (+90 chars)",
+        "trim by alignment 7.80→7.11s",
+        "retake 2 not shorter — kept the 6.44s take",
+        "--refit pass",
+        "retake 1 at speed 1.12 (+90 chars)",
+        "trim by alignment 8.22→7.56s",
+        "retake 1 not shorter — kept the 6.44s take",
+        "retake 2 at speed 1.12 (+90 chars)",
+        "trim by alignment 10.03→9.23s",
+        "retake 2 not shorter — kept the 6.44s take",
+        "retake 3 at speed 1.12 (+90 chars)",
+        "trim by alignment 7.11→6.62s",
+        "retake 3 not shorter — kept the 6.44s take",
+        "loudnorm linear -24.28 → -22.06 LUFS (gain +2.08 dB, TP -3.08 dBTP); target backed off 3.2 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly",
+        "--refit pass",
+        "retake 1 at speed 1.12 (+90 chars)",
+        "trim by alignment 9.47→8.51s",
+        "retake 1 not shorter — kept the 6.44s take",
+        "retake 2 at speed 1.12 (+90 chars)",
+        "trim by alignment 5.76→5.63s",
+        "loudnorm linear -25.02 → -23.52 LUFS (gain +1.22 dB, TP -3.11 dBTP); target backed off 4.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.74,
+        "tp": -3.33,
+        "gainDb": 0.23,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -24.23,
+          "tp": -3.51,
+          "lra": 1.2
+        },
+        "at": "2026-09-05T18:33:27.535Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.004287,
+        "peak": -3.676422,
+        "truePeak": -3.6,
+        "tp": -3.6,
+        "lufs": -24.2,
+        "lra": 0.7,
+        "lead": 0,
+        "tail": 0.228,
+        "innerGaps": [
+          513,
+          552,
+          158,
+          327,
+          315
+        ]
+      },
+      "words": [
+        {
+          "text": "Second",
+          "t0": 0,
+          "t1": 0.279,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "thoughts?",
+          "t0": 0.325,
+          "t1": 0.673,
+          "trail": "?",
+          "gapAfterMs": 488
+        },
+        {
+          "text": "Type",
+          "t0": 1.161,
+          "t1": 1.393,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "them.",
+          "t0": 1.416,
+          "t1": 1.556,
+          "trail": ".",
+          "gapAfterMs": 511
+        },
+        {
+          "text": "Bigger",
+          "t0": 2.067,
+          "t1": 2.334,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "timeline…",
+          "t0": 2.38,
+          "t1": 2.856,
+          "trail": "…",
+          "gapAfterMs": 128
+        },
+        {
+          "text": "hide",
+          "t0": 2.984,
+          "t1": 3.181,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "that",
+          "t0": 3.216,
+          "t1": 3.344,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "toggle.",
+          "t0": 3.39,
+          "t1": 3.785,
+          "trail": ".",
+          "gapAfterMs": 162
+        },
+        {
+          "text": "It",
+          "t0": 3.947,
+          "t1": 4.052,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "remembers",
+          "t0": 4.098,
+          "t1": 4.516,
+          "trail": " —",
+          "gapAfterMs": 267
+        },
+        {
+          "text": "and",
+          "t0": 4.783,
+          "t1": 4.923,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "rewires.",
+          "t0": 4.969,
+          "t1": 5.433,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:17:01.517Z",
+      "refitAt": "2026-09-05T18:27:07.464Z"
+    },
+    "f3-s6": {
+      "id": "f3-s6",
+      "film": 3,
+      "scene": "6",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Your viewers' side. Go on — drag the slider.",
+      "textSha1": "6e4389d6bb59fdd701c3996a6a4a382ebce113d4",
+      "chars": 44,
+      "charsBilled": 44,
+      "attempts": 1,
+      "characterCost": 24,
+      "requestId": "Ji05Vja8dmpT2T9WvbG7",
+      "endpoint": "with-timestamps",
+      "previousText": "Second thoughts? Type them. Bigger timeline… hide that toggle. It remembers — and rewires.",
+      "nextText": "That's your work — live, mid-video, in their hands.",
+      "dur": 3.436553,
+      "rawDur": 3.436553,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -2.06,
+      "actions": [
+        "loudnorm linear -24.82 → -21.4 LUFS (gain +3.12 dB, TP -3.05 dBTP); target backed off 2.7 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.69,
+        "tp": -5.36,
+        "gainDb": -1.86,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.14,
+          "tp": -3.48,
+          "lra": 1.4
+        },
+        "at": "2026-09-05T18:33:27.729Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -25.599423,
+        "peak": -5.833866,
+        "truePeak": -5.8,
+        "tp": -5.8,
+        "lufs": -24.2,
+        "lra": 1,
+        "lead": 0,
+        "tail": 0.33,
+        "innerGaps": [
+          861,
+          321
+        ]
+      },
+      "words": [
+        {
+          "text": "Your",
+          "t0": 0,
+          "t1": 0.186,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "viewers'",
+          "t0": 0.244,
+          "t1": 0.522,
+          "trail": "'",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "side.",
+          "t0": 0.569,
+          "t1": 0.94,
+          "trail": ".",
+          "gapAfterMs": 709
+        },
+        {
+          "text": "Go",
+          "t0": 1.649,
+          "t1": 1.8,
+          "trail": "",
+          "gapAfterMs": 92
+        },
+        {
+          "text": "on",
+          "t0": 1.892,
+          "t1": 2.067,
+          "trail": " —",
+          "gapAfterMs": 325
+        },
+        {
+          "text": "drag",
+          "t0": 2.392,
+          "t1": 2.647,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 2.682,
+          "t1": 2.752,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "slider.",
+          "t0": 2.775,
+          "t1": 3.146,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:20.281Z"
+    },
+    "f3-s7": {
+      "id": "f3-s7",
+      "film": 3,
+      "scene": "7",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "That's your work — live, mid-video, in their hands.",
+      "chars": 51,
+      "charsBilled": 51,
+      "attempts": 1,
+      "characterCost": 28,
+      "requestId": "3MJQGpP1SIOQ4zecHgf2",
+      "endpoint": "with-timestamps",
+      "previousText": "And here's what your viewers get. Go on — scrub it.",
+      "nextText": "Whatever you've built… drop it in. Flow Video puts it on stage.",
+      "dur": 4.458231,
+      "rawDur": 4.458231,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -1.04,
+      "actions": [
+        "loudnorm linear -24.8 → -22.59 LUFS (gain +2.2 dB, TP -3.07 dBTP); target backed off 3.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.727642,
+        "peak": -4.943732,
+        "truePeak": -4.9,
+        "lufs": -24.4,
+        "lra": 1.8,
+        "lead": 0,
+        "tail": 1.096,
+        "innerGaps": [
+          417,
+          339,
+          206
+        ],
+        "tp": -4.9
+      },
+      "words": [
+        {
+          "text": "That's",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "your",
+          "t0": 0.279,
+          "t1": 0.372,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "work",
+          "t0": 0.418,
+          "t1": 0.639,
+          "trail": " —",
+          "gapAfterMs": 429
+        },
+        {
+          "text": "live,",
+          "t0": 1.068,
+          "t1": 1.44,
+          "trail": ",",
+          "gapAfterMs": 301
+        },
+        {
+          "text": "mid-video,",
+          "t0": 1.741,
+          "t1": 2.38,
+          "trail": ",",
+          "gapAfterMs": 197
+        },
+        {
+          "text": "in",
+          "t0": 2.577,
+          "t1": 2.705,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "their",
+          "t0": 2.752,
+          "t1": 2.937,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "hands.",
+          "t0": 2.995,
+          "t1": 3.355,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:50.655Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.98,
+        "tp": -4.45,
+        "gainDb": -0.94,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -23.06,
+          "tp": -3.48,
+          "lra": 1.8
+        },
+        "at": "2026-09-05T18:33:27.956Z",
+        "uniform": true
+      },
+      "textSha1": "edddcedcb01524bc45a9a38efa6d12462b13ca27"
+    },
+    "f3-s8": {
+      "id": "f3-s8",
+      "film": 3,
+      "scene": "8",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Whatever you've built… drop it in. Put it on stage. — Flow Video.",
+      "textSha1": "024ae6a7d7042f0392778c0c86ec9fc89a5fa24d",
+      "chars": 65,
+      "charsBilled": 65,
+      "attempts": 1,
+      "characterCost": 36,
+      "requestId": "Zt1NLN0uxcWs4rD4Fjfr",
+      "endpoint": "with-timestamps",
+      "previousText": "That's your work — live, mid-video, in their hands.",
+      "nextText": null,
+      "dur": 6.222948,
+      "rawDur": 6.222948,
+      "slot": 7,
+      "budget": 6.5,
+      "over": -0.28,
+      "actions": [
+        "loudnorm linear -23.72 → -21.07 LUFS (gain +2.02 dB, TP -3.03 dBTP); target backed off 2.7 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.37,
+        "tp": -5.32,
+        "gainDb": -1.84,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.16,
+          "tp": -3.46,
+          "lra": 2.5
+        },
+        "at": "2026-09-05T18:33:28.230Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -26.274426,
+        "peak": -5.743347,
+        "truePeak": -5.7,
+        "tp": -5.7,
+        "lufs": -23.8,
+        "lra": 2.1,
+        "lead": 0,
+        "tail": 0.356,
+        "innerGaps": [
+          851,
+          889,
+          1218
+        ]
+      },
+      "words": [
+        {
+          "text": "Whatever",
+          "t0": 0,
+          "t1": 0.36,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "you've",
+          "t0": 0.395,
+          "t1": 0.557,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "built…",
+          "t0": 0.592,
+          "t1": 0.894,
+          "trail": "…",
+          "gapAfterMs": 824
+        },
+        {
+          "text": "drop",
+          "t0": 1.718,
+          "t1": 1.95,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "it",
+          "t0": 1.997,
+          "t1": 2.055,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "in.",
+          "t0": 2.101,
+          "t1": 2.252,
+          "trail": ".",
+          "gapAfterMs": 778
+        },
+        {
+          "text": "Put",
+          "t0": 3.03,
+          "t1": 3.204,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "it",
+          "t0": 3.239,
+          "t1": 3.297,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "on",
+          "t0": 3.344,
+          "t1": 3.437,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "stage.",
+          "t0": 3.506,
+          "t1": 3.982,
+          "trail": ". —",
+          "gapAfterMs": 1161
+        },
+        {
+          "text": "Flow",
+          "t0": 5.143,
+          "t1": 5.399,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Video.",
+          "t0": 5.457,
+          "t1": 5.875,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:23.229Z"
+    },
+    "f4-s1": {
+      "id": "f4-s1",
+      "film": 4,
+      "scene": "1",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Inside your video, your viewers get four powers.",
+      "chars": 48,
+      "charsBilled": 48,
+      "attempts": 1,
+      "characterCost": 26,
+      "requestId": "I2TH7GrfK3VKNv2n5d9A",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": "One: touch. Grab empty space… drag… let go. — Watch gravity fight for it.",
+      "dur": 2.879274,
+      "rawDur": 2.879274,
+      "slot": 3,
+      "budget": 2.5,
+      "over": 0.38,
+      "actions": [
+        "loudnorm linear -24.45 → -19.5 LUFS (gain +5.45 dB, TP -3 dBTP)"
+      ],
+      "measure": {
+        "rms": -24.57309,
+        "peak": -7.968987,
+        "truePeak": -7.9,
+        "lufs": -24.4,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0.435,
+        "innerGaps": [
+          237
+        ],
+        "tp": -7.9
+      },
+      "words": [
+        {
+          "text": "Inside",
+          "t0": 0,
+          "t1": 0.418,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "your",
+          "t0": 0.441,
+          "t1": 0.534,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "video,",
+          "t0": 0.58,
+          "t1": 0.917,
+          "trail": ",",
+          "gapAfterMs": 232
+        },
+        {
+          "text": "your",
+          "t0": 1.149,
+          "t1": 1.277,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "viewers",
+          "t0": 1.324,
+          "t1": 1.591,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "get",
+          "t0": 1.614,
+          "t1": 1.73,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "four",
+          "t0": 1.776,
+          "t1": 1.95,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "powers.",
+          "t0": 1.997,
+          "t1": 2.415,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:53.315Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.98,
+        "tp": -7.46,
+        "gainDb": -4.04,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -19.96,
+          "tp": -3.41,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:28.427Z",
+        "uniform": true
+      },
+      "textSha1": "03515650a3e6ab8c151a29662d81bf7667b64094"
+    },
+    "f4-s2": {
+      "id": "f4-s2",
+      "film": 4,
+      "scene": "2",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "One: touch. Grab empty space… drag… let go. — Watch gravity fight for it.",
+      "chars": 73,
+      "charsBilled": 146,
+      "attempts": 2,
+      "characterCost": 40,
+      "requestId": "0o3jM7ZMx6e7idDnfNG8",
+      "endpoint": "with-timestamps",
+      "previousText": "Inside your video, your viewers get four powers.",
+      "nextText": "Miss? Throw another. Every simulation section is this alive.",
+      "dur": 5.324785,
+      "rawDur": 7.476825,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.18,
+      "actions": [
+        "trim lead/tail silence 7.48→7.48s",
+        "re-synth speed 1.05→1.12 (+73 chars)",
+        "trim 5.80→5.32s",
+        "loudnorm linear -24.78 → -23.32 LUFS (gain +1.48 dB, TP -3.1 dBTP); target backed off 4.3 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.48223,
+        "peak": -4.249239,
+        "truePeak": -4.2,
+        "lufs": -24.5,
+        "lra": 1.4,
+        "lead": 0,
+        "tail": 0.213,
+        "innerGaps": [
+          396,
+          499,
+          238,
+          354,
+          443
+        ],
+        "tp": -4.2
+      },
+      "words": [
+        {
+          "text": "One:",
+          "t0": 0,
+          "t1": 0.29,
+          "trail": ":",
+          "gapAfterMs": 337
+        },
+        {
+          "text": "touch.",
+          "t0": 0.627,
+          "t1": 0.894,
+          "trail": ".",
+          "gapAfterMs": 476
+        },
+        {
+          "text": "Grab",
+          "t0": 1.37,
+          "t1": 1.602,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "empty",
+          "t0": 1.649,
+          "t1": 1.846,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "space…",
+          "t0": 1.892,
+          "t1": 2.229,
+          "trail": "…",
+          "gapAfterMs": 221
+        },
+        {
+          "text": "drag…",
+          "t0": 2.45,
+          "t1": 2.798,
+          "trail": "…",
+          "gapAfterMs": 348
+        },
+        {
+          "text": "let",
+          "t0": 3.146,
+          "t1": 3.286,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "go.",
+          "t0": 3.332,
+          "t1": 3.518,
+          "trail": ". —",
+          "gapAfterMs": 453
+        },
+        {
+          "text": "Watch",
+          "t0": 3.971,
+          "t1": 4.214,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "gravity",
+          "t0": 4.261,
+          "t1": 4.598,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "fight",
+          "t0": 4.644,
+          "t1": 4.841,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "for",
+          "t0": 4.888,
+          "t1": 5.027,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "it.",
+          "t0": 5.074,
+          "t1": 5.178,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:12:57.033Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.01,
+        "tp": -3.81,
+        "gainDb": -0.24,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -23.76,
+          "tp": -3.51,
+          "lra": 1
+        },
+        "at": "2026-09-05T18:33:28.676Z",
+        "uniform": true
+      },
+      "textSha1": "21583d873432cc860b4d725144d326935c5bce12"
+    },
+    "f4-s3": {
+      "id": "f4-s3",
+      "film": 4,
+      "scene": "3",
+      "role": "narrator",
+      "kind": "LIVE-WINDOW",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Miss? Throw another.",
+      "textSha1": "17fb248824545a1ff0c16cee2f4c8ece4c82bc06",
+      "chars": 20,
+      "charsBilled": 20,
+      "attempts": 1,
+      "characterCost": 11,
+      "requestId": "4ibUdfIdSzfnkna2VYTj",
+      "endpoint": "with-timestamps",
+      "previousText": "One: touch. Grab empty space… drag… let go. — Watch gravity fight for it.",
+      "nextText": "Two: ask. Out loud — mid-video. Listen.",
+      "dur": 2.275556,
+      "rawDur": 2.275556,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -3.22,
+      "actions": [
+        "loudnorm linear -24.35 → -19.89 LUFS (gain +5.35 dB, TP -3 dBTP)"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24,
+        "tp": -7.14,
+        "gainDb": -3.69,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.31,
+          "tp": -3.44,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:28.853Z",
+        "uniform": true
+      },
+      "measure": {
+        "rms": -26.60247,
+        "peak": -7.608745,
+        "truePeak": -7.6,
+        "tp": -7.6,
+        "lufs": -24.5,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0.788,
+        "innerGaps": [
+          563
+        ]
+      },
+      "words": [
+        {
+          "text": "Miss?",
+          "t0": 0,
+          "t1": 0.36,
+          "trail": "?",
+          "gapAfterMs": 499
+        },
+        {
+          "text": "Throw",
+          "t0": 0.859,
+          "t1": 1.115,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "another.",
+          "t0": 1.173,
+          "t1": 1.486,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:24:25.923Z"
+    },
+    "f4-s4": {
+      "id": "f4-s4",
+      "film": 4,
+      "scene": "4",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Two: ask. Out loud — mid-video. Listen.",
+      "chars": 39,
+      "charsBilled": 39,
+      "attempts": 1,
+      "characterCost": 21,
+      "requestId": "XkGU26vu83gPNgCwpkjr",
+      "endpoint": "with-timestamps",
+      "previousText": "Miss? Throw another. Every simulation section is this alive.",
+      "nextText": "From this lesson. Not the internet.",
+      "dur": 3.668753,
+      "rawDur": 3.668753,
+      "slot": 4,
+      "budget": 3.5,
+      "over": 0.17,
+      "actions": [
+        "loudnorm linear -24.03 → -22.6 LUFS (gain +1.43 dB, TP -3.03 dBTP); target backed off 3.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.393577,
+        "peak": -4.899423,
+        "truePeak": -4.9,
+        "lufs": -24.4,
+        "lra": 0.4,
+        "lead": 0,
+        "tail": 0.307,
+        "innerGaps": [
+          436,
+          316,
+          303,
+          151
+        ],
+        "tp": -4.9
+      },
+      "words": [
+        {
+          "text": "Two:",
+          "t0": 0,
+          "t1": 0.36,
+          "trail": ":",
+          "gapAfterMs": 476
+        },
+        {
+          "text": "ask.",
+          "t0": 0.836,
+          "t1": 1.173,
+          "trail": ".",
+          "gapAfterMs": 278
+        },
+        {
+          "text": "Out",
+          "t0": 1.451,
+          "t1": 1.66,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "loud",
+          "t0": 1.718,
+          "t1": 1.985,
+          "trail": " —",
+          "gapAfterMs": 325
+        },
+        {
+          "text": "mid-video.",
+          "t0": 2.31,
+          "t1": 2.856,
+          "trail": ".",
+          "gapAfterMs": 151
+        },
+        {
+          "text": "Listen.",
+          "t0": 3.007,
+          "t1": 3.355,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:00.244Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.98,
+        "tp": -4.43,
+        "gainDb": -0.95,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -23.05,
+          "tp": -3.47,
+          "lra": 0.4
+        },
+        "at": "2026-09-05T18:33:29.052Z",
+        "uniform": true
+      },
+      "textSha1": "51b74c02b26a0f2a5d67bc7c854b3173c11ee6cb"
+    },
+    "f4-s5-viewer": {
+      "id": "f4-s5-viewer",
+      "film": 4,
+      "scene": "5-viewer",
+      "role": "viewer",
+      "kind": "VIDEO",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "voice": "Sarah",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1
+      },
+      "text": "Why doesn't the moon crash into the earth?",
+      "chars": 42,
+      "charsBilled": 42,
+      "attempts": 1,
+      "characterCost": 23,
+      "requestId": "JrsavwxHISXjJYUaTJ9V",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": null,
+      "dur": 2.182676,
+      "rawDur": 2.182676,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -3.32,
+      "actions": [
+        "loudnorm linear -16.14 → -19 LUFS (gain -2.86 dB, TP -4.34 dBTP)"
+      ],
+      "measure": {
+        "rms": -24.770037,
+        "peak": -9.805286,
+        "truePeak": -9.7,
+        "lufs": -24.4,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0.253,
+        "innerGaps": [],
+        "tp": -9.7
+      },
+      "words": [
+        {
+          "text": "Why",
+          "t0": 0,
+          "t1": 0.197,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "doesn't",
+          "t0": 0.255,
+          "t1": 0.511,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "the",
+          "t0": 0.534,
+          "t1": 0.604,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "moon",
+          "t0": 0.65,
+          "t1": 0.859,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "crash",
+          "t0": 0.94,
+          "t1": 1.231,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "into",
+          "t0": 1.265,
+          "t1": 1.405,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "the",
+          "t0": 1.463,
+          "t1": 1.533,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "earth?",
+          "t0": 1.602,
+          "t1": 1.916,
+          "trail": "?",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:01.033Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24,
+        "tp": -9.31,
+        "gainDb": -4.56,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -19.44,
+          "tp": -4.74,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:29.226Z",
+        "uniform": true
+      },
+      "textSha1": "4d56cd72803a1f6d386039183a74136f17bbc246"
+    },
+    "f4-s6": {
+      "id": "f4-s6",
+      "film": 4,
+      "scene": "6",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "From this lesson. Not the internet.",
+      "chars": 35,
+      "charsBilled": 35,
+      "attempts": 1,
+      "characterCost": 19,
+      "requestId": "7eEOXHTk1QuTl6Dc7Y4p",
+      "endpoint": "with-timestamps",
+      "previousText": "Two: ask. Out loud — mid-video. Listen.",
+      "nextText": "Three: choose. The story pauses… your viewer picks the road. The video follows.",
+      "dur": 3.065034,
+      "rawDur": 3.065034,
+      "slot": 3,
+      "budget": 2.5,
+      "over": 0.57,
+      "actions": [
+        "loudnorm linear -24.39 → -19.18 LUFS (gain +4.89 dB, TP -3.33 dBTP); target backed off 0.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -26.383914,
+        "peak": -8.307788,
+        "truePeak": -8.3,
+        "lufs": -24.1,
+        "lra": 20,
+        "lead": 0,
+        "tail": 0.834,
+        "innerGaps": [
+          735
+        ],
+        "tp": -8.3
+      },
+      "words": [
+        {
+          "text": "From",
+          "t0": 0,
+          "t1": 0.197,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "this",
+          "t0": 0.255,
+          "t1": 0.418,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "lesson.",
+          "t0": 0.488,
+          "t1": 0.859,
+          "trail": ".",
+          "gapAfterMs": 697
+        },
+        {
+          "text": "Not",
+          "t0": 1.556,
+          "t1": 1.741,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 1.776,
+          "t1": 1.846,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "internet.",
+          "t0": 1.892,
+          "t1": 2.276,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:02.764Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.69,
+        "tp": -7.83,
+        "gainDb": -4.07,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -19.93,
+          "tp": -3.7,
+          "lra": 0.4
+        },
+        "at": "2026-09-05T18:33:29.410Z",
+        "uniform": true
+      },
+      "textSha1": "6826ae2a4e2085702e311ffcc1a7c347dc5bd19b"
+    },
+    "f4-s7": {
+      "id": "f4-s7",
+      "film": 4,
+      "scene": "7",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Three: choose. The story pauses… your viewer picks the road. The video follows.",
+      "chars": 79,
+      "charsBilled": 158,
+      "attempts": 2,
+      "characterCost": 43,
+      "requestId": "X69U9235ePVyLNwAaxJc",
+      "endpoint": "with-timestamps",
+      "previousText": "From this lesson. Not the internet.",
+      "nextText": "Four: anywhere. Phones stay vertical — the frame chases your speaker.",
+      "dur": 6.826712,
+      "rawDur": 7.848345,
+      "slot": 7,
+      "budget": 6.5,
+      "over": 0.33,
+      "actions": [
+        "trim lead/tail silence 7.85→7.85s",
+        "re-synth speed 1.05→1.12 (+79 chars)",
+        "trim 6.83→6.83s",
+        "loudnorm linear -25.51 → -20.66 LUFS (gain +4.51 dB, TP -3.11 dBTP); target backed off 2.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.562476,
+        "peak": -6.608798,
+        "truePeak": -6.6,
+        "lufs": -24.1,
+        "lra": 1.7,
+        "lead": 0,
+        "tail": 0.824,
+        "innerGaps": [
+          424,
+          703,
+          789,
+          837
+        ],
+        "tp": -6.6
+      },
+      "words": [
+        {
+          "text": "Three:",
+          "t0": 0,
+          "t1": 0.372,
+          "trail": ":",
+          "gapAfterMs": 290
+        },
+        {
+          "text": "choose.",
+          "t0": 0.662,
+          "t1": 1.115,
+          "trail": ".",
+          "gapAfterMs": 568
+        },
+        {
+          "text": "The",
+          "t0": 1.683,
+          "t1": 1.8,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "story",
+          "t0": 1.846,
+          "t1": 2.101,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "pauses…",
+          "t0": 2.159,
+          "t1": 2.554,
+          "trail": "…",
+          "gapAfterMs": 790
+        },
+        {
+          "text": "your",
+          "t0": 3.344,
+          "t1": 3.506,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "viewer",
+          "t0": 3.553,
+          "t1": 3.773,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "picks",
+          "t0": 3.82,
+          "t1": 4.017,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 4.052,
+          "t1": 4.122,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "road.",
+          "t0": 4.168,
+          "t1": 4.377,
+          "trail": ".",
+          "gapAfterMs": 743
+        },
+        {
+          "text": "The",
+          "t0": 5.12,
+          "t1": 5.236,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "video",
+          "t0": 5.283,
+          "t1": 5.538,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "follows.",
+          "t0": 5.608,
+          "t1": 6.014,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:06.807Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.67,
+        "tp": -6.15,
+        "gainDb": -2.56,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.44,
+          "tp": -3.57,
+          "lra": 2.4
+        },
+        "at": "2026-09-05T18:33:29.700Z",
+        "uniform": true
+      },
+      "textSha1": "25bd322bf24408f2923a0c9565a29c67759f1ccd"
+    },
+    "f4-s8": {
+      "id": "f4-s8",
+      "film": 4,
+      "scene": "8",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Four: anywhere. Phones stay vertical — the frame chases your speaker.",
+      "chars": 69,
+      "charsBilled": 69,
+      "attempts": 1,
+      "characterCost": 38,
+      "requestId": "1nFd2Qj8yi4KEBZTtVYR",
+      "endpoint": "with-timestamps",
+      "previousText": "Three: choose. The story pauses… your viewer picks the road. The video follows.",
+      "nextText": "Another language? Same video, dubbed. And captions ride along everywhere.",
+      "dur": 5.01551,
+      "rawDur": 5.01551,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.48,
+      "actions": [
+        "loudnorm linear -24.71 → -21.6 LUFS (gain +3.01 dB, TP -3.18 dBTP); target backed off 2.7 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.770804,
+        "peak": -5.911339,
+        "truePeak": -5.8,
+        "lufs": -24.4,
+        "lra": 1.4,
+        "lead": 0,
+        "tail": 0.508,
+        "innerGaps": [
+          345,
+          484,
+          437
+        ],
+        "tp": -5.8
+      },
+      "words": [
+        {
+          "text": "Four:",
+          "t0": 0,
+          "t1": 0.36,
+          "trail": ":",
+          "gapAfterMs": 313
+        },
+        {
+          "text": "anywhere.",
+          "t0": 0.673,
+          "t1": 1.184,
+          "trail": ".",
+          "gapAfterMs": 395
+        },
+        {
+          "text": "Phones",
+          "t0": 1.579,
+          "t1": 1.939,
+          "trail": "",
+          "gapAfterMs": 93
+        },
+        {
+          "text": "stay",
+          "t0": 2.032,
+          "t1": 2.241,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "vertical",
+          "t0": 2.322,
+          "t1": 2.752,
+          "trail": " —",
+          "gapAfterMs": 394
+        },
+        {
+          "text": "the",
+          "t0": 3.146,
+          "t1": 3.239,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "frame",
+          "t0": 3.309,
+          "t1": 3.611,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "chases",
+          "t0": 3.646,
+          "t1": 3.982,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "your",
+          "t0": 4.017,
+          "t1": 4.122,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "speaker.",
+          "t0": 4.156,
+          "t1": 4.516,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:08.443Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.91,
+        "tp": -5.46,
+        "gainDb": -1.85,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.15,
+          "tp": -3.47,
+          "lra": 0.7
+        },
+        "at": "2026-09-05T18:33:29.939Z",
+        "uniform": true
+      },
+      "textSha1": "8c39e8eae18e3cb73526567e6443e903e74d3136"
+    },
+    "f4-s9": {
+      "id": "f4-s9",
+      "film": 4,
+      "scene": "9",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "And captions ride along — every word, every screen.",
+      "textSha1": "97683a50803144f13a557b09154f0d2ee3350eaf",
+      "chars": 51,
+      "charsBilled": 51,
+      "attempts": 1,
+      "characterCost": 28,
+      "requestId": "lBXqHVjSjhgOOK9p7d1m",
+      "endpoint": "with-timestamps",
+      "previousText": "Four: anywhere. Phones stay vertical — the frame chases your speaker.",
+      "nextText": "Touch. Ask. Choose. Their way. Give your viewers powers — they'll give you attention.",
+      "dur": 4.179592,
+      "rawDur": 4.179592,
+      "slot": 5,
+      "budget": 4.5,
+      "over": -0.32,
+      "actions": [
+        "loudnorm linear -24.16 → -23.72 LUFS (gain +0.16 dB, TP -4.48 dBTP)"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.72,
+        "tp": -4.48,
+        "gainDb": 0.16,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -24.16,
+          "tp": -4.64,
+          "lra": 3.1
+        },
+        "at": "2026-09-05T18:34:34.234Z"
+      },
+      "measure": {
+        "rms": -25.792567,
+        "peak": -4.855189,
+        "truePeak": -4.9,
+        "tp": -4.9,
+        "lufs": -24.2,
+        "lra": 2.6,
+        "lead": 0,
+        "tail": 1.02,
+        "innerGaps": [
+          510,
+          222
+        ]
+      },
+      "words": [
+        {
+          "text": "And",
+          "t0": 0,
+          "t1": 0.174,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "captions",
+          "t0": 0.255,
+          "t1": 0.685,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "ride",
+          "t0": 0.755,
+          "t1": 0.952,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "along",
+          "t0": 0.975,
+          "t1": 1.289,
+          "trail": " —",
+          "gapAfterMs": 569
+        },
+        {
+          "text": "every",
+          "t0": 1.858,
+          "t1": 2.09,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "word,",
+          "t0": 2.136,
+          "t1": 2.438,
+          "trail": ",",
+          "gapAfterMs": 186
+        },
+        {
+          "text": "every",
+          "t0": 2.624,
+          "t1": 2.833,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "screen.",
+          "t0": 2.879,
+          "t1": 3.251,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:34:34.308Z"
+    },
+    "f4-s10": {
+      "id": "f4-s10",
+      "film": 4,
+      "scene": "10",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Touch. Ask. Choose. Their way. Give your viewers powers — they'll give you attention.",
+      "chars": 85,
+      "charsBilled": 170,
+      "attempts": 2,
+      "characterCost": 47,
+      "requestId": "y2ROGFOLV1xVUYD7k05D",
+      "endpoint": "with-timestamps",
+      "previousText": "Another language? Same video, dubbed. And captions ride along everywhere.",
+      "nextText": "That's a Flow Video.",
+      "dur": 4.869546,
+      "rawDur": 5.479909,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.63,
+      "actions": [
+        "trim lead/tail silence 5.48→5.42s",
+        "re-synth speed 1.05→1.12 (+85 chars)",
+        "trim 4.97→4.87s",
+        "loudnorm linear -24.79 → -21.05 LUFS (gain +3.79 dB, TP -3 dBTP); target backed off 2.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.129822,
+        "peak": -6.466735,
+        "truePeak": -6.5,
+        "lufs": -24.5,
+        "lra": 0.7,
+        "lead": 0,
+        "tail": 0.222,
+        "innerGaps": [
+          185,
+          195,
+          203,
+          652
+        ],
+        "tp": -6.5
+      },
+      "words": [
+        {
+          "text": "Touch.",
+          "t0": 0,
+          "t1": 0.313,
+          "trail": ".",
+          "gapAfterMs": 221
+        },
+        {
+          "text": "Ask.",
+          "t0": 0.534,
+          "t1": 0.859,
+          "trail": ".",
+          "gapAfterMs": 163
+        },
+        {
+          "text": "Choose.",
+          "t0": 1.022,
+          "t1": 1.474,
+          "trail": ".",
+          "gapAfterMs": 82
+        },
+        {
+          "text": "Their",
+          "t0": 1.556,
+          "t1": 1.776,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "way.",
+          "t0": 1.823,
+          "t1": 2.043,
+          "trail": ".",
+          "gapAfterMs": 592
+        },
+        {
+          "text": "Give",
+          "t0": 2.635,
+          "t1": 2.81,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "your",
+          "t0": 2.833,
+          "t1": 2.926,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "viewers",
+          "t0": 2.972,
+          "t1": 3.251,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "powers",
+          "t0": 3.297,
+          "t1": 3.622,
+          "trail": " —",
+          "gapAfterMs": 116
+        },
+        {
+          "text": "they'll",
+          "t0": 3.738,
+          "t1": 3.947,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "give",
+          "t0": 3.982,
+          "t1": 4.087,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "you",
+          "t0": 4.11,
+          "t1": 4.18,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "attention.",
+          "t0": 4.226,
+          "t1": 4.644,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:13.398Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.04,
+        "tp": -6.01,
+        "gainDb": -2.54,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.46,
+          "tp": -3.47,
+          "lra": 0.8
+        },
+        "at": "2026-09-05T18:33:30.421Z",
+        "uniform": true
+      },
+      "textSha1": "1a9983ca7426f5c9cb27eec01ea49f6c42821ee2"
+    },
+    "f4-s11": {
+      "id": "f4-s11",
+      "film": 4,
+      "scene": "11",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "That's a Flow Video.",
+      "chars": 20,
+      "charsBilled": 20,
+      "attempts": 1,
+      "characterCost": 11,
+      "requestId": "sUlXRkrteAMo4NH1PSUX",
+      "endpoint": "with-timestamps",
+      "previousText": "Touch. Ask. Choose. Their way. Give your viewers powers — they'll give you attention.",
+      "nextText": null,
+      "dur": 1.207438,
+      "rawDur": 1.207438,
+      "slot": 5,
+      "budget": 4.5,
+      "over": -3.29,
+      "actions": [
+        "loudnorm linear -24.66 → -20.83 LUFS (gain +5.66 dB, TP -3 dBTP)"
+      ],
+      "measure": {
+        "rms": -25.402393,
+        "peak": -6.603531,
+        "truePeak": -6.6,
+        "lufs": -24.4,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0.291,
+        "innerGaps": [],
+        "tp": -6.6
+      },
+      "words": [
+        {
+          "text": "That's",
+          "t0": 0,
+          "t1": 0.244,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "a",
+          "t0": 0.279,
+          "t1": 0.302,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "Flow",
+          "t0": 0.337,
+          "t1": 0.522,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "Video.",
+          "t0": 0.58,
+          "t1": 0.906,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:14.485Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.99,
+        "tp": -6.15,
+        "gainDb": -2.71,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.29,
+          "tp": -3.44,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:30.568Z",
+        "uniform": true
+      },
+      "textSha1": "073092e0f9eb03d029d1ea06749c6e00ad7633c1"
+    },
+    "f5-s1": {
+      "id": "f5-s1",
+      "film": 5,
+      "scene": "1",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "It's built. …Open the doors.",
+      "chars": 28,
+      "charsBilled": 28,
+      "attempts": 1,
+      "characterCost": 15,
+      "requestId": "xqh4PUEDNi9IEjB5ZKEn",
+      "endpoint": "with-timestamps",
+      "previousText": null,
+      "nextText": "Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable.",
+      "dur": 1.950476,
+      "rawDur": 1.950476,
+      "slot": 3,
+      "budget": 2.5,
+      "over": -0.55,
+      "actions": [
+        "loudnorm linear -24.93 → -19.89 LUFS (gain +5.93 dB, TP -3 dBTP)"
+      ],
+      "measure": {
+        "rms": -24.729967,
+        "peak": -7.667675,
+        "truePeak": -7.6,
+        "lufs": -24.4,
+        "lra": 0,
+        "lead": 0,
+        "tail": 0.188,
+        "innerGaps": [
+          390
+        ],
+        "tp": -7.6
+      },
+      "words": [
+        {
+          "text": "It's",
+          "t0": 0,
+          "t1": 0.221,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "built.",
+          "t0": 0.267,
+          "t1": 0.569,
+          "trail": ".",
+          "gapAfterMs": 360
+        },
+        {
+          "text": "…Open",
+          "t0": 0.929,
+          "t1": 1.196,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "the",
+          "t0": 1.242,
+          "t1": 1.312,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "doors.",
+          "t0": 1.347,
+          "t1": 1.741,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:15.780Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.01,
+        "tp": -7.14,
+        "gainDb": -3.66,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.34,
+          "tp": -3.48,
+          "lra": 0
+        },
+        "at": "2026-09-05T18:33:30.734Z",
+        "uniform": true
+      },
+      "textSha1": "4ebf87ccd3f58163802c72183948ff330db52957"
+    },
+    "f5-s2": {
+      "id": "f5-s2",
+      "film": 5,
+      "scene": "2",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable.",
+      "chars": 123,
+      "charsBilled": 123,
+      "attempts": 1,
+      "characterCost": 68,
+      "requestId": "iBceF7ntUZuCk6Kodmbc",
+      "endpoint": "with-timestamps",
+      "previousText": "It's built. …Open the doors.",
+      "nextText": "Claim your address, and publish. That's the link for the slide, the bio, the syllabus.",
+      "dur": 8.870023,
+      "rawDur": 8.870023,
+      "slot": 10,
+      "budget": 9.5,
+      "over": -0.63,
+      "actions": [
+        "loudnorm linear -23.8 → -20.58 LUFS (gain +3 dB, TP -3.03 dBTP); target backed off 1.8 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.465266,
+        "peak": -6.6374,
+        "truePeak": -6.6,
+        "lufs": -24.2,
+        "lra": 2.2,
+        "lead": 0,
+        "tail": 0.62,
+        "innerGaps": [
+          569,
+          254,
+          436,
+          520,
+          542,
+          178
+        ],
+        "tp": -6.6
+      },
+      "words": [
+        {
+          "text": "Hit",
+          "t0": 0,
+          "t1": 0.232,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "Create",
+          "t0": 0.279,
+          "t1": 0.592,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "link.",
+          "t0": 0.615,
+          "t1": 0.824,
+          "trail": ".",
+          "gapAfterMs": 558
+        },
+        {
+          "text": "One",
+          "t0": 1.382,
+          "t1": 1.614,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "link",
+          "t0": 1.649,
+          "t1": 1.846,
+          "trail": " —",
+          "gapAfterMs": 232
+        },
+        {
+          "text": "three",
+          "t0": 2.078,
+          "t1": 2.345,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "doors:",
+          "t0": 2.368,
+          "t1": 2.717,
+          "trail": ":",
+          "gapAfterMs": 453
+        },
+        {
+          "text": "your",
+          "t0": 3.17,
+          "t1": 3.355,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "video…",
+          "t0": 3.413,
+          "t1": 3.773,
+          "trail": "…",
+          "gapAfterMs": 523
+        },
+        {
+          "text": "a",
+          "t0": 4.296,
+          "t1": 4.365,
+          "trail": "",
+          "gapAfterMs": 82
+        },
+        {
+          "text": "podcast",
+          "t0": 4.447,
+          "t1": 4.899,
+          "trail": "",
+          "gapAfterMs": 24
+        },
+        {
+          "text": "that",
+          "t0": 4.923,
+          "t1": 5.039,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "answers",
+          "t0": 5.108,
+          "t1": 5.457,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "voice",
+          "t0": 5.515,
+          "t1": 5.759,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "questions…",
+          "t0": 5.782,
+          "t1": 6.293,
+          "trail": "…",
+          "gapAfterMs": 534
+        },
+        {
+          "text": "your",
+          "t0": 6.827,
+          "t1": 6.978,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "whole",
+          "t0": 7.024,
+          "t1": 7.187,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "library,",
+          "t0": 7.221,
+          "t1": 7.674,
+          "trail": ",",
+          "gapAfterMs": 116
+        },
+        {
+          "text": "browsable.",
+          "t0": 7.79,
+          "t1": 8.348,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:17.654Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.77,
+        "tp": -6.23,
+        "gainDb": -2.74,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -21.26,
+          "tp": -3.48,
+          "lra": 1.9
+        },
+        "at": "2026-09-05T18:33:31.080Z",
+        "uniform": true
+      },
+      "textSha1": "bd5ddf9668fea7b4b66b329e33e52267f6a30c47"
+    },
+    "f5-s3": {
+      "id": "f5-s3",
+      "film": 5,
+      "scene": "3",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Claim your address, and publish. That's the link for the slide, the bio, the syllabus.",
+      "chars": 86,
+      "charsBilled": 86,
+      "attempts": 1,
+      "characterCost": 47,
+      "requestId": "DWyuimPHHYCGuHv6hJBP",
+      "endpoint": "with-timestamps",
+      "previousText": "Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable.",
+      "nextText": "Got a team? Invite them. They edit — you stay the owner.",
+      "dur": 4.96907,
+      "rawDur": 4.96907,
+      "slot": 7,
+      "budget": 6.5,
+      "over": -1.53,
+      "actions": [
+        "loudnorm linear -24.22 → -21.66 LUFS (gain +2.62 dB, TP -3.03 dBTP); target backed off 2.6 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.274518,
+        "peak": -5.851121,
+        "truePeak": -5.9,
+        "lufs": -24.5,
+        "lra": 0.9,
+        "lead": 0,
+        "tail": 0.408,
+        "innerGaps": [
+          394,
+          494
+        ],
+        "tp": -5.9
+      },
+      "words": [
+        {
+          "text": "Claim",
+          "t0": 0,
+          "t1": 0.255,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "your",
+          "t0": 0.29,
+          "t1": 0.395,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "address,",
+          "t0": 0.418,
+          "t1": 0.813,
+          "trail": ",",
+          "gapAfterMs": 336
+        },
+        {
+          "text": "and",
+          "t0": 1.149,
+          "t1": 1.289,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "publish.",
+          "t0": 1.358,
+          "t1": 1.753,
+          "trail": ".",
+          "gapAfterMs": 430
+        },
+        {
+          "text": "That's",
+          "t0": 2.183,
+          "t1": 2.438,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "the",
+          "t0": 2.473,
+          "t1": 2.543,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "link",
+          "t0": 2.589,
+          "t1": 2.74,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "for",
+          "t0": 2.775,
+          "t1": 2.856,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "the",
+          "t0": 2.879,
+          "t1": 2.949,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "slide,",
+          "t0": 2.972,
+          "t1": 3.379,
+          "trail": ",",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "the",
+          "t0": 3.425,
+          "t1": 3.495,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "bio,",
+          "t0": 3.553,
+          "t1": 3.855,
+          "trail": ",",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "the",
+          "t0": 3.924,
+          "t1": 3.994,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "syllabus.",
+          "t0": 4.017,
+          "t1": 4.54,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:19.420Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.06,
+        "tp": -5.41,
+        "gainDb": -1.93,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.07,
+          "tp": -3.49,
+          "lra": 0.8
+        },
+        "at": "2026-09-05T18:33:31.316Z",
+        "uniform": true
+      },
+      "textSha1": "76c31de6c8bbeb3edde7e1cab8af8d10387473fe"
+    },
+    "f5-s4": {
+      "id": "f5-s4",
+      "film": 5,
+      "scene": "4",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Now open Settings. Got a team? Invite them — they edit, you stay the owner.",
+      "textSha1": "3b058c9fe91bb87cc3a7db92d5124d1c36ad52fb",
+      "chars": 75,
+      "charsBilled": 75,
+      "attempts": 1,
+      "characterCost": 41,
+      "requestId": "Yr2y5WhD3VjeiaVzIDqt",
+      "endpoint": "with-timestamps",
+      "previousText": "Claim your address, and publish. That's the link for the slide, the bio, the syllabus.",
+      "nextText": "And Access decides who watches. Everyone… link-holders… or just you.",
+      "dur": 5.712109,
+      "rawDur": 5.712109,
+      "slot": 7,
+      "budget": 6.5,
+      "over": -0.79,
+      "actions": [
+        "loudnorm linear -24.43 → -23.95 LUFS (gain +0.43 dB, TP -4.12 dBTP)"
+      ],
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.95,
+        "tp": -4.12,
+        "gainDb": 0.43,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -24.43,
+          "tp": -4.54,
+          "lra": 1.1
+        },
+        "at": "2026-09-05T18:34:36.651Z"
+      },
+      "measure": {
+        "rms": -25.078285,
+        "peak": -4.54173,
+        "truePeak": -4.5,
+        "tp": -4.5,
+        "lufs": -24.4,
+        "lra": 1.2,
+        "lead": 0,
+        "tail": 0.597,
+        "innerGaps": [
+          486,
+          264,
+          293,
+          321
+        ]
+      },
+      "words": [
+        {
+          "text": "Now",
+          "t0": 0,
+          "t1": 0.209,
+          "trail": "",
+          "gapAfterMs": 93
+        },
+        {
+          "text": "open",
+          "t0": 0.302,
+          "t1": 0.592,
+          "trail": "",
+          "gapAfterMs": 116
+        },
+        {
+          "text": "Settings.",
+          "t0": 0.708,
+          "t1": 1.196,
+          "trail": ".",
+          "gapAfterMs": 476
+        },
+        {
+          "text": "Got",
+          "t0": 1.672,
+          "t1": 1.858,
+          "trail": "",
+          "gapAfterMs": 34
+        },
+        {
+          "text": "a",
+          "t0": 1.892,
+          "t1": 1.916,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "team?",
+          "t0": 1.962,
+          "t1": 2.276,
+          "trail": "?",
+          "gapAfterMs": 278
+        },
+        {
+          "text": "Invite",
+          "t0": 2.554,
+          "t1": 3.007,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "them",
+          "t0": 3.042,
+          "t1": 3.181,
+          "trail": " —",
+          "gapAfterMs": 348
+        },
+        {
+          "text": "they",
+          "t0": 3.529,
+          "t1": 3.738,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "edit,",
+          "t0": 3.796,
+          "t1": 4.052,
+          "trail": ",",
+          "gapAfterMs": 255
+        },
+        {
+          "text": "you",
+          "t0": 4.307,
+          "t1": 4.423,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "stay",
+          "t0": 4.493,
+          "t1": 4.679,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "the",
+          "t0": 4.737,
+          "t1": 4.818,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "owner.",
+          "t0": 4.876,
+          "t1": 5.155,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T18:34:36.730Z"
+    },
+    "f5-s5": {
+      "id": "f5-s5",
+      "film": 5,
+      "scene": "5",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "And Access decides who watches. Everyone… link-holders… or just you.",
+      "chars": 68,
+      "charsBilled": 68,
+      "attempts": 1,
+      "characterCost": 37,
+      "requestId": "zB4A8lf90AKSzOlKO4jD",
+      "endpoint": "with-timestamps",
+      "previousText": "Got a team? Invite them. They edit — you stay the owner.",
+      "nextText": "Publish public, and viewers need nothing. No app. No account. No download.",
+      "dur": 5.952245,
+      "rawDur": 6.594467,
+      "slot": 6,
+      "budget": 5.5,
+      "over": 0.45,
+      "actions": [
+        "trim lead/tail silence 6.59→5.95s",
+        "loudnorm linear -25.49 → -21.72 LUFS (gain +3.49 dB, TP -3.07 dBTP); target backed off 3.0 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.452948,
+        "peak": -5.45314,
+        "truePeak": -5.4,
+        "lufs": -24.2,
+        "lra": 4.2,
+        "lead": 0,
+        "tail": 0.236,
+        "innerGaps": [
+          837,
+          831,
+          408
+        ],
+        "tp": -5.4
+      },
+      "words": [
+        {
+          "text": "And",
+          "t0": 0,
+          "t1": 0.29,
+          "trail": "",
+          "gapAfterMs": 116
+        },
+        {
+          "text": "Access",
+          "t0": 0.406,
+          "t1": 0.801,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "decides",
+          "t0": 0.836,
+          "t1": 1.254,
+          "trail": "",
+          "gapAfterMs": 23
+        },
+        {
+          "text": "who",
+          "t0": 1.277,
+          "t1": 1.405,
+          "trail": "",
+          "gapAfterMs": 69
+        },
+        {
+          "text": "watches.",
+          "t0": 1.474,
+          "t1": 1.927,
+          "trail": ".",
+          "gapAfterMs": 825
+        },
+        {
+          "text": "Everyone…",
+          "t0": 2.752,
+          "t1": 3.228,
+          "trail": "…",
+          "gapAfterMs": 777
+        },
+        {
+          "text": "link-holders…",
+          "t0": 4.005,
+          "t1": 4.702,
+          "trail": "…",
+          "gapAfterMs": 383
+        },
+        {
+          "text": "or",
+          "t0": 5.085,
+          "t1": 5.236,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "just",
+          "t0": 5.294,
+          "t1": 5.492,
+          "trail": "",
+          "gapAfterMs": 58
+        },
+        {
+          "text": "you.",
+          "t0": 5.55,
+          "t1": 5.735,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:22.815Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.72,
+        "tp": -5.02,
+        "gainDb": -1.56,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -22.44,
+          "tp": -3.43,
+          "lra": 2.9
+        },
+        "at": "2026-09-05T18:33:31.783Z",
+        "uniform": true
+      },
+      "textSha1": "234bcb0c15316465c07383fc0c02b687fc683469"
+    },
+    "f5-s6": {
+      "id": "f5-s6",
+      "film": 5,
+      "scene": "6",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.12
+      },
+      "text": "Publish public, and viewers need nothing. No app. No account. No download.",
+      "chars": 74,
+      "charsBilled": 148,
+      "attempts": 2,
+      "characterCost": 41,
+      "requestId": "YSzvIjev58SG7Jc9Pazf",
+      "endpoint": "with-timestamps",
+      "previousText": "And Access decides who watches. Everyone… link-holders… or just you.",
+      "nextText": "Build once. Share one link. Teach everywhere. — Flow Video.",
+      "dur": 4.938571,
+      "rawDur": 7.105306,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.56,
+      "actions": [
+        "trim lead/tail silence 7.11→6.51s",
+        "re-synth speed 1.05→1.12 (+74 chars)",
+        "trim 5.39→4.94s",
+        "loudnorm linear -25.02 → -23.13 LUFS (gain +1.92 dB, TP -3.08 dBTP); target backed off 4.1 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.269183,
+        "peak": -4.377542,
+        "truePeak": -4.4,
+        "lufs": -24.5,
+        "lra": 1.1,
+        "lead": 0,
+        "tail": 0.234,
+        "innerGaps": [
+          268,
+          408,
+          489,
+          486
+        ],
+        "tp": -4.4
+      },
+      "words": [
+        {
+          "text": "Publish",
+          "t0": 0,
+          "t1": 0.348,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "public,",
+          "t0": 0.395,
+          "t1": 0.697,
+          "trail": ",",
+          "gapAfterMs": 209
+        },
+        {
+          "text": "and",
+          "t0": 0.906,
+          "t1": 1.033,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "viewers",
+          "t0": 1.103,
+          "t1": 1.416,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "need",
+          "t0": 1.463,
+          "t1": 1.625,
+          "trail": "",
+          "gapAfterMs": 47
+        },
+        {
+          "text": "nothing.",
+          "t0": 1.672,
+          "t1": 1.997,
+          "trail": ".",
+          "gapAfterMs": 406
+        },
+        {
+          "text": "No",
+          "t0": 2.403,
+          "t1": 2.531,
+          "trail": "",
+          "gapAfterMs": 70
+        },
+        {
+          "text": "app.",
+          "t0": 2.601,
+          "t1": 2.798,
+          "trail": ".",
+          "gapAfterMs": 395
+        },
+        {
+          "text": "No",
+          "t0": 3.193,
+          "t1": 3.309,
+          "trail": "",
+          "gapAfterMs": 46
+        },
+        {
+          "text": "account.",
+          "t0": 3.355,
+          "t1": 3.704,
+          "trail": ".",
+          "gapAfterMs": 441
+        },
+        {
+          "text": "No",
+          "t0": 4.145,
+          "t1": 4.272,
+          "trail": "",
+          "gapAfterMs": 59
+        },
+        {
+          "text": "download.",
+          "t0": 4.331,
+          "t1": 4.748,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:26.695Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -24.02,
+        "tp": -3.96,
+        "gainDb": -0.45,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -23.55,
+          "tp": -3.51,
+          "lra": 1.1
+        },
+        "at": "2026-09-05T18:33:32.027Z",
+        "uniform": true
+      },
+      "textSha1": "958ab7cf3aff62bc37a70d5f9253039b90a5a6ff"
+    },
+    "f5-s7": {
+      "id": "f5-s7",
+      "film": 5,
+      "scene": "7",
+      "role": "narrator",
+      "kind": "VIDEO",
+      "voiceId": "TX3LPaxmHKxFdv7VOQHJ",
+      "voice": "Liam",
+      "modelId": "eleven_multilingual_v2",
+      "voiceSettings": {
+        "stability": 0.45,
+        "similarity_boost": 0.8,
+        "style": 0.4,
+        "use_speaker_boost": true,
+        "speed": 1.05
+      },
+      "text": "Build once. Share one link. Teach everywhere. — Flow Video.",
+      "chars": 59,
+      "charsBilled": 59,
+      "attempts": 1,
+      "characterCost": 32,
+      "requestId": "rAcWy9A3a9SFBBHQe2RG",
+      "endpoint": "with-timestamps",
+      "previousText": "Publish public, and viewers need nothing. No app. No account. No download.",
+      "nextText": null,
+      "dur": 4.87619,
+      "rawDur": 4.87619,
+      "slot": 6,
+      "budget": 5.5,
+      "over": -0.62,
+      "actions": [
+        "loudnorm linear -25.25 → -20.22 LUFS (gain +4.75 dB, TP -3.07 dBTP); target backed off 1.5 dB from -19 — the true-peak ceiling -3 dBTP allows no more gain linearly"
+      ],
+      "measure": {
+        "rms": -25.312043,
+        "peak": -7.090832,
+        "truePeak": -7.1,
+        "lufs": -24.2,
+        "lra": 2,
+        "lead": 0,
+        "tail": 0.341,
+        "innerGaps": [
+          498,
+          302,
+          660
+        ],
+        "tp": -7.1
+      },
+      "words": [
+        {
+          "text": "Build",
+          "t0": 0,
+          "t1": 0.29,
+          "trail": "",
+          "gapAfterMs": 82
+        },
+        {
+          "text": "once.",
+          "t0": 0.372,
+          "t1": 0.72,
+          "trail": ".",
+          "gapAfterMs": 453
+        },
+        {
+          "text": "Share",
+          "t0": 1.173,
+          "t1": 1.463,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "one",
+          "t0": 1.544,
+          "t1": 1.741,
+          "trail": "",
+          "gapAfterMs": 59
+        },
+        {
+          "text": "link.",
+          "t0": 1.8,
+          "t1": 2.032,
+          "trail": ".",
+          "gapAfterMs": 232
+        },
+        {
+          "text": "Teach",
+          "t0": 2.264,
+          "t1": 2.543,
+          "trail": "",
+          "gapAfterMs": 81
+        },
+        {
+          "text": "everywhere.",
+          "t0": 2.624,
+          "t1": 3.251,
+          "trail": ". —",
+          "gapAfterMs": 615
+        },
+        {
+          "text": "Flow",
+          "t0": 3.866,
+          "t1": 4.133,
+          "trail": "",
+          "gapAfterMs": 35
+        },
+        {
+          "text": "Video.",
+          "t0": 4.168,
+          "t1": 4.563,
+          "trail": ".",
+          "gapAfterMs": null
+        }
+      ],
+      "beats": null,
+      "generatedAt": "2026-09-05T13:13:28.113Z",
+      "normalized": {
+        "type": "linear",
+        "requestedI": -24,
+        "requestedTP": -3,
+        "targetI": -24,
+        "achievedI": -23.79,
+        "tp": -6.57,
+        "gainDb": -3.13,
+        "backedOff": false,
+        "shortfall": 0,
+        "input": {
+          "i": -20.87,
+          "tp": -3.44,
+          "lra": 2.3
+        },
+        "at": "2026-09-05T18:33:32.282Z",
+        "uniform": true
+      },
+      "textSha1": "7a6b0e03736f1c083a4085cf403eae51daff78a3"
+    }
+  },
+  "runs": [
+    {
+      "at": "2026-09-05T13:11:45.498Z",
+      "made": 48,
+      "kept": 0,
+      "failed": 0,
+      "requests": 58,
+      "charsBilled": 4168,
+      "characterCostHeader": 2291,
+      "quotaDelta": 1084,
+      "remaining": 181529,
+      "only": null,
+      "force": true,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T13:16:47.509Z",
+      "made": 2,
+      "kept": 0,
+      "failed": 0,
+      "requests": 6,
+      "charsBilled": 585,
+      "characterCostHeader": 321,
+      "quotaDelta": 0,
+      "remaining": 173380,
+      "only": [
+        "f2-s2",
+        "f3-s5"
+      ],
+      "force": true,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T13:19:19.857Z",
+      "made": 2,
+      "kept": 0,
+      "failed": 0,
+      "requests": 4,
+      "charsBilled": 375,
+      "characterCostHeader": 205,
+      "quotaDelta": 156,
+      "remaining": 169879,
+      "only": [
+        "f2-s2",
+        "f3-s5"
+      ],
+      "force": false,
+      "refit": true,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T13:21:38.262Z",
+      "made": 0,
+      "kept": 48,
+      "failed": 0,
+      "requests": 0,
+      "charsBilled": 0,
+      "characterCostHeader": 0,
+      "quotaDelta": 0,
+      "remaining": 169820,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T18:23:30.856Z",
+      "made": 17,
+      "kept": 31,
+      "failed": 0,
+      "requests": 20,
+      "charsBilled": 1437,
+      "characterCostHeader": 791,
+      "drifted": [
+        "f1-s2",
+        "f1-s3",
+        "f1-s5",
+        "f1-s7",
+        "f1-s8",
+        "f1-s9",
+        "f1-s10",
+        "f2-s3",
+        "f2-s5",
+        "f2-s8",
+        "f2-s9",
+        "f2-s10",
+        "f3-s1",
+        "f3-s2",
+        "f3-s6",
+        "f3-s8",
+        "f4-s3"
+      ],
+      "quotaDelta": 780,
+      "remaining": 169040,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T18:26:59.953Z",
+      "made": 2,
+      "kept": 0,
+      "failed": 0,
+      "requests": 3,
+      "charsBilled": 233,
+      "characterCostHeader": 127,
+      "drifted": [],
+      "quotaDelta": 0,
+      "remaining": 169029,
+      "only": [
+        "f1-s4",
+        "f3-s5"
+      ],
+      "force": false,
+      "refit": true,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T18:29:13.186Z",
+      "made": 0,
+      "kept": 48,
+      "failed": 0,
+      "requests": 0,
+      "charsBilled": 0,
+      "characterCostHeader": 0,
+      "drifted": [],
+      "quotaDelta": 0,
+      "remaining": 168902,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ]
+    },
+    {
+      "at": "2026-09-05T18:34:29.296Z",
+      "made": 2,
+      "kept": 46,
+      "failed": 0,
+      "requests": 2,
+      "charsBilled": 126,
+      "characterCostHeader": 69,
+      "drifted": [
+        "f4-s9",
+        "f5-s4"
+      ],
+      "quotaDelta": 0,
+      "remaining": 168902,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ],
+      "loudness": "uniform"
+    },
+    {
+      "at": "2026-09-05T18:35:57.893Z",
+      "made": 0,
+      "kept": 48,
+      "failed": 0,
+      "requests": 0,
+      "charsBilled": 0,
+      "characterCostHeader": 0,
+      "drifted": [],
+      "quotaDelta": 0,
+      "remaining": 168833,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ],
+      "loudness": "uniform"
+    },
+    {
+      "at": "2026-09-05T18:36:23.279Z",
+      "made": 0,
+      "kept": 48,
+      "failed": 0,
+      "requests": 0,
+      "charsBilled": 0,
+      "characterCostHeader": 0,
+      "drifted": [],
+      "quotaDelta": 0,
+      "remaining": 168833,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ],
+      "loudness": "uniform"
+    },
+    {
+      "at": "2026-09-05T18:37:20.682Z",
+      "made": 0,
+      "kept": 48,
+      "failed": 0,
+      "requests": 0,
+      "charsBilled": 0,
+      "characterCostHeader": 0,
+      "drifted": [],
+      "quotaDelta": 0,
+      "remaining": 168833,
+      "only": null,
+      "force": false,
+      "refit": false,
+      "narrator": "TX3LPaxmHKxFdv7VOQHJ",
+      "viewer": "EXAVITQu4vr4xnSDxMaL",
+      "models": [
+        "eleven_multilingual_v2"
+      ],
+      "loudness": "uniform"
+    }
+  ],
+  "loudness": {
+    "mode": "uniform",
+    "targetI": -24,
+    "targetTP": -3,
+    "auto": true,
+    "at": "2026-09-05T18:33:32.282Z"
+  }
+}

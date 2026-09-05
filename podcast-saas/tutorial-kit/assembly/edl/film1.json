@@ -1,0 +1,152 @@
+{
+  "film": 1,
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, and the video underneath is a recording of that same simulation being driven — invisible in the product, and the reason the film still reads as a film when watched as a file. 'reshoot' marks shots invalidated by product/UI changes or missing. `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in when the shot is missing (editor critique round 3, Appendix A). `zoom` = punch-in {cx,cy,scale}. `voDelay` = seconds the line waits after the cut (return beats). Scenes follow SCRIPT-1-TEASER v3.2 (10 beats).",
+  "cuts": [
+    {
+      "scene": "1",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [
+        {
+          "source": "f1-s1-ordinary-video",
+          "mode": "fit",
+          "fallback": "f4-s1-public-page",
+          "fallbackIn": 8.5,
+          "atBeat": "start"
+        },
+        {
+          "source": "f1-s1-ordinary-video",
+          "mode": "fit",
+          "fallback": "f4-s1-public-page",
+          "fallbackIn": 10.5,
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.55,
+            "scale": 1.5
+          },
+          "atBeat": "start"
+        }
+      ],
+      "note": "an ordinary shared video on its public page — the doors project, the one seeded film with no live windows, so nothing interactive gives the trap away"
+    },
+    {
+      "scene": "2",
+      "source": "plate-kinesin",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "3",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "voDelay": 0.4,
+      "reshoot": "f1-s3-return is a HUNG take — poster ▶ still up, sim panel still mounted, two Ask! buttons, sim clock frozen at 1.66s. Re-shoot waiting on the real post-return state, and assert the sim clock advances.",
+      "atBeat": "start"
+    },
+    {
+      "scene": "4",
+      "source": "f4-s1-public-page",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "the ask surface itself — blocked on avatar credentials (Anam answers 401 locally). The take in hand holds 0.42s of ask action against a 4s beat and leaks two unrevealed sims into a VIDEO beat.",
+      "in": 11.5
+    },
+    {
+      "scene": "5",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "reshoot": "cards still carry the v2 title 'The Heavy Simulation' (film 3 is now 'Drop In Anything'); re-shoot on the v3 template",
+      "source": "f4-s4-branching",
+      "mode": "fit",
+      "in": 33.8,
+      "fallbackAtBeat": "start",
+      "note": "the capture already contains the pick and the branch jump — verified: card lights up at src 36.40, flash to black 37.76, destination paints 38.08; in:30 landed the whole beat in the dead hold before any of it"
+    },
+    {
+      "scene": "6",
+      "source": "plate-solar",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "7",
+      "source": "f1-s7-return",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 5,
+      "voDelay": 0.4,
+      "reshoot": "back on the public page after the solar window: Ask! button + section badge visible, cursor drifts",
+      "atBeat": "returned"
+    },
+    {
+      "scene": "8",
+      "kind": "VIDEO",
+      "fallback": "f2-s2b-library-drop",
+      "sources": [
+        {
+          "source": "montage-1-drop",
+          "fallback": "f2-s2b-library-drop",
+          "mode": "fit",
+          "fallbackIn": 7.8,
+          "atBeat": "drop"
+        },
+        {
+          "source": "montage-2-mark",
+          "fallback": "f2-s3-mark-section",
+          "mode": "fit",
+          "fallbackIn": 9.8,
+          "atBeat": "mark"
+        },
+        {
+          "source": "montage-3-card",
+          "fallback": "f2-s4-this-moment",
+          "mode": "fit",
+          "fallbackIn": 14.0,
+          "atBeat": "card"
+        },
+        {
+          "source": "montage-4-generate",
+          "fallback": "f2-s4-this-moment",
+          "mode": "fit",
+          "fallbackIn": 21.4,
+          "atBeat": "generate"
+        },
+        {
+          "source": "montage-5-share",
+          "fallback": "f2-s8-share",
+          "mode": "fit",
+          "fallbackIn": 14.0,
+          "atBeat": "share"
+        }
+      ],
+      "reshoot": "five ≈1.8s real shots: drop → mark → Generate mini model → Generate → Share sheet"
+    },
+    {
+      "scene": "9",
+      "source": "plate-murmuration",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "10",
+      "source": "f1-s7-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 20,
+      "voDelay": 0.4,
+      "reshoot": "zoom-out on the v3 template with the doors glowing",
+      "atBeat": "start"
+    }
+  ]
+}

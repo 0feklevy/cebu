@@ -8,6 +8,7 @@ import {
   buildSectionEntry,
   parseSectionEntries,
   wrapBridgeCombined,
+  wrapBridgeMainBody,
   injectBridgeScriptTag,
   SAFE_SECTION_ID_RE,
 } from '../SimulationService.js';
@@ -411,5 +412,85 @@ describe('Bridge hardening — cleanup throws, prototype names, missing sections
     const { post, runs } = bootBridge(bridge, `?section=${SEC_B}`);
     post({ type: 'startScript', script: 'main', params: {} });
     expect(runs).toEqual(['run:good']);                                 // ?section=B default
+  });
+});
+
+// ── Body prelude: the helpers the generation prompt promises exist in BOTH wrappers ───────────
+//
+// The prompt's template declares _hidden/_hide/_restoreAll/_ivs/_listeners/_injected inside
+// SCRIPTS.main and asks the model to "fill in [YOUR IMPLEMENTATION HERE]"; a body returning only
+// that part relies on them. Bare splicing threw ReferenceError on activation and the viewer played
+// the film through the whole window (2 of 6 generated bodies, 2026-09-05). Three body shapes must
+// all run: prelude-reliant, the worked example's own `var` copies, the template's `const` copies.
+
+// The element logs its display changes into __RUNS__ so the hide and the restore are observable
+// in order with the body's own run/cleanup marks.
+const FAKE_EL =
+  "var el = { style: { d: '', getPropertyValue: function () { return this.d; }, " +
+  "setProperty: function (k, v) { this.d = v; window.__RUNS__.push('display:' + v); }, " +
+  "removeProperty: function () { this.d = ''; window.__RUNS__.push('display:restored'); } } };\n";
+const BODY_PRELUDE_RELIANT =
+  FAKE_EL +
+  '_hide(el);\n' +
+  '_ivs.push(setInterval(function () {}, 50));\n' +
+  "_listeners.push([{ removeEventListener: function () { window.__RUNS__.push('unlisten:P'); } }, 'click', function () {}]);\n" +
+  "_injected.push({ remove: function () { window.__RUNS__.push('removed:P'); } });\n" +
+  "window.__RUNS__.push('run:P');\n" +
+  "return function () { window.__RUNS__.push('cleanup:P'); };";
+const BODY_OWN_VARS =
+  'var _hidden = [], _ivs = [], _listeners = [], _injected = [];\n' +
+  "window.__RUNS__.push('run:Q');\n" +
+  'return function () { _hidden.forEach(function () {}); };';
+const BODY_TEMPLATE_CONSTS =
+  'const _hidden = [];\n' +
+  'function _hide(el) { _hidden.push(el); }\n' +
+  'function _restoreAll() {}\n' +
+  'const _ivs = []; const _listeners = []; const _injected = [];\n' +
+  '_hide({});\n' +
+  "window.__RUNS__.push('run:T');\n" +
+  'return function cleanup() { _restoreAll(); };';
+
+describe('Bridge body prelude — the promised helpers exist and are drained by stopScript', () => {
+  const P = 'sec-prelude', Q = 'sec-ownvars', T = 'sec-template';
+  let bridge: string;
+
+  beforeEach(async () => {
+    const storage = new MemStorage();
+    await storage.uploadFile(ENTRY_KEY, Buffer.from(SEED_HTML, 'utf-8'));
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: P, mainBody: BODY_PRELUDE_RELIANT });
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: Q, mainBody: BODY_OWN_VARS });
+    await generateSection(storage, { prefix: PREFIX, entryKey: ENTRY_KEY, sectionId: T, mainBody: BODY_TEMPLATE_CONSTS });
+    bridge = storage.get(`${PREFIX}/bridge.js`);
+  });
+
+  it('[P1] combined: a prelude-reliant body runs (no ReferenceError) and stopScript drains what it collected', () => {
+    expect(() => new Function(bridge)).not.toThrow();
+    const { post, runs, posted } = bootBridge(bridge, `?section=${P}`);
+    post({ type: 'startScript', script: P, params: {} });
+    // _hide() hid the element (display:none) before the body announced itself.
+    expect(runs).toEqual(['display:none', 'run:P']);
+    expect(posted.some((m) => m.type === 'SCRIPT_ERROR')).toBe(false);
+    post({ type: 'startScript', script: Q, params: {} });
+    // The switch ran P's own cleanup, then the shared drain — listener removed, injected removed,
+    // display restored — all before Q started.
+    expect(runs).toEqual(['display:none', 'run:P', 'cleanup:P', 'unlisten:P', 'removed:P', 'display:restored', 'run:Q']);
+  });
+
+  it('[P3] combined: bodies that declare their own copies (var — worked example; const — template) still run', () => {
+    const { post, runs, posted } = bootBridge(bridge, `?section=${Q}`);
+    post({ type: 'startScript', script: Q, params: {} });
+    post({ type: 'startScript', script: T, params: {} });
+    expect(runs).toEqual(['run:Q', 'run:T']);
+    expect(posted.some((m) => m.type === 'SCRIPT_ERROR')).toBe(false);
+  });
+
+  it('[P4] single wrapper (wrapBridgeMainBody): the same prelude-reliant body runs and is drained on stopScript', () => {
+    const single = wrapBridgeMainBody(BODY_PRELUDE_RELIANT);
+    expect(() => new Function(single)).not.toThrow();
+    const { post, runs } = bootBridge(single, '');
+    post({ type: 'startScript', script: 'main', params: {} });
+    expect(runs).toEqual(['display:none', 'run:P']);
+    post({ type: 'stopScript' });
+    expect(runs).toEqual(['display:none', 'run:P', 'cleanup:P', 'unlisten:P', 'removed:P', 'display:restored']);
   });
 });

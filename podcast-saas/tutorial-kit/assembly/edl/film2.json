@@ -1,0 +1,150 @@
+{
+  "film": 2,
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, and the video underneath is a recording of that same simulation being driven — invisible in the product, and the reason the film still reads as a film when watched as a file. 'reshoot' marks shots invalidated by product/UI changes or missing. `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `zoom` = punch-in {cx,cy,scale}. Scenes follow SCRIPT-2-TUTORIAL v3.2 (12 beats).",
+  "cuts": [
+    {
+      "scene": "1",
+      "source": "f2-s1-pullback",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f2-s2a-new-project",
+      "fallbackIn": 5.2,
+      "reshoot": "the solar window live in the DEMO project, then a pull-back to the page",
+      "atBeat": "start"
+    },
+    {
+      "scene": "2",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [
+        {
+          "source": "f2-s2a-new-project",
+          "mode": "fit",
+          "atBeat": "dialog"
+        },
+        {
+          "source": "f2-s2b-library-drop",
+          "mode": "fit",
+          "atBeat": "drop1"
+        }
+      ]
+    },
+    {
+      "scene": "3",
+      "source": "f2-s2b-library-drop",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "the drop must be solar-system.zip; cards land",
+      "atBeat": "cards1"
+    },
+    {
+      "scene": "4",
+      "source": "f2-s3-mark-section",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "atBeat": "dragged"
+    },
+    {
+      "scene": "5",
+      "source": "f2-s4-this-moment",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "card opens: Simulation type → 'Generate mini model' card (new label)",
+      "atBeat": "card"
+    },
+    {
+      "scene": "6",
+      "source": "f2-s4-this-moment",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "the prompt typed in sync (new label)",
+      "atBeat": "typing"
+    },
+    {
+      "scene": "7",
+      "source": "f2-s4-this-moment",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "zoom": {
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
+      },
+      "reshoot": "both toggles flipped + Generate with AI (new label)",
+      "atBeat": "minimal-ui"
+    },
+    {
+      "scene": "8",
+      "source": "plate-solar",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 0,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "9",
+      "source": "plate-solar",
+      "mode": "loop",
+      "kind": "LIVE-WINDOW",
+      "in": 5.5,
+      "fallback": "assembly/plates/under-window.mp4"
+    },
+    {
+      "scene": "10",
+      "kind": "VIDEO",
+      "fallback": "captures/props/lesson-waves.mp4",
+      "voDelay": 0.4,
+      "sources": [
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "atBeat": "sheet-open"
+        },
+        {
+          "source": "f2-s8-share",
+          "mode": "fit",
+          "zoom": {
+            "cx": 0.5,
+            "cy": 0.5,
+            "scale": 1.5
+          },
+          "atBeat": "rows-hovered"
+        }
+      ]
+    },
+    {
+      "scene": "11",
+      "source": "f2-s9-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 10,
+      "reshoot": "own project timeline with the solar window block",
+      "atBeat": "start"
+    },
+    {
+      "scene": "12",
+      "source": "f2-s9-zoomout",
+      "mode": "fit",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "fallbackIn": 14,
+      "atBeat": "wide"
+    }
+  ]
+}

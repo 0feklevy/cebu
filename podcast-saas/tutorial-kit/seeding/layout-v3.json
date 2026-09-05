@@ -1,0 +1,129 @@
+{
+  "comment": "v3 experience layout — MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth — retime both together). Each window: sim key → { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }. `uiHide` is the MECHANICAL selector list Simple UI hides — the prompt says what in words, this is what the player is handed; an empty list cloaks nothing.",
+  "demo": {
+    "title": "Welcome to Flow Video",
+    "master": "film1",
+    "windows": [
+      {
+        "sim": "kinesin",
+        "window": [
+          4,
+          12
+        ],
+        "label": "Drag the slider",
+        "prompt": "Let viewers scrub the walking cycle and orbit the camera — keep only the cycle slider and Pause.",
+        "simpleUI": true,
+        "uiHide": [
+          ".section-heading",
+          "#motor-control",
+          "#restart",
+          "#reset-camera",
+          "#advanced-background-control",
+          ".range-field:has(#presentation-rate)"
+        ]
+      },
+      {
+        "sim": "solarSystem",
+        "window": [
+          25,
+          33
+        ],
+        "label": "Tap a planet",
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "uiHide": [
+          "#panel-title"
+        ]
+      },
+      {
+        "sim": "murmuration",
+        "window": [
+          45,
+          52
+        ],
+        "label": "Hit Scatter",
+        "prompt": "Let viewers steer the flock — cohesion, speed, and a scatter button",
+        "simpleUI": true
+      }
+    ],
+    "choiceDoorsAtEnd": true
+  },
+  "tutorial": {
+    "title": "Make Yours — the basics",
+    "master": "film2",
+    "ownProject": true,
+    "windows": [
+      {
+        "sim": "solarSystem",
+        "window": [
+          51,
+          63
+        ],
+        "label": "Tap a planet",
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "uiHide": [
+          "#panel-title"
+        ]
+      }
+    ]
+  },
+  "niche": [
+    {
+      "key": "heavy",
+      "film": 3,
+      "title": "Drop In Anything",
+      "topic": "You have your own simulation or interactive content? Drop it in, describe the moment, generate — it goes live for your viewers.",
+      "windows": [
+        {
+          "sim": "kinesin",
+          "window": [
+            32,
+            44
+          ],
+          "label": "Drag the slider",
+          "prompt": "Let viewers scrub the walking cycle and switch motors — keep only those two controls",
+          "simpleUI": true,
+          "uiHide": [
+            ".section-heading",
+            "#motor-control",
+            "#restart",
+            "#reset-camera",
+            "#advanced-background-control",
+            ".range-field:has(#presentation-rate)"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "powers",
+      "film": 4,
+      "title": "Viewer Superpowers",
+      "topic": "What viewers can do inside a Flow Video: touch live simulations, ask at any moment, choose the path, watch it their way.",
+      "windows": [
+        {
+          "sim": "orbitLab",
+          "window": [
+            3,
+            15
+          ],
+          "label": "Drag to launch",
+          "prompt": "Let viewers launch planets and watch the forces pull them into orbit",
+          "simpleUI": true
+        }
+      ]
+    },
+    {
+      "key": "doors",
+      "film": 5,
+      "title": "One Link, Three Doors",
+      "topic": "Share, collaborate, control access: one permalink, invited collaborators, and access control for a film.",
+      "windows": []
+    }
+  ],
+  "library_extras": [
+    "galtonBoard",
+    "fiveSpecies"
+  ],
+  "kinesin_note": "Kinesin embedded per owner instruction for the LOCAL review build; PUBLIC seeding still requires the CGTrader license clearance recorded in the kinesin project's STATUS.md."
+}

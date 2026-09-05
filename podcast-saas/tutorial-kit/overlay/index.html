@@ -1,0 +1,588 @@
+<!--
+  FlowVid tutorial films — INFOGRAPHIC OVERLAY RIG (1920×1080)
+  ============================================================
+  Recorded with Playwright (render-overlay.mjs) and composited over the screen
+  captures with ffmpeg. Per CREATIVE-BRIEF.md the layer is MINIMAL: kinetic
+  captions + the logo intro + CTA end cards. No wall-to-wall overlays.
+
+  GROUND MODEL (this is the whole compositing contract)
+  -----------------------------------------------------
+  • The page ground is solid chroma #00FF00. Everything drawn over it is meant
+    to be composited via ffmpeg colorkey + despill, e.g.:
+      [ov]colorkey=0x00FF00:0.30:0.10,despill=type=green[keyed]
+    The despill pass matters: soft shadows baked around keyed elements (their
+    legibility scrim over footage) blend with the green ground, and despill is
+    what turns that residue into a neutral dark glow instead of a green halo.
+  • Shadows on masked/keyed TEXT are always filter:drop-shadow on the line
+    container — never text-shadow on the glyph spans, which would be clipped by
+    each mask box into visible rectangles.
+  • Full-frame scenes (logo-intro, end-card ground:"card") paint a complete
+    OPAQUE frame — they are used as full frames in the cut, never keyed.
+  • CHROMA RULE: elements over the chroma ground never animate opacity — a
+    half-transparent pixel blends with green and survives the keyer as a
+    fringe. Entries/exits over chroma are transform-only (masked rise,
+    scale-pop) with fully opaque fills. Opacity animation is allowed only for
+    content sitting on an opaque full-frame ground.
+  • Content colors stay far from hue 120° — the house indigo/ink/white palette
+    is naturally safe. Font smoothing is grayscale (no subpixel color fringes).
+
+  DRIVING CONTRACT (recorder side)
+  --------------------------------
+    await window.__overlayInit({ scenes, total })  // builds DOM, loads fonts,
+                                                   // paints the t=0 frame
+    window.__overlayStart()                        // starts the global clock
+    window.__overlayDone === true                  // t >= total reached
+  Scenes: [{ id, type, t0, dur, props }] — t0/dur in SECONDS. Timing runs on
+  requestAnimationFrame against performance.now() from a single global start,
+  so every scene is a pure function of the master clock.
+  Open index.html#demo in a browser for a human-checkable reel of every type.
+
+  HOUSE PALETTE — hex snapshot of client-web/app/globals.css light tokens
+  -----------------------------------------------------------------------
+    --background  hsl(220 20% 97%)  → #F6F7F9   (card grounds)
+    --foreground  hsl(224 28% 10%)  → #121621   (ink)
+    --primary     hsl(231 72% 55%)  → #3A52DF   (indigo; .btn-gradient pairs it with #6366F1)
+    --secondary   hsl(214 32% 92%)  → #E4EAF1
+    --border      hsl(216 20% 86%)  → #D4DAE2
+    --muted-fg    hsl(220  9% 42%)  → #616875
+    dark primary  hsl(252 82% 67%)  → #8166F0   (outro gradient over dark footage)
+  Buttons/chips copy the product's own language: 10–16px radii, the
+  135° primary→#6366F1 gradient, the indigo-tinted shadow from .btn-gradient.
+
+  TYPE — Bricolage Grotesque (SIL OFL 1.1, commercial-safe; fonts/OFL.txt)
+  ------------------------------------------------------------------------
+  Chosen over Sora/Manrope: it is a display grotesque with actual character —
+  ink traps, tight apertures, a confident chest-out width — which reads
+  "US SaaS film with a personality" instead of "another Inter startup", and it
+  still sits comfortably next to the product's clean indigo UI. Decisive here:
+  it ships as a VARIABLE font (wght 200–800 + opsz), which is what powers the
+  logo's weight-shift draw-on — the animation IS the typeface's axis. Vendored
+  as base64 (fonts/bricolage.js → FontFace from bytes) so file:// recording is
+  deterministic and offline-safe; falls back to the Google Fonts CDN, then to
+  the system stack.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FlowVid overlay rig</title>
+<style>
+  :root {
+    --bg: #F6F7F9;
+    --ink: #121621;
+    --primary: #3A52DF;
+    --primary-2: #6366F1;
+    --primary-dark: #8166F0;   /* dark-theme primary, for lockups over dark footage */
+    --indigo-soft: #A5B4FC;
+    --secondary: #E4EAF1;
+    --border: #D4DAE2;
+    --muted: #616875;
+    --chroma: #00FF00;
+    --font: "Bricolage Grotesque", -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body {
+    background: var(--chroma);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;   /* grayscale AA — no subpixel color fringes on the key */
+    text-rendering: optimizeLegibility;
+    font-optical-sizing: auto;
+  }
+  #stage { position: fixed; inset: 0; width: 1920px; height: 1080px; }
+  .scene { position: absolute; inset: 0; display: none; }
+
+  /* ---- shared masked-rise letter machinery (chroma-safe: no opacity) ---- */
+  .maskline { display: inline-block; white-space: nowrap; }
+  .mask { display: inline-block; overflow: hidden; vertical-align: bottom; padding: 0.10em 0 0.06em; margin: -0.10em 0 -0.06em; }
+  .mask > span { display: inline-block; will-change: transform; transform: translateY(115%); }
+
+  /* ------------------------------- logo ------------------------------- */
+  .logo-ground {
+    background:
+      radial-gradient(1300px 760px at 50% 36%, rgba(58, 82, 223, 0.06), rgba(58, 82, 223, 0) 70%),
+      var(--bg);
+  }
+  .lockup { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-weight: 400; }
+  .lockup .maskline { font-size: 150px; line-height: 1.06; letter-spacing: 0.10em; }
+  .lockup .w-flow > span { color: var(--ink); }
+  .lockup .grad > span { -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lockup .dot {
+    display: inline-block; width: 0.14em; height: 0.14em; border-radius: 50%;
+    margin-left: 0.10em; transform: scale(0); font-size: 150px; vertical-align: baseline;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+  }
+  .lockup.on-dark .w-flow > span { color: #FFFFFF; }
+  .lockup.on-dark .dot { background: linear-gradient(135deg, var(--primary-dark), var(--indigo-soft)); }
+  .lockup.on-dark { filter: drop-shadow(0 3px 9px rgba(0,0,0,0.55)) drop-shadow(0 14px 40px rgba(0,0,0,0.38)); }
+
+  /* ---------------------------- caption chip --------------------------- */
+  .chip {
+    position: absolute; display: flex; align-items: center; gap: 15px;
+    background: #FFFFFF; border: 2px solid var(--border); border-radius: 999px;
+    padding: 17px 32px 17px 24px; will-change: transform;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.12);
+  }
+  .chip .dot { width: 15px; height: 15px; border-radius: 50%; flex: none;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2)); }
+  .chip .txt { font-size: 31px; font-weight: 600; line-height: 1; color: var(--ink); letter-spacing: 0.005em; white-space: nowrap; }
+
+  /* ----------------------------- end card ------------------------------ */
+  .card-ground {
+    background:
+      radial-gradient(1400px 800px at 50% 30%, rgba(58, 82, 223, 0.065), rgba(58, 82, 223, 0) 72%),
+      var(--bg);
+  }
+  .ec-line { position: absolute; left: 50%; width: 1560px; text-align: center;
+    font-weight: 400; color: var(--ink); letter-spacing: -0.015em; line-height: 1.08; }
+  .ec-card .ec-line { top: 38%; transform: translate(-50%, -50%); font-size: 104px; }
+  .ec-chroma .ec-line { top: 57%; transform: translate(-50%, -50%); font-size: 84px; color: #FFFFFF;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,0.55)) drop-shadow(0 12px 36px rgba(0,0,0,0.40)); }
+  .ec-btnrow { position: absolute; left: 50%; top: 56%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 28px; }
+  .ec-chroma .ec-btnrow { top: 70%; }
+  .btn { will-change: transform; white-space: nowrap; }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-2) 100%);
+    color: #FFFFFF; font-size: 34px; font-weight: 600; letter-spacing: 0.005em;
+    padding: 26px 52px; border-radius: 16px;
+    box-shadow: 0 14px 34px rgba(99, 102, 241, 0.38), 0 3px 10px rgba(99, 102, 241, 0.28);
+  }
+  .btn-secondary {
+    background: #FFFFFF; color: var(--ink); font-size: 28px; font-weight: 500;
+    padding: 20px 40px; border-radius: 14px; border: 2px solid var(--border);
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+  }
+  .ec-arrow { position: absolute; left: 50%; top: 74%; will-change: transform; }
+  .ec-chroma .ec-arrow { top: 80%; }
+  .ec-arrow svg { display: block; }
+  .ec-brand { position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%);
+    font-size: 27px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted); opacity: 0; }
+  .ec-brand b { font-weight: 600; color: var(--primary); }
+
+  /* -------------------------- four grid labels -------------------------- */
+  .plate {
+    position: absolute; display: flex; align-items: center; gap: 20px;
+    background: var(--ink); border-radius: 18px; padding: 20px 36px 20px 22px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 3px 10px rgba(0, 0, 0, 0.35);
+    transform: translate(-50%, -50%) scale(0); will-change: transform;
+  }
+  .plate .num { width: 48px; height: 48px; border-radius: 50%; flex: none;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    color: #FFFFFF; font-size: 27px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; }
+  .plate .txt { color: #FFFFFF; font-size: 46px; font-weight: 700; line-height: 1;
+    letter-spacing: 0.055em; text-transform: uppercase; white-space: nowrap; }
+
+  /* --------------------------- arrow callout ---------------------------- */
+  .callout-svg { position: absolute; inset: 0; overflow: visible; }
+  .callout-svg.tone-light { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5)); }
+  .co-chip {
+    position: absolute; display: flex; align-items: center; gap: 12px;
+    background: #FFFFFF; border: 2px solid var(--border); border-radius: 999px;
+    padding: 12px 22px 12px 17px; transform: translate(-50%, -50%) scale(0); will-change: transform;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.20), 0 2px 6px rgba(15, 23, 42, 0.12);
+  }
+  .co-chip .dot { width: 12px; height: 12px; border-radius: 50%; flex: none;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2)); }
+  .co-chip .txt { font-size: 25px; font-weight: 600; line-height: 1; color: var(--ink); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="fonts/bricolage.js"></script>
+<script>
+'use strict';
+(() => {
+  const stage = document.getElementById('stage');
+  const state = { scenes: [], total: 0, startT: null, done: false };
+
+  /* ------------------------------ helpers ------------------------------ */
+  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  const seg = (t, a, b) => clamp01((t - a) / (b - a));           // 0→1 across [a,b]
+  const lerp = (a, b, u) => a + (b - a) * u;
+  const eoExpo  = u => u >= 1 ? 1 : 1 - Math.pow(2, -10 * u);
+  const eoQuint = u => 1 - Math.pow(1 - u, 5);
+  const eoBack  = u => { const c = 1.70158, d = c + 1; return 1 + d * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2); };
+  const eiBack  = u => { const c = 1.70158, d = c + 1; return d * u * u * u - c * u * u; };
+  const eioSine = u => -(Math.cos(Math.PI * u) - 1) / 2;
+
+  const el = (tag, cls, parent) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  const wght = (node, w) => { node.style.fontVariationSettings = `'wght' ${w.toFixed(1)}`; };
+
+  // Exit pop shared by chroma elements: scale 1→0 over the final `exitDur`.
+  const exitScale = (tl, dur, exitDur) => {
+    const u = seg(tl, dur - exitDur, dur);
+    return u <= 0 ? 1 : Math.max(0, 1 - clamp01(eiBack(u) < 0 ? 0 : eiBack(u)));
+  };
+
+  /* Masked word/letter builder. mode 'letters' splits every glyph, 'words'
+     keeps words whole. Gradient text gets one gradient spread across the
+     whole line via per-glyph background-position. */
+  function buildMasked(parent, text, { mode = 'letters', gradient = null, cls = '' } = {}) {
+    const line = el('span', 'maskline ' + cls, parent);
+    const units = mode === 'letters' ? [...text] : text.split(/(\s+)/);
+    const out = [];
+    const glyphCount = units.filter(u => u.trim().length).length;
+    let gi = 0;
+    for (const u of units) {
+      if (!u.trim().length) { const sp = el('span', '', line); sp.innerHTML = '&nbsp;'; continue; }
+      const mask = el('span', 'mask', line);
+      const g = el('span', '', mask);
+      g.textContent = u;
+      if (gradient) {
+        g.style.backgroundImage = gradient;
+        g.style.backgroundSize = `${Math.max(glyphCount, 1) * 130}% 100%`;
+        g.style.backgroundPosition = `${glyphCount > 1 ? (gi / (glyphCount - 1)) * 100 : 0}% 0`;
+        g.style.webkitBackgroundClip = 'text';
+        g.style.backgroundClip = 'text';
+        g.style.color = 'transparent';
+      }
+      out.push(g);
+      gi++;
+    }
+    return { line, glyphs: out };
+  }
+
+  // Per-glyph masked rise + variable-weight shift, staggered.
+  function riseFrame(glyphs, tl, { start = 0.08, stagger = 0.055, rise = 0.72, w0 = 250, w1 = 640 } = {}) {
+    glyphs.forEach((g, i) => {
+      const p = seg(tl, start + i * stagger, start + i * stagger + rise);
+      g.style.transform = `translateY(${lerp(115, 0, eoExpo(p))}%)`;
+      wght(g, lerp(w0, w1, eoQuint(p)));
+    });
+  }
+
+  const ANCHOR = {
+    'bottom-left':   { left: '96px',  bottom: '92px', cx: 0, oy: 1 },
+    'bottom-center': { left: '50%',   bottom: '92px', cx: 1, oy: 1 },
+    'bottom-right':  { right: '96px', bottom: '92px', cx: 0, oy: 1 },
+    'top-left':      { left: '96px',  top: '84px',    cx: 0, oy: -1 },
+    'top-center':    { left: '50%',   top: '84px',    cx: 1, oy: -1 },
+    'top-right':     { right: '96px', top: '84px',    cx: 0, oy: -1 },
+    'center':        { left: '50%',   top: '50%',     cx: 1, oy: 1 },
+  };
+
+  function chevronSVG(color, size = 72) {
+    const h = Math.round(size * 0.62);
+    return `<svg width="${size}" height="${h}" viewBox="0 0 72 44" xmlns="http://www.w3.org/2000/svg">
+      <path d="M9 7 L36 36 L63 7" fill="none" stroke="${color}" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  /* ============================ scene types ============================ */
+  const TYPES = {};
+
+  /* --- logo-intro / logo-outro --------------------------------------- */
+  function mountLockup(scene, dark) {
+    const layer = el('div', 'scene' + (dark ? '' : ' logo-ground'), stage);
+    const lockup = el('div', 'lockup' + (dark ? ' on-dark' : ''), layer);
+    const grad = dark
+      ? 'linear-gradient(135deg, #8166F0, #A5B4FC)'
+      : 'linear-gradient(135deg, #3A52DF, #6366F1)';
+    const flow = buildMasked(lockup, 'Flow', { cls: 'w-flow' });
+    const gap = el('span', '', lockup); gap.innerHTML = '&nbsp;';
+    gap.style.fontSize = '150px'; gap.style.letterSpacing = '0.10em';
+    const video = buildMasked(lockup, 'Video', { gradient: grad, cls: 'grad' });
+    const dot = el('span', 'dot', lockup);
+    scene._g = [...flow.glyphs, ...video.glyphs];
+    scene._dot = dot;
+    scene._lockup = lockup;
+    return layer;
+  }
+  function frameLockup(scene, tl) {
+    riseFrame(scene._g, tl, { start: 0.10, stagger: 0.058, rise: 0.78, w0: 240, w1: 645 });
+    // tracking settles from airy to confident as the letters land
+    scene._lockup.querySelectorAll('.maskline').forEach(m => {
+      m.style.letterSpacing = `${lerp(0.10, 0.012, eoQuint(seg(tl, 0.1, 1.7))).toFixed(4)}em`;
+    });
+    // the brand dot pops once the wordmark settles, with a tiny double bounce
+    const dp = seg(tl, 1.62, 1.98);
+    let s = eoBack(dp);
+    if (dp >= 1) s = 1 + 0.05 * Math.sin((tl - 1.98) * 9) * Math.exp(-(tl - 1.98) * 4);
+    scene._dot.style.transform = `scale(${Math.max(s, 0)})`;
+  }
+  TYPES['logo-intro'] = {
+    mount(scene) { return mountLockup(scene, false); },
+    frame(scene, tl) { frameLockup(scene, tl); },
+  };
+  TYPES['logo-outro'] = {
+    // Same lockup over the chroma ground — composited over the murmuration.
+    // Chroma-safe: masked rise + scale only, no opacity anywhere.
+    mount(scene) {
+      const layer = mountLockup(scene, true);
+      scene._lockup.style.top = '36%';
+      return layer;
+    },
+    frame(scene, tl) { frameLockup(scene, tl); },
+  };
+
+  /* --- caption-chip ---------------------------------------------------- */
+  TYPES['caption-chip'] = {
+    mount(scene) {
+      const layer = el('div', 'scene', stage);
+      const chip = el('div', 'chip', layer);
+      el('span', 'dot', chip);
+      const t = el('span', 'txt', chip);
+      t.textContent = scene.props.text || '';
+      const p = scene.props.position;
+      let cx = 0, oy = 1;
+      if (p && typeof p === 'object') {
+        chip.style.left = p.x + '%'; chip.style.top = p.y + '%'; cx = 1;
+        oy = p.y > 55 ? 1 : -1;
+      } else {
+        const a = ANCHOR[p] || ANCHOR['bottom-left'];
+        for (const k of ['left', 'right', 'top', 'bottom']) if (a[k]) chip.style[k] = a[k];
+        cx = a.cx; oy = a.oy;
+      }
+      chip.style.transformOrigin = oy === 1 ? 'center bottom' : 'center top';
+      scene._chip = chip; scene._cx = cx; scene._oy = oy;
+      return layer;
+    },
+    frame(scene, tl) {
+      const d = scene.dur;
+      const inU = eoBack(seg(tl, 0, 0.42));
+      const s = inU * exitScale(tl, d, 0.30);
+      const y = lerp(48 * scene._oy, 0, eoExpo(seg(tl, 0, 0.42)));
+      const drift = 3 * Math.sin(tl * 1.4);   // barely-alive idle float
+      scene._chip.style.transform =
+        `${scene._cx ? 'translateX(-50%) ' : ''}translateY(${(y + drift).toFixed(2)}px) scale(${Math.max(s, 0).toFixed(4)})`;
+    },
+  };
+
+  /* --- end-card --------------------------------------------------------- */
+  TYPES['end-card'] = {
+    mount(scene) {
+      const pr = scene.props || {};
+      const chroma = pr.ground === 'chroma';
+      const layer = el('div', 'scene ' + (chroma ? 'ec-chroma' : 'ec-card card-ground'), stage);
+      const line = el('div', 'ec-line', layer);
+      const built = buildMasked(line, pr.line || '', { mode: 'words' });
+      scene._words = built.glyphs;
+      scene._chroma = chroma;
+      if (pr.primary || pr.secondary) {
+        const row = el('div', 'ec-btnrow', layer);
+        if (pr.primary) { const b = el('div', 'btn btn-primary', row); b.textContent = pr.primary; scene._bp = b; }
+        if (pr.secondary) { const b = el('div', 'btn btn-secondary', row); b.textContent = pr.secondary; scene._bs = b; }
+      }
+      if (pr.arrow) {
+        const a = el('div', 'ec-arrow', layer);
+        a.innerHTML = chevronSVG(chroma ? '#FFFFFF' : '#3A52DF', 76);
+        if (chroma) a.style.filter = 'drop-shadow(0 3px 10px rgba(0,0,0,0.55))';
+        scene._arrow = a;
+      }
+      if (!chroma) {
+        const brand = el('div', 'ec-brand', layer);
+        brand.innerHTML = 'Flow Video<b>.</b>';
+        scene._brand = brand;
+      }
+      return layer;
+    },
+    frame(scene, tl) {
+      riseFrame(scene._words, tl, { start: 0.12, stagger: 0.085, rise: 0.7, w0: 300, w1: 640 });
+      const pop = (node, t0) => {
+        if (!node) return;
+        const u = seg(tl, t0, t0 + 0.5);
+        const s = eoBack(u);
+        node.style.transform = `scale(${Math.max(s, 0).toFixed(4)})`;
+        if (!scene._chroma) node.style.opacity = clamp01(u * 2).toFixed(3);  // opaque ground only
+      };
+      pop(scene._bp, 0.72);
+      pop(scene._bs, 0.88);
+      if (scene._arrow) {
+        const au = seg(tl, scene._bp || scene._bs ? 1.1 : 0.85, (scene._bp || scene._bs ? 1.1 : 0.85) + 0.4);
+        const bounce = 20 * Math.pow(Math.sin(Math.max(tl - 1.3, 0) * 2.4), 2) * eioSine(clamp01(au));
+        scene._arrow.style.transform = `translateX(-50%) translateY(${bounce.toFixed(2)}px) scale(${Math.max(eoBack(au), 0).toFixed(4)})`;
+      }
+      if (scene._brand) scene._brand.style.opacity = seg(tl, 1.5, 2.2).toFixed(3);
+    },
+  };
+
+  /* --- four-grid-labels -------------------------------------------------- */
+  TYPES['four-grid-labels'] = {
+    mount(scene) {
+      const layer = el('div', 'scene', stage);
+      const labels = scene.props.labels || ['Touch', 'Ask', 'Choose', 'Their way'];
+      const pos = scene.props.positions || [[25, 41], [75, 41], [25, 90], [75, 90]];
+      scene._plates = labels.map((txt, i) => {
+        const p = el('div', 'plate', layer);
+        if (scene.props.numbered !== false) { const n = el('div', 'num', p); n.textContent = String(i + 1); }
+        const t = el('div', 'txt', p); t.textContent = txt;
+        p.style.left = pos[i][0] + '%';
+        p.style.top = pos[i][1] + '%';
+        return p;
+      });
+      return layer;
+    },
+    frame(scene, tl) {
+      const stagger = scene.props.stagger ?? 0.55;
+      scene._plates.forEach((p, i) => {
+        const u = seg(tl, 0.1 + i * stagger, 0.1 + i * stagger + 0.5);
+        const s = eoBack(u) * exitScale(tl, scene.dur, 0.28);
+        const rot = lerp(-4, 0, eoQuint(u));
+        p.style.transform = `translate(-50%,-50%) rotate(${rot.toFixed(2)}deg) scale(${Math.max(s, 0).toFixed(4)})`;
+      });
+    },
+  };
+
+  /* --- arrow-callout ------------------------------------------------------ */
+  TYPES['arrow-callout'] = {
+    mount(scene) {
+      const pr = scene.props || {};
+      const layer = el('div', 'scene', stage);
+      const tone = pr.tone === 'light' ? 'light' : 'dark';
+      const stroke = tone === 'light' ? '#FFFFFF' : '#121621';
+      const tip = { x: (pr.x ?? 50) * 19.2, y: (pr.y ?? 50) * 10.8 };
+      const side = pr.side || 'up';                 // where the LABEL sits, relative to the tip
+      const len = pr.length ?? 160;
+      const OFF = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[side] || [0, -1];
+      const labelC = { x: tip.x + OFF[0] * (len + 64), y: tip.y + OFF[1] * (len + 46) };
+      const a = { x: tip.x + OFF[0] * len * 0.94, y: tip.y + OFF[1] * len * 0.94 };
+      const b = { x: tip.x + OFF[0] * 16, y: tip.y + OFF[1] * 16 };
+      const perp = [-OFF[1], OFF[0]];
+      const c = { x: (a.x + b.x) / 2 + perp[0] * len * 0.30, y: (a.y + b.y) / 2 + perp[1] * len * 0.30 };
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'callout-svg' + (tone === 'light' ? ' tone-light' : ''));
+      svg.setAttribute('viewBox', '0 0 1920 1080');
+      svg.setAttribute('width', '1920'); svg.setAttribute('height', '1080');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M ${a.x} ${a.y} Q ${c.x} ${c.y} ${b.x} ${b.y}`);
+      path.setAttribute('fill', 'none'); path.setAttribute('stroke', stroke);
+      path.setAttribute('stroke-width', '6.5'); path.setAttribute('stroke-linecap', 'round');
+      svg.appendChild(path);
+      const ang = Math.atan2(b.y - c.y, b.x - c.x) * 180 / Math.PI;
+      const head = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      head.setAttribute('d', 'M 0 0 L -24 -11 L -24 11 Z');
+      head.setAttribute('fill', stroke);
+      head.setAttribute('transform', `translate(${tip.x} ${tip.y}) rotate(${ang.toFixed(1)}) scale(0)`);
+      svg.appendChild(head);
+      layer.appendChild(svg);
+      const chip = el('div', 'co-chip', layer);
+      el('span', 'dot', chip);
+      const t = el('span', 'txt', chip); t.textContent = pr.text || '';
+      chip.style.left = (labelC.x / 19.2) + '%';
+      chip.style.top = (labelC.y / 10.8) + '%';
+      scene._path = path; scene._head = head; scene._chip = chip;
+      scene._tip = tip; scene._ang = ang;
+      scene._plen = path.getTotalLength();
+      path.setAttribute('stroke-dasharray', String(scene._plen));
+      path.setAttribute('stroke-dashoffset', String(scene._plen));
+      return layer;
+    },
+    frame(scene, tl) {
+      const ex = exitScale(tl, scene.dur, 0.30);
+      scene._chip.style.transform = `translate(-50%,-50%) scale(${Math.max(eoBack(seg(tl, 0, 0.42)) * ex, 0).toFixed(4)})`;
+      const draw = eoQuint(seg(tl, 0.28, 0.66));
+      scene._path.setAttribute('stroke-dashoffset', String(scene._plen * (1 - draw * (ex > 0.02 ? 1 : 0))));
+      const hs = Math.max(eoBack(seg(tl, 0.60, 0.85)) * ex, 0);
+      scene._head.setAttribute('transform',
+        `translate(${scene._tip.x} ${scene._tip.y}) rotate(${scene._ang.toFixed(1)}) scale(${hs.toFixed(4)})`);
+      if (ex <= 0.02) scene._path.setAttribute('stroke-dashoffset', String(scene._plen));
+    },
+  };
+
+  /* ============================== driver ============================== */
+  async function ensureFont() {
+    try {
+      if (window.__BRICOLAGE_B64) {
+        const raw = atob(window.__BRICOLAGE_B64);
+        const buf = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+        const ff = new FontFace('Bricolage Grotesque', buf.buffer, { weight: '200 800', style: 'normal', display: 'block' });
+        await ff.load();
+        document.fonts.add(ff);
+      } else {
+        const l = document.createElement('link');
+        l.rel = 'stylesheet';
+        l.href = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=block';
+        document.head.appendChild(l);
+        await new Promise(r => { l.onload = r; l.onerror = r; setTimeout(r, 5000); });
+        await document.fonts.load('600 100px "Bricolage Grotesque"').catch(() => {});
+      }
+      await document.fonts.ready;
+      return document.fonts.check('600 100px "Bricolage Grotesque"');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function renderFrame(t) {
+    for (const s of state.scenes) {
+      const on = t >= s.t0 && t < s.t0 + s.dur;
+      if (on !== s._on) { s._layer.style.display = on ? 'block' : 'none'; s._on = on; }
+      if (on) s._impl.frame(s, t - s.t0);
+    }
+  }
+
+  window.__overlayInit = async function (cfg) {
+    const scenes = Array.isArray(cfg) ? cfg : cfg.scenes;
+    const fontLoaded = await ensureFont();
+    state.scenes = [];
+    stage.textContent = '';
+    let maxEnd = 0;
+    for (const raw of scenes) {
+      const impl = TYPES[raw.type];
+      if (!impl) { console.error('unknown scene type: ' + raw.type); continue; }
+      const s = { ...raw, props: raw.props || {}, _impl: impl, _on: false };
+      s._layer = impl.mount(s);
+      state.scenes.push(s);
+      maxEnd = Math.max(maxEnd, s.t0 + s.dur);
+    }
+    state.total = (!Array.isArray(cfg) && cfg.total) ? cfg.total : maxEnd;
+    state.done = false;
+    window.__overlayDone = false;
+    // Sync beacon: a magenta corner square visible ONLY during preroll. The
+    // recorder locates the first beacon-free frame in the raw take (chroma
+    // U-plane scan) — that frame IS timeline t=0, so the trim needs no
+    // wall-clock guessing.
+    let b = document.getElementById('syncbeacon');
+    if (!b) {
+      b = el('div', '', document.body);
+      b.id = 'syncbeacon';
+      b.style.cssText = 'position:fixed;left:0;top:0;width:32px;height:32px;background:#FF00FF;z-index:2147483647;';
+    }
+    renderFrame(0);                      // preroll shows exactly the t=0 frame
+    return { fontLoaded, scenes: state.scenes.length, total: state.total };
+  };
+
+  window.__overlayStart = function () {
+    const b = document.getElementById('syncbeacon');
+    if (b) b.remove();
+    state.startT = performance.now();
+    const loop = () => {
+      const t = (performance.now() - state.startT) / 1000;
+      if (t >= state.total) {
+        renderFrame(state.total + 1);    // everything off — bare ground
+        state.done = true;
+        window.__overlayDone = true;
+        return;
+      }
+      renderFrame(t);
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  };
+
+  /* Human preview: open index.html#demo in a browser. Never used by the recorder. */
+  if (location.hash === '#demo') {
+    window.__overlayInit({
+      total: 21,
+      scenes: [
+        { id: 'd1', type: 'logo-intro', t0: 0, dur: 3.2, props: {} },
+        { id: 'd2', type: 'caption-chip', t0: 3.6, dur: 3.4, props: { text: 'Smart Crop', position: 'bottom-center' } },
+        { id: 'd3', type: 'arrow-callout', t0: 4.2, dur: 3.2, props: { text: 'drop it here', x: 63, y: 42, side: 'down', tone: 'dark' } },
+        { id: 'd4', type: 'four-grid-labels', t0: 7.6, dur: 4.4, props: {} },
+        { id: 'd5', type: 'end-card', t0: 12.4, dur: 4.4, props: { ground: 'card', line: 'Change one word.', primary: 'Edit this section', secondary: 'New project' } },
+        { id: 'd6', type: 'end-card', t0: 17, dur: 4, props: { ground: 'chroma', line: 'The flock below is live.', arrow: true } },
+        { id: 'd7', type: 'logo-outro', t0: 17.8, dur: 3.2, props: {} },
+      ],
+    }).then(() => window.__overlayStart());
+  }
+})();
+</script>
+</body>
+</html>
