@@ -417,6 +417,28 @@ export async function scrubTo(page, globalSec, totalSec) {
   await page.waitForTimeout(600);
 }
 
+/**
+ * Hold for `ms` while keeping the viewer's chrome on screen.
+ *
+ * The controls auto-hide 2500 ms after the last pointer activity (useProjectPlayer.ts:914 — there
+ * is no hover exemption, so parking the pointer on the bar does NOT keep it up). A shot that wants
+ * the page chrome in frame therefore has to nudge the pointer, and a 1-pixel nudge is invisible:
+ * Chromium's screencast records no OS cursor, and these shots draw none. Nothing moves on screen
+ * except the bar staying where it belongs.
+ */
+export async function holdWithChrome(page, ms, { every = 1800 } = {}) {
+  const bar = await progressBar(page);
+  const p = bar ? { x: bar.x + bar.w * 0.5, y: bar.y + 24 } : { x: 800, y: 860 };
+  const t0 = Date.now();
+  let flip = 0;
+  while (Date.now() - t0 < ms) {
+    await page.waitForTimeout(Math.min(every, Math.max(0, ms - (Date.now() - t0))));
+    if (Date.now() - t0 >= ms) break;
+    await page.mouse.move(p.x + (flip ^= 1), p.y);        // 1px: resets the idle timer, shows nothing
+  }
+  page.__fvMouse = p;
+}
+
 /** Current time of the playing (or first) video. */
 export async function videoTime(page) {
   return page.evaluate(() => {

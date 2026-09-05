@@ -8,22 +8,26 @@
       "fallback": "captures/props/lesson-waves.mp4",
       "sources": [
         {
-          "source": "f4-s1-public-page",
+          "source": "f1-s1-ordinary-video",
           "mode": "fit",
-          "in": 8.5
+          "in": 0.3,
+          "fallback": "f4-s1-public-page",
+          "fallbackIn": 8.5
         },
         {
-          "source": "f4-s1-public-page",
+          "source": "f1-s1-ordinary-video",
           "mode": "fit",
-          "in": 10.5,
+          "in": 2.5,
+          "fallback": "f4-s1-public-page",
+          "fallbackIn": 10.5,
           "zoom": {
             "cx": 0.5,
             "cy": 0.55,
-            "scale": 1.6
+            "scale": 1.5
           }
         }
       ],
-      "reshoot": "beat 1 needs an ORDINARY video playing on a public page — the demo's own page is inside a live window at every playing moment (the demo IS this film), so shoot the doors project's page instead"
+      "note": "an ordinary shared video on its public page — the doors project, the one seeded film with no live windows, so nothing interactive gives the trap away"
     },
     {
       "scene": "2",
