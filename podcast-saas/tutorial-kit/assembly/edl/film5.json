@@ -1,62 +1,20 @@
 {
   "film": 5,
-  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
+  "grammar": "v3: VIDEO beats = narration + real UI captures. `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `zoom` = punch-in. Scenes follow SCRIPT-5-SHARE v3.2 (7 beats).",
   "cuts": [
-    {
-      "scene": "1",
-      "source": "f2-s8-share",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 1
-    },
-    {
-      "scene": "2",
-      "source": "f2-s8-share",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 4
-    },
-    {
-      "scene": "3",
-      "source": "f2-s8-share",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 14
-    },
-    {
-      "scene": "4",
-      "source": "f5-s4-collab-access",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f2-s8-share",
-      "reshoot": "Collaborators invite + Access modes"
-    },
-    {
-      "scene": "5",
-      "source": "f5-s4-collab-access",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f2-s8-share",
-      "in": 8
-    },
-    {
-      "scene": "6",
-      "source": "f5-s5-phone",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "in": 4
-    },
-    {
-      "scene": "7",
-      "source": "f4-s1-public-page",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 12
-    }
+    { "scene": "1", "source": "f2-s8-share", "mode": "fit", "kind": "VIDEO", "in": 6.0, "fallback": "captures/props/lesson-waves.mp4", "note": "'It's built.' — the finished timeline with its section blocks" },
+    { "scene": "2", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [
+        { "source": "f2-s8-share", "mode": "fit", "in": 8.5 },
+        { "source": "f2-s8-share", "mode": "fit", "in": 42.6, "zoom": { "cx": 0.5, "cy": 0.5, "scale": 1.5 } },
+        { "source": "f2-s8-share", "mode": "fit", "in": 43.6, "zoom": { "cx": 0.5, "cy": 0.5, "scale": 1.5 } },
+        { "source": "f2-s8-share", "mode": "fit", "in": 44.6, "zoom": { "cx": 0.5, "cy": 0.5, "scale": 1.5 } }
+      ],
+      "note": "Create link → the sheet → the three rows as the narration names them" },
+    { "scene": "3", "source": "f2-s8-share", "mode": "fit", "kind": "VIDEO", "in": 10.0, "fallback": "captures/props/lesson-waves.mp4" },
+    { "scene": "4", "source": "f5-s4-collab-access", "mode": "fit", "kind": "VIDEO", "in": 0, "fallback": "f2-s8-share", "fallbackIn": 8.6, "reshoot": "Collaborators invite" },
+    { "scene": "5", "source": "f5-s4-collab-access", "mode": "fit", "kind": "VIDEO", "in": 5, "fallback": "f2-s8-share", "fallbackIn": 42.6, "reshoot": "Access modes switched" },
+    { "scene": "6", "source": "f5-s5-phone", "mode": "fit", "kind": "VIDEO", "in": 0, "fallback": "f4-s1-public-page", "fallbackIn": 4, "reshoot": "phone viewer playing (v3 template, no title card)" },
+    { "scene": "7", "source": "f4-s1-public-page", "mode": "fit", "kind": "VIDEO", "in": 12, "fallback": "captures/props/lesson-waves.mp4" }
   ]
 }

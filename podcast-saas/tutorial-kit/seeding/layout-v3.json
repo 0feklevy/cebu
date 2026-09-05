@@ -7,11 +7,11 @@
       {
         "sim": "kinesin",
         "window": [
-          2,
-          10
+          4,
+          12
         ],
-        "label": "Touch the motor",
-        "prompt": "Let viewers scrub the walking cycle and orbit the camera",
+        "label": "Drag the slider",
+        "prompt": "Let viewers scrub the walking cycle and orbit the camera — keep only the cycle slider and Pause.",
         "simpleUI": true
       },
       {
@@ -20,7 +20,7 @@
           25,
           33
         ],
-        "label": "Fly to a planet",
+        "label": "Tap a planet",
         "prompt": "Give viewers the planets \u2014 let them speed up time and fly to any world",
         "simpleUI": true
       },
@@ -30,7 +30,7 @@
           45,
           52
         ],
-        "label": "Steer the flock",
+        "label": "Hit Scatter",
         "prompt": "Let viewers steer the flock \u2014 cohesion, speed, and a scatter button",
         "simpleUI": true
       }
@@ -48,7 +48,7 @@
           51,
           63
         ],
-        "label": "It's live \u2014 touch it",
+        "label": "Tap a planet",
         "prompt": "Give viewers the planets \u2014 let them speed up time and fly to any world",
         "simpleUI": true
       }
@@ -67,8 +67,8 @@
             32,
             44
           ],
-          "label": "Your package, live",
-          "prompt": "Let viewers scrub the walking cycle and switch motors",
+          "label": "Drag the slider",
+          "prompt": "Let viewers scrub the walking cycle and switch motors — keep only those two controls",
           "simpleUI": true
         }
       ]
@@ -82,10 +82,10 @@
         {
           "sim": "orbitLab",
           "window": [
-            6,
-            18
+            3,
+            15
           ],
-          "label": "Launch a planet",
+          "label": "Drag to launch",
           "prompt": "Let viewers launch planets and watch the forces pull them into orbit",
           "simpleUI": true
         }

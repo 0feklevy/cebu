@@ -11,11 +11,11 @@ A seeded **"Welcome to Flow Video" PLAYLIST** per user (dark-gated, migration 08
 (real sim mounts on top at second X, film + narration continue under, auto-return at second Y).
 Window times live in each script's WINDOW MAP line and `seeding/layout-v3.json` (keep in sync):
 1. **The demo project** (the user's own editable clone): `Film 1 · TEASER ~58s` with live
-   windows Kinesin [4,15] · Solar System [25,36] · Murmuration [45,52] → choice doors at end;
+   windows Kinesin [4,12] · Solar System [25,33] · Murmuration [45,52] → choice doors at end;
    ambient sting on A2.
-2. **Film 2 · TUTORIAL "Make Yours"** ~1:36, its OWN project, window Solar System [58,70] ·
+2. **Film 2 · TUTORIAL "Make Yours"** ~1:23, its OWN project, window Solar System [51,63] ·
 3. **Film 3 · "Drop In Anything"** ~51s (retitled from "The Heavy Simulation"), window
-   Kinesin [32,44] · 4. **Film 4 · "Viewer Superpowers"** ~57s, window Orbit Lab [6,18] ·
+   Kinesin [32,44] · 4. **Film 4 · "Viewer Superpowers"** ~57s, window Orbit Lab [3,15] ·
 5. **Film 5 · "One Link, Three Doors"** ~45s, no windows — shared public projects, watch-only.
 The films are the ad AND the proof: the viewer's hand is on the sim while the narration sells.
 

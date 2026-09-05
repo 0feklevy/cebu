@@ -39,6 +39,7 @@ import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KIT  = dirname(HERE);                              // tutorial-kit/
@@ -309,7 +310,24 @@ const SPECS = [
 const cutWindowsFor = (master) => {
   const p = join(KIT, 'assembly/work', master, 'timeline.json');
   if (!existsSync(p)) return null;
-  try { return JSON.parse(readFileSync(p, 'utf8')).windows ?? null; } catch { return null; }
+  let t;
+  try { t = JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
+  if (!t.windows) return null;
+  // THE TIMELINE MUST DESCRIBE THE FILM BEING UPLOADED. Nothing used to tie them together: an old
+  // timeline next to a freshly re-cut film seeded window times belonging to a different edit, and
+  // every assert downstream passed because they all read the same stale numbers. A film with no
+  // timeline is a legitimate state (never assembled) and falls back to the layout; a timeline that
+  // disagrees with the bytes is not.
+  const filmFile = FILMS[master]?.path;
+  if (!filmFile || !t.sha256) return t.windows;
+  const sha = createHash('sha256').update(readFileSync(filmFile)).digest('hex');
+  if (sha !== t.sha256) {
+    console.error(`FATAL: ${master}: ${basename(filmFile)} does not match assembly/work/${master}/timeline.json ` +
+      `(film ${sha.slice(0, 12)} vs timeline ${String(t.sha256).slice(0, 12)}). Re-run assembly/assemble-film.mjs ` +
+      `${master.replace('film', '')} so the seeded window times belong to the cut being uploaded.`);
+    process.exit(1);
+  }
+  return t.windows;
 };
 for (const spec of SPECS) {
   const cut = cutWindowsFor(spec.master);

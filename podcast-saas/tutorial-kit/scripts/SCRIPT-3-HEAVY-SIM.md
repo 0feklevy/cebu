@@ -17,20 +17,20 @@ THE GRAMMAR: the package never appears as footage — it appears ONCE, as a mid-
 WINDOW MAP: kinesin [32,44] → sync layout-v3.json (niche key "heavy").
 
 Voice: same narrator — builder-to-builder, quick and sure. ~150 wpm bursts; "…" and " — " are
-performed pauses. 98 words → ~39s spoken inside 51s.
+performed pauses. ~89 words → ~36s spoken inside 51s.
 Music: confident minimal beat (original bed); CUTS at the window open; riser on return; tag
 sting under the end card.
 
 | # | t | KIND | NARRATION (verbatim TTS input) | ON SCREEN |
 |---|---|---|---|---|
-| 1 | 0:00–0:06 | VIDEO | You built something interactive… and it's trapped in a folder. | Finder, one plain folder of files — somebody's real project (html, css, js, models). No size callouts, no file-count flex. It just sits there. |
-| 2 | 0:06–0:12 | VIDEO | Free it. Zip it. Drop it. That's the entire import. | The zip dragged onto **Library** → whole-Library drop highlight → upload → the package card appears. Anchors: Library drop overlay; package card. |
-| 3 | 0:12–0:20 | VIDEO | Drag across the timeline where it belongs. Then tell it, plain words, what viewers should do. | Drag across **V1** → **Edit Section** → type **Simulation** → the package → **Generate mini model** card; typed fast in **1 · Describe it**, VERBATIM the stored prompt: "Let viewers scrub the walking cycle and switch motors". |
-| 4 | 0:20–0:26 | VIDEO | Simple UI — only your buttons. Auto Script — it demos itself. …Generate. | **Simple UI** ON — click. **Auto Script** ON — click. Punch pause… **✦ Generate with AI**. The full control panel collapses to the two chosen controls in the panel preview. Flip-flip-hit rhythm. |
-| 5 | 0:26–0:32 | VIDEO | Second thoughts? Type them. Bigger timeline… hide that toggle. It remembers — and rewires. | A follow-up instruction typed into the SAME **Generate mini model** box → **✦ Generate with AI** → the **Last generation** card refreshes (the AI reloads the saved conversation server-side — verified). |
-| 6 | 0:32–0:38 | LIVE-WINDOW kinesin | And here's what your viewers get. Go on — scrub it. | WINDOW OPENS t=32 (label chip "Your package, live"): the REAL sim mounts on top of the film, minimal UI — scrub + motor switch only. Music out. Their hand on your work. |
+| 1 | 0:00–0:06 | VIDEO | Anything that runs in a browser… can run inside your video. | Finder, one plain folder of files — somebody's real project (html, css, js, models). No size callouts, no file-count flex. It just sits there. |
+| 2 | 0:06–0:12 | VIDEO | Got one? Zip it. Drop it. That's the entire import. | The zip dragged onto **Library** → whole-Library drop highlight → upload → the package card appears. Anchors: Library drop overlay; package card. |
+| 3 | 0:12–0:20 | VIDEO | Drag across the timeline where it belongs. Then tell it, plain words, what viewers should do. | Drag across **V1** → **Edit Section** → type **Simulation** → the package → **Generate mini model** card; typed fast in **1 · Describe it**, VERBATIM the stored prompt (= layout-v3 "heavy" prompt): "Let viewers scrub the walking cycle and switch motors — keep only those two controls". |
+| 4 | 0:20–0:26 | VIDEO | Simple UI — only your buttons. Auto Script — it demos itself. …Generate. | **Simple UI** ON — click. **Auto Script** ON — click. Punch pause… **✦ Generate with AI**; generation runs, the **Last generation** card lands. Flip-flip-hit rhythm. NO preview tile here — the rendered sim appears ONLY in the window at 0:32; the proof is the viewer's hand, not a capture. |
+| 5 | 0:26–0:32 | VIDEO | Second thoughts? Type them. Bigger timeline… hide that toggle. It remembers — and rewires. | The follow-up typed into the SAME **Generate mini model** box, verbatim: "Hide the Teaching playback slider too" → **✦ Generate with AI** → the **Last generation** card refreshes (the AI reloads the saved conversation server-side — verified). |
+| 6 | 0:32–0:38 | LIVE-WINDOW kinesin | Your viewers' side. Go on — drag the slider. | WINDOW OPENS t=32 (label chip "Drag the slider"): the REAL sim mounts on top of the film, minimal UI — scrub + motor switch only. Music out. Their hand on your work. |
 | 7 | 0:38–0:44 | LIVE-WINDOW kinesin (cont.) | That's your work — live, mid-video, in their hands. | Scrub drags the walking cycle; motor switch flips. AUTO-RETURN t=44 — riser. |
-| 8 | 0:44–0:51 | VIDEO | Whatever you've built… drop it in. Flow Video puts it on stage. | End card: **"Drop in anything."** Button: **"Add a simulation"**. |
+| 8 | 0:44–0:51 | VIDEO | Whatever you've built… drop it in. Put it on stage. — Flow Video. | End card: **"Drop yours in."** (the overlay's end line). Button: **"Add a simulation"**. |
 
 Beat discipline: 8 beats, none over 7s. The spine is do-this: zip → drop → write → flip → flip →
 generate → touch the proof.

@@ -9,7 +9,7 @@
     "narratorLines": 10,
     "silentBeats": 0,
     "viewerLines": 0,
-    "words": 110
+    "words": 115
   },
   {
     "film": 2,
@@ -21,7 +21,7 @@
     "narratorLines": 12,
     "silentBeats": 0,
     "viewerLines": 0,
-    "words": 181
+    "words": 174
   },
   {
     "film": 3,
@@ -33,7 +33,7 @@
     "narratorLines": 8,
     "silentBeats": 0,
     "viewerLines": 0,
-    "words": 90
+    "words": 89
   },
   {
     "film": 4,
@@ -45,7 +45,7 @@
     "narratorLines": 10,
     "silentBeats": 1,
     "viewerLines": 1,
-    "words": 92
+    "words": 84
   },
   {
     "film": 5,
@@ -57,6 +57,6 @@
     "narratorLines": 7,
     "silentBeats": 0,
     "viewerLines": 0,
-    "words": 81
+    "words": 84
   }
 ]

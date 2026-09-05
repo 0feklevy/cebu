@@ -10,18 +10,18 @@ page loading for real.
 WINDOW MAP: none → layout-v3.json (niche key "doors", windows: []).
 
 Voice: same narrator — steady, certain, hands-in-pockets. ~150 wpm bursts; "…" and " — " are
-performed pauses. 82 words → ~33s spoken inside 45s.
+performed pauses. ~85 words → ~34s spoken inside 45s.
 Music: calm closing groove (original bed), a small lift at each door named, resolves on the
 brand line.
 
 | # | t | KIND | NARRATION (verbatim TTS input) | ON SCREEN |
 |---|---|---|---|---|
 | 1 | 0:00–0:03 | VIDEO | It's built. …Open the doors. | The finished project in the editor — one confident hold on the timeline. |
-| 2 | 0:03–0:13 | VIDEO | Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable. | **Create link** → **Share this video** sheet → the three rows, cursor tapping each AS IT'S NAMED: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. |
+| 2 | 0:03–0:13 | VIDEO | Hit Create link. One link — three doors: your video… a podcast that answers voice questions… your whole library, browsable. | **Create link** → **Share this video** sheet (its tabs: **Public page** / **Private link**) → the three addresses, cursor tapping each AS IT'S NAMED: Video `/slug` · Podcast `/slug/audio` (**Create podcast**) · Library `/slug/library`. CAPTURE RULE: film the addresses exactly where the sheet really shows them — invent no row. |
 | 3 | 0:13–0:20 | VIDEO | Claim your address, and publish. That's the link for the slide, the bio, the syllabus. | **Public page** tab → permalink typed → **Publish at this address** → URL copied → a quick REAL load of the public page. |
-| 4 | 0:20–0:27 | VIDEO | Got a team? Invite them. They edit — you stay the owner. | **Collaborators** section → invite by email → role visible. Anchor: CollaboratorsSection. |
-| 5 | 0:27–0:33 | VIDEO | And Access decides who watches. Everyone… link-holders… or just you. | **Access** select toggled through its modes, in Video settings. FRAME RULE: crop above the Access header line mentioning price — no money on camera. |
-| 6 | 0:33–0:39 | VIDEO | Publish public, and viewers need nothing. No app. No account. No download. | The public page loading on laptop + phone frames side by side (REAL captures); a sim section touched once on each — alive on both. |
+| 4 | 0:20–0:27 | VIDEO | Now open Settings. Got a team? Invite them — they edit, you stay the owner. | VISIBLE SURFACE CHANGE: leave the share sheet, open **Video settings** → **Collaborators** → invite by email → role visible. Anchor: CollaboratorsSection. Collaborators is NOT in the share sheet — never cut as if it were. |
+| 5 | 0:27–0:33 | VIDEO | And Access decides who watches. Everyone… link-holders… or just you. | Same **Video settings** modal: the **Access** select toggled through its three modes (Private / Unlisted / Public). FRAME RULE: crop above the Access header line mentioning price — no money on camera. |
+| 6 | 0:33–0:39 | VIDEO | Publish public, and viewers need nothing. No app. No account. No download. | The public page loading on laptop + phone frames side by side (REAL captures): the page lands, play starts on both — no sign-in wall anywhere in frame. No sim imagery (sims appear only as live windows; this film has none). |
 | 7 | 0:39–0:45 | VIDEO | Build once. Share one link. Teach everywhere. — Flow Video. | End card: **"Ship yours."** Button: **"Create link"**. |
 
 Beat discipline: 7 beats, none over 8s; a new door or surface every beat.
@@ -29,4 +29,7 @@ Beat discipline: 7 beats, none over 8s; a new door or surface every beat.
 HONESTY RULES (non-negotiable): no pricing/monetization claims (Access controls WHO watches;
 money stays off camera — frame rule in beat 5); "viewers need nothing" is explicitly bound to
 PUBLISH PUBLIC (true for public visibility; never said as an always); the beat-6 loads are real
-device captures, sim touched live on each.
+device captures of the public page with no sign-in wall in frame; SURFACES ARE TWO, NOT ONE
+(verified 2026-09-05) — the share sheet holds the addresses (Public page / Private link), while
+Collaborators and Access live in the **Video settings** modal, so beat 4 makes the move to
+Settings explicit and no cut may imply they sit behind Create link.

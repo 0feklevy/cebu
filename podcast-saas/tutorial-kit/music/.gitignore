@@ -1,0 +1,5 @@
+# Generated audio inside music/ — the kit's root .gitignore covers music/*.wav only,
+# not these subdirectories. Same rule: the repo carries the factory, not the output.
+synth-v2/*.wav
+sfx/*.wav
+takes/

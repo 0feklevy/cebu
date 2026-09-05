@@ -1,68 +1,16 @@
 {
   "film": 3,
-  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top, so the video underneath is a neutral plate (never seen). 'reshoot' marks shots invalidated by product/UI changes or missing.",
+  "grammar": "v3: VIDEO beats = narration + real UI captures; LIVE-WINDOW beats = the product's mid-roll section plays the REAL sim on top (neutral plate underneath). `in` = offset into the intended shot; `fallbackIn` = offset into the stand-in. `zoom` = punch-in. Scenes follow SCRIPT-3-HEAVY-SIM (\"Drop In Anything\") v3.2 (8 beats).",
   "cuts": [
-    {
-      "scene": "1",
-      "source": "f3-s2-heavy-drop",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 1,
-      "note": "the folder/zip beat \u2014 reshoot as Finder\u2192zip\u2192drop if time"
-    },
-    {
-      "scene": "2",
-      "source": "f3-s2-heavy-drop",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 8
-    },
-    {
-      "scene": "3",
-      "source": "f3-s3-simple-ui",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "reshoot": "Generate mini model label"
-    },
-    {
-      "scene": "4",
-      "source": "f3-s3-simple-ui",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 14,
-      "reshoot": "toggles + Generate (new label)"
-    },
-    {
-      "scene": "5",
-      "source": "f3-s4-iteration",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "reshoot": "follow-up typed into Generate mini model"
-    },
-    {
-      "scene": "6",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "7",
-      "source": "assembly/plates/under-window.mp4",
-      "mode": "loop",
-      "kind": "LIVE-WINDOW"
-    },
-    {
-      "scene": "8",
-      "source": "f4-s1-public-page",
-      "mode": "fit",
-      "kind": "VIDEO",
-      "fallback": "captures/props/lesson-waves.mp4",
-      "in": 4
-    }
+    { "scene": "1", "source": "f3-s2-heavy-drop", "mode": "fit", "kind": "VIDEO", "in": 24, "fallback": "captures/props/lesson-waves.mp4", "note": "'anything that runs in a browser': the Library with the dropped package among the cards" },
+    { "scene": "2", "kind": "VIDEO", "fallback": "captures/props/lesson-waves.mp4",
+      "sources": [ { "source": "f3-s2-heavy-drop", "mode": "fit", "in": 14.3 }, { "source": "f3-s2-heavy-drop", "mode": "fit", "in": 26.8, "zoom": { "cx": 0.3, "cy": 0.5, "scale": 1.5 } } ],
+      "note": "Zip it. Drop it. — the drop (15.1) then the card landing" },
+    { "scene": "3", "source": "f3-s3-simple-ui", "mode": "fit", "kind": "VIDEO", "in": 0, "fallback": "captures/props/lesson-waves.mp4", "zoom": { "cx": 0.78, "cy": 0.45, "scale": 1.6 }, "reshoot": "drag across V1 → Simulation → the Generate mini model card; prompt typed verbatim" },
+    { "scene": "4", "source": "f3-s3-simple-ui", "mode": "fit", "kind": "VIDEO", "in": 5, "fallback": "captures/props/lesson-waves.mp4", "zoom": { "cx": 0.78, "cy": 0.55, "scale": 1.8 }, "reshoot": "both toggles flipped + Generate (new label)" },
+    { "scene": "5", "source": "f3-s4-iteration", "mode": "fit", "kind": "VIDEO", "in": 0, "fallback": "captures/props/lesson-waves.mp4", "zoom": { "cx": 0.78, "cy": 0.45, "scale": 1.6 }, "reshoot": "follow-up typed into Generate mini model → Generate" },
+    { "scene": "6", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "7", "source": "assembly/plates/under-window.mp4", "mode": "loop", "kind": "LIVE-WINDOW" },
+    { "scene": "8", "source": "f4-s1-public-page", "mode": "fit", "kind": "VIDEO", "in": 10, "fallback": "captures/props/lesson-waves.mp4", "voDelay": 0.4 }
   ]
 }
