@@ -379,7 +379,7 @@ async function verifyConfigs() {
         // A section marked simple_ui with an empty hide list hides nothing — the flag alone is not
         // Minimal UI, and the viewer sees the package's full authoring panel. Assert the list the
         // player is actually handed, not the intention.
-        const layoutHide = (spec.windows.find((x) => x.sim === w.sim)?.uiHide) ?? [];
+        const layoutHide = (SPECS.find((sp) => sp.key === rec.key)?.windows ?? []).find((x) => x.sim === w.sim)?.uiHide ?? [];
         if (layoutHide.length) {
           A(`${rec.key} · ${w.sim}: Simple UI has a hide list to act on`,
             Array.isArray(s?.ui_hide) && s.ui_hide.length === layoutHide.length,
@@ -956,9 +956,19 @@ function undeclaredHelpers(body) {
   const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
   return TEMPLATE_HELPERS.filter((name) => {
     if (!new RegExp(`(^|[^\\w$.])${name}\\b`).test(code)) return false;
-    const declared = new RegExp(`\\b(var|let|const|function)\\s+${name}\\b`).test(code)
+    const declRe = new RegExp(`\\b(var|let|const|function)\\s+${name}\\b`);
+    const declared = declRe.test(code)
       || new RegExp(`\\b(var|let|const)\\s+[^;]*\\b${name}\\s*=`).test(code);     // var a = [], _ivs = []
-    return !declared;
+    if (!declared) return true;
+    // DECLARED IS NOT ENOUGH when the declaration is `let`/`const`: those are in the temporal dead
+    // zone until the line that declares them, so a body that pushes into `_hidden` and declares it
+    // further down throws "Cannot access '_hidden' before initialization" at activation — a
+    // different message from the undeclared case and exactly as fatal (observed on demo/murmuration,
+    // which the earlier undeclared-only gate passed).
+    const tdzDecl = new RegExp(`\\b(let|const)\\s+([^;]*\\b)?${name}\\b`).exec(code);
+    if (!tdzDecl) return false;
+    const firstUse = new RegExp(`(^|[^\\w$.])${name}\\b`).exec(code);
+    return !!firstUse && firstUse.index < tdzDecl.index;
   });
 }
 async function gateWindow(w) {
@@ -1040,8 +1050,37 @@ async function syncWindowsFromRows(jobs) {
     }
   }
 }
+/**
+ * THE HIDE LIST HAS TO BE WRITTEN AFTER GENERATION, NOT WITH THE SECTION.
+ * `simple_ui: true` on its own hides nothing: the player builds its cloak from `ui_hide`, which
+ * buildPlayerConfig reads out of `sim_meta.uiControls.hide`. Setting it at section-create looked
+ * right and did nothing, because generating the bridge rewrites `sim_meta` wholesale (plan,
+ * conversationHistory, bridgeHash) and takes the selectors with it. So it is (re)applied here, on
+ * the settled row, and merged rather than assigned.
+ */
+async function applyHideLists(jobs) {
+  for (const { rec, w } of jobs) {
+    const hide = (SPECS.find((sp) => sp.key === rec.key)?.windows ?? []).find((x) => x.sim === w.sim)?.uiHide;
+    if (!hide?.length || !w.sectionId) continue;
+    try {
+      const row = await jOk('GET', `/api/v1/projects/${rec.projectId}/sections/${w.sectionId}`, undefined, `read ${rec.key}/${w.sim}`);
+      const meta = row?.sim_meta && typeof row.sim_meta === 'object' ? row.sim_meta : {};
+      const already = Array.isArray(meta.uiControls?.hide) && meta.uiControls.hide.length === hide.length;
+      if (already) continue;
+      await jOk('PATCH', `/api/v1/projects/${rec.projectId}/sections/${w.sectionId}`,
+        { sim_meta: { ...meta, uiControls: { ...(meta.uiControls ?? {}), hide } } },
+        `${rec.key}/${w.sim}: minimal-UI hide list`);
+      w.uiHide = hide;
+      saveT();
+    } catch (e) {
+      w.uiHideError = e.message;
+      log(`  WARN [${rec.key}/${w.sim}] could not set the minimal-UI hide list: ${e.message}`);
+    }
+  }
+}
 async function runGate(jobs) {
   await syncWindowsFromRows(jobs);
+  await applyHideLists(jobs);
   await mapWithLimit(jobs, 3, async ({ rec, w }) => {
     const id = `GATE-${rec.key}-${w.sim}`;
     for (let round = 0; ; round++) {
