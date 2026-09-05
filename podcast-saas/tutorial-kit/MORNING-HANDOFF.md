@@ -1,3 +1,9 @@
+> ⚠️ **SUPERSEDED (2026-09-05 midday)** — the owner reviewed this cut and rejected it ("stuck and boring").
+> A v3 overhaul is in progress: live mid-roll simulation windows instead of captured footage,
+> scripts rewritten, driving music, energetic free-voice narration, layout-driven template,
+> editor sim-loading performance fix. Follow `PRODUCTION-PLAN.md` § "v3 PIVOT" and
+> `CREATIVE-BRIEF.md` (v4 header) for the current truth; this file is kept as the record of cut 1.
+
 # בוקר טוב — דוח המסירה של ריצת הלילה (2026-09-05)
 
 ## מה מחכה לך
