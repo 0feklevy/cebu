@@ -218,6 +218,7 @@ function renderPart(src, dur, inSec, loop, out, zoom) {
   const got = probe(out);
   return Number.isFinite(got) ? got : 0;
 }
+const FILL_TOLERANCE = 0.09;   // ~2.5 frames: container rounding, not a missing shot
 const parts = [];
 for (const t of timeline) {
   const subs = Array.isArray(t.cut.sources) && t.cut.sources.length
@@ -238,11 +239,18 @@ for (const t of timeline) {
     // The retry used to loop ANY short source: a UI capture that ran out replayed its own gesture,
     // and worse, a part that stayed short shifted every later scene early against the voice, which
     // the old 0.25 s tolerance let through silently. Now the fill is asserted.
-    let got = renderPart(src, each, inSec, sub.mode === 'loop', part, zoom);
-    if (got < each - 1 / 30) got = renderPart(src, each, inSec, true, part, zoom);
-    if (!(got >= each - 1 / 30)) {
-      throw new Error(`scene ${t.scene}.${i}: ${src} yields ${got.toFixed(2)}s of the ${each.toFixed(2)}s it must fill ` +
-        `(in=${inSec}) — shorten the beat, add a sub-cut, or mark the source mode:"loop"`);
+    // LOOPING IS FOR PLATES, NOT FOR SHOTS. The retry used to promote ANY short source to a loop,
+    // so a VIDEO beat whose take could not fill its slot shipped as a strobe — film 1's ask beat
+    // repeated 0.7 s of footage five times and the build said nothing. A shot that is too short is
+    // a shot problem; only a source explicitly marked `mode: "loop"` (the simulation plates, whose
+    // motion is continuous by construction) may repeat.
+    const mayLoop = sub.mode === 'loop' || t.cut.mode === 'loop';
+    let got = renderPart(src, each, inSec, mayLoop, part, zoom);
+    if (got < each - FILL_TOLERANCE && mayLoop) got = renderPart(src, each, inSec, true, part, zoom);
+    if (!(got >= each - FILL_TOLERANCE)) {
+      throw new Error(`scene ${t.scene}.${i}: ${basename(src)} yields ${got.toFixed(2)}s of the ${each.toFixed(2)}s it must fill ` +
+        `(in=${inSec.toFixed(2)}) — shorten the beat, add a sub-cut, point it at a longer take, or mark it mode:"loop" ` +
+        `if it is a plate whose motion may repeat`);
     }
     parts.push({ file: part, scene: `${t.scene}.${i}`, src });
   });
@@ -322,7 +330,9 @@ const riser = join(SFX_DIR, 'riser-1200ms.wav');
 // One riser per window, crested on the auto-return. At end−1.2 it finished before the picture came
 // back AND overlapped the last spoken line; end−1.0 with the wider window tail (see the timeline)
 // puts the crest on the cut.
-if (existsSync(riser)) for (const w of windows) sfxPlacements.push({ file: riser, at: Math.max(0, w.end - 1.0) });
+// The riser's crest is ~0.45 s from its end, so placing the file at end-1.0 crested half a second
+// BEFORE the picture came back and was already decaying at the return. It lands on the cut now.
+if (existsSync(riser)) for (const w of windows) sfxPlacements.push({ file: riser, at: Math.max(0, w.end - 0.55) });
 for (const t of timeline) {
   for (const s of t.cut.sfx ?? []) {
     const f = s.file.startsWith('/') ? s.file : join(KIT, s.file);

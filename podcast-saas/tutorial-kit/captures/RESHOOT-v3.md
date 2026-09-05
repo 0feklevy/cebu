@@ -32,7 +32,7 @@ full-frame on the package's own public URL, driven through the simulation's own 
 
 | plate | length | motion | replaces the window in |
 |---|---|---|---|
-| `plate-kinesin.webm` | 16.40 s | camera orbit + Cycle-position swept both ways (the motor walks) | film1 sc2 · film3 |
+| `plate-kinesin.webm` | 21.04 s | camera orbit + Cycle-position swept both ways (the motor walks), **panel reduced to the cycle slider and Pause — no "ASSET PROOF"** | film1 sc2 · film3 |
 | `plate-solar.webm` | 11.56 s | time-lapse pushed up, camera flown to Jupiter and back out | film1 sc6 · film2 |
 | `plate-murmuration.webm` | 12.64 s | pointer swept through the flock, Scatter, re-form | film1 sc9 |
 | `plate-orbitlab.webm` | 17.60 s | two planets launched by drag, falling into orbit | film4 sc2-3 |
@@ -41,11 +41,22 @@ full-frame on the package's own public URL, driven through the simulation's own 
 (nothing may open black), and mean frame-to-frame difference ≥ 0.8 across the clip (nothing may be
 static). Current: luma 21-59, motion 0.9-12.5, all pass.
 
-**Two follow-ups for whoever wires these in:** `assemble-film.mjs:238` excludes `under-window` from
-its own dark-frame guard — that exemption should go once real plates are in, so the guard can see
-them; and each sim's own control card is visible in its plate (it is part of the simulation a viewer
-sees in the window, not product chrome), including the kinesin package's "ASSET PROOF" header, which
-may want hiding if the plate is ever shown full-frame in a film.
+**Follow-ups for whoever wires these in:**
+
+- `assemble-film.mjs:238` excludes `under-window` from its own dark-frame guard — that exemption
+  should go once real plates are in, so the guard can see them.
+- `plate-kinesin` is recorded by its OWN shot (`shots/plate-kinesin.mjs`), not by `plates.mjs`,
+  because the package shows an "ASSET PROOF" eyebrow when it runs unhidden. That shot tries the
+  demo's window first and falls back to the section's package URL with the product's own boot-hide
+  (`shared/src/sim/simUrl.ts:105`) keeping only the cycle slider and Pause. It ASSERTS the result,
+  so it cannot silently record the dev label again.
+- **The window path is currently unusable, and this is a product finding, not a capture one:** the
+  served share config gives every simulation section `simple_ui: true` with **no hide list at all**,
+  so the viewer emits `#simboot={"hide":[]}` and Minimal UI hides nothing. A real viewer opening the
+  demo's kinesin window sees the full panel, ASSET PROOF included. Once the seeding populates that
+  list, re-running the shot will use the window automatically.
+- The other three plates still show their sims' own control cards, which is what a viewer sees in
+  the window; only kinesin carried a dev label.
 
 ## Capture conventions (v3, this session)
 

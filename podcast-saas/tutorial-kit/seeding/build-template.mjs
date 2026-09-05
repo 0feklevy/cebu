@@ -376,6 +376,15 @@ async function verifyConfigs() {
           s ? `[${s.start_sec}-${s.end_sec}]` : 'n/a');
         A(`${rec.key} · ${w.sim}: simulation_url present (generated)`, !!s?.simulation_url, s?.simulation_url ?? 'NULL');
         A(`${rec.key} · ${w.sim}: poster_url stored`, !!s?.poster_url, s?.poster_url ?? 'NULL');
+        // A section marked simple_ui with an empty hide list hides nothing — the flag alone is not
+        // Minimal UI, and the viewer sees the package's full authoring panel. Assert the list the
+        // player is actually handed, not the intention.
+        const layoutHide = (spec.windows.find((x) => x.sim === w.sim)?.uiHide) ?? [];
+        if (layoutHide.length) {
+          A(`${rec.key} · ${w.sim}: Simple UI has a hide list to act on`,
+            Array.isArray(s?.ui_hide) && s.ui_hide.length === layoutHide.length,
+            `ui_hide=${JSON.stringify(s?.ui_hide ?? null)} (layout asks for ${layoutHide.length})`);
+        }
       }
     }
     if (rec.kind === 'demo') {
@@ -798,6 +807,13 @@ async function buildProject(rec, spec) {
         start_sec: fit.start, end_sec: fit.end, sort_order: (i + 1) * 10,
         simulation_id: rec.sims[w.sim].id, label: w.label,
         simple_ui: row.simpleUI, auto_script: true,
+        // THE HIDE LIST IS WHAT SIMPLE UI ACTUALLY ACTS ON. `simple_ui: true` with no selectors
+        // cloaks nothing: the player only builds its `__simHideUi` style from `ui_hide`, which
+        // buildPlayerConfig reads out of `sim_meta.uiControls.hide`. Seeding used to set the flag
+        // and the prompt and leave the list empty, so a viewer opening the demo's kinesin window
+        // got the package's whole authoring panel — "ASSET PROOF" heading, motor picker, teaching
+        // playback — on a section whose prompt asks for the cycle slider and Pause.
+        ...(w.uiHide?.length ? { sim_meta: { uiControls: { hide: w.uiHide } } } : {}),
       }, `${spec.key}: create window section ${w.label}`);
       row.sectionId = sec.id; row.simulation_id = rec.sims[w.sim].id;
       row.start_sec = sec.start_sec; row.end_sec = sec.end_sec;

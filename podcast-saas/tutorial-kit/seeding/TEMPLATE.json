@@ -1,11 +1,11 @@
 {
   "version": 3,
-  "builtAt": "2026-09-05T20:11:26.725Z",
+  "builtAt": "2026-09-05T20:50:42.273Z",
   "finishedAt": null,
   "api": "http://127.0.0.1:8080",
   "appUrl": null,
   "layoutFile": "seeding/layout-v3.json",
-  "layoutComment": "v3 experience layout — MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth — retime both together). Each window: sim key → { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }.",
+  "layoutComment": "v3 experience layout — MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth — retime both together). Each window: sim key → { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }. `uiHide` is the MECHANICAL selector list Simple UI hides — the prompt says what in words, this is what the player is handed; an empty list cloaks nothing.",
   "kinesin_note": "Kinesin embedded per owner instruction for the LOCAL review build; PUBLIC seeding still requires the CGTrader license clearance recorded in the kinesin project's STATUS.md.",
   "steps": [
     {
@@ -18,30 +18,25 @@
       "id": "cleanup",
       "title": "Previous run deleted (recreation)",
       "status": "done",
-      "detail": "playlists=1 projects=5 failures=0"
+      "detail": "playlists=0 projects=2 failures=0"
     },
     {
       "id": "P-demo-create",
       "title": "Welcome to Flow Video: project created",
       "status": "done",
-      "detail": "a0dba83e-096b-4ca4-b50b-7d2db31fb3ee"
+      "detail": "de2affc0-c078-4862-bd92-b781a3bea8c6"
     }
   ],
   "previousRunCleanup": {
-    "playlists": [
-      "9394b0ef-d89a-48c2-b114-0cf853c83bd2"
-    ],
+    "playlists": [],
     "projects": [
-      "1a32eeeb-2beb-4b35-abb6-07b65d1615de",
-      "9f37fdec-6202-49cb-bad8-974be481b181",
-      "434f6263-2f6c-4bcb-b8c9-74b38965894b",
-      "67dcef21-abec-4809-8ad9-b4c5951ddd04",
-      "b2ce1211-09ee-43b2-ac7b-ee1c2fdac1ae"
+      "1c9da5af-9c68-4431-a796-8c3bba3da8d3",
+      "0966c304-bbae-4e5e-8385-26b06c16d439"
     ],
     "failures": []
   },
   "createdProjectIds": [
-    "a0dba83e-096b-4ca4-b50b-7d2db31fb3ee"
+    "de2affc0-c078-4862-bd92-b781a3bea8c6"
   ],
   "demo": {
     "kind": "demo",
@@ -49,7 +44,7 @@
     "title": "Welcome to Flow Video",
     "topic": "Touch this video. Steer a flock, fly to a planet, scrub a molecular motor — live, inside the film.",
     "master": "film1",
-    "projectId": "a0dba83e-096b-4ca4-b50b-7d2db31fb3ee",
+    "projectId": "de2affc0-c078-4862-bd92-b781a3bea8c6",
     "video": null,
     "sims": {},
     "windows": [],

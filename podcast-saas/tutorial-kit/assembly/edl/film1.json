@@ -39,33 +39,33 @@
     },
     {
       "scene": "3",
-      "source": "f1-s3-return",
+      "source": "f4-s1-public-page",
       "mode": "fit",
       "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "fallbackIn": 2,
+      "fallback": "captures/props/lesson-waves.mp4",
       "voDelay": 0.4,
-      "reshoot": "the public page right after the kinesin window auto-returns: section marker lit on the progress bar, punch-in",
-      "atBeat": "returned"
+      "reshoot": "f1-s3-return is a HUNG take — poster ▶ still up, sim panel still mounted, two Ask! buttons, sim clock frozen at 1.66s. Re-shoot waiting on the real post-return state, and assert the sim clock advances.",
+      "atBeat": "start"
     },
     {
       "scene": "4",
-      "source": "f1-s3-ask-surface",
+      "source": "f4-s1-public-page",
       "mode": "fit",
       "kind": "VIDEO",
-      "fallback": "f4-s1-public-page",
-      "fallbackIn": 4,
-      "reshoot": "ask surface must actually open (Ask! → panel); chips render; never an error card",
-      "atBeat": "click"
+      "fallback": "captures/props/lesson-waves.mp4",
+      "reshoot": "the ask surface itself — blocked on avatar credentials (Anam answers 401 locally). The take in hand holds 0.42s of ask action against a 4s beat and leaks two unrevealed sims into a VIDEO beat.",
+      "in": 11.5
     },
     {
       "scene": "5",
+      "kind": "VIDEO",
+      "fallback": "f4-s1-public-page",
+      "reshoot": "cards still carry the v2 title 'The Heavy Simulation' (film 3 is now 'Drop In Anything'); re-shoot on the v3 template",
       "source": "f4-s4-branching",
       "mode": "fit",
-      "kind": "VIDEO",
-      "in": 30,
-      "fallback": "f4-s1-public-page",
-      "reshoot": "doors overlay on the v3 template (current capture shows v2 titles)"
+      "in": 33.8,
+      "fallbackAtBeat": "start",
+      "note": "the capture already contains the pick and the branch jump — verified: card lights up at src 36.40, flash to black 37.76, destination paints 38.08; in:30 landed the whole beat in the dead hold before any of it"
     },
     {
       "scene": "6",
@@ -110,11 +110,6 @@
           "fallback": "f2-s4-this-moment",
           "mode": "fit",
           "fallbackIn": 14.0,
-          "zoom": {
-            "cx": 0.78,
-            "cy": 0.45,
-            "scale": 1.8
-          },
           "atBeat": "card"
         },
         {
@@ -122,11 +117,6 @@
           "fallback": "f2-s4-this-moment",
           "mode": "fit",
           "fallbackIn": 21.4,
-          "zoom": {
-            "cx": 0.78,
-            "cy": 0.55,
-            "scale": 1.8
-          },
           "atBeat": "generate"
         },
         {

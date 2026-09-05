@@ -68,13 +68,12 @@ import { fileURLToPath } from 'node:url';
 // THE TABLE — prompts, lengths, plans. Edit here, nowhere else.
 // =========================================================================
 
-// Film lengths = the assembler's own derived totals (assembly/work/film*/timeline.json).
-// Films 2–5 read 86.71 / 53.10 / 59.19 / 45.45 s and have been stable since 13:31.
-// FILM 1 IS VOLATILE: it was re-derived three times during this session (59.25 →
-// 62.93 → 61.90 s within an hour, while its scenes were being re-cut), so its
-// entry carries the LARGEST value observed, not the latest — the gate must not
-// be tuned to a number that is still moving. Re-read the timelines before
-// trusting these; `--dry-run` prints what the table currently believes.
+// Film lengths = the assembler's own derived totals (assembly/work/film*/timeline.json),
+// re-read 2026-09-05 20:20 UTC: 60.93 / 86.47 / 51.93 / 58.83 / 45.47 s.
+// THESE MOVE CONSTANTLY — every one of the five was re-derived four times during
+// this session (film 1: 59.25 → 62.93 → 61.90 → 60.93 s), so treat any number
+// here as stale and re-read the timelines before trusting a margin. What makes
+// that safe is the margin policy below, not the accuracy of these figures.
 // The VO is about to be re-recorded and will move each total again, so every bed
 // is ≥ 3 s longer than its film (and selection prefers ≥ 5 s — see VO_DRIFT) and
 // the assembler trims it (atrim=0:total) — the trim must never reach silence.
@@ -85,10 +84,15 @@ const NEVER_SILENT = 'Drums and bass keep going in every section — never a dro
 
 const BEDS = [
   {
-    // dropAt tracks film 1's FIRST live window, which is where the assembler ducks the bed −97 %:
-    // the drop has to land ON the window's open, not before it. layout-v3.json moved that window
-    // from [2,10] to [4,12] in the v3.1 re-cut, so the drop moved 2 s later with it.
-    name: 'bed-teaser', film: 1, title: 'Touch This Video', filmLen: 62.93, lengthMs: 66000, dropAt: 4.0,
+    // dropAt is where the composed drop must LAND IN THE MIX, and the one rule is that it must not
+    // land inside a live window: the assembler ducks the bed −97 % for the whole window, so a drop
+    // aligned to a window's open is a drop nobody hears. Film 1: scene 1 (the "ordinary video"
+    // shot) runs 0.0–4.0 s and the first window is [4,12]. 1.2 s puts the arrival inside beat 1 —
+    // the ad opens with the music arriving, the music ducks away as the sim takes over, and it
+    // returns on the riser at 12.0 s. (Two earlier values were wrong for instructive reasons:
+    // 2.0 s tracked the window's OLD open, and 4.0 s tracked its new one — which muted the drop
+    // for the first fifth of the ad. Align to the BEAT, then check it against the window map.)
+    name: 'bed-teaser', film: 1, title: 'Touch This Video', filmLen: 60.93, lengthMs: 66000, dropAt: 1.2,
     bpm: 120, key: 'A minor',
     character: 'Punchy, kinetic opener: riser into a confident drop at 0:04 (film 1\'s first live window), momentum lift every 8 bars, big open montage energy 0:35–0:45, hard clean button ending (no fade).',
     prompt: 'Punchy, kinetic modern electronic music for a tech product launch film — the energy of an Apple, Linear or Figma launch video. ' +
@@ -127,7 +131,7 @@ const BEDS = [
     },
   },
   {
-    name: 'bed-tutorial', film: 2, title: 'Make Yours', filmLen: 86.71, lengthMs: 90000,
+    name: 'bed-tutorial', film: 2, title: 'Make Yours', filmLen: 86.47, lengthMs: 90000,
     bpm: 100, key: 'D minor',
     character: 'Driving but narration-friendly: bass and drums lead, sparse mids so the voice sits on top, section lift every 8 bars, soft button ending.',
     // Round-1/2 prompt takes (takes 1, 3, 4) all put a silent bar or an 8 s breakdown at ~55 % of the
@@ -164,7 +168,7 @@ const BEDS = [
     },
   },
   {
-    name: 'bed-heavy', film: 3, title: 'Drop In Anything', filmLen: 53.10, lengthMs: 57000,
+    name: 'bed-heavy', film: 3, title: 'Drop In Anything', filmLen: 51.93, lengthMs: 57000,
     bpm: 108, key: 'E minor',
     character: 'Confident and practical: chunky groove, lift every 8 bars, fuller peak 0:36–0:48, tight button ending.',
     prompt: 'Confident, practical, chunky modern electronic groove for a product feature film. 108 BPM, key of E minor. ' +
@@ -193,7 +197,7 @@ const BEDS = [
     },
   },
   {
-    name: 'bed-powers', film: 4, title: 'Viewer Superpowers', filmLen: 59.19, lengthMs: 63000,
+    name: 'bed-powers', film: 4, title: 'Viewer Superpowers', filmLen: 58.83, lengthMs: 63000,
     bpm: 114, key: 'C major',
     character: 'Playful, bright, plucky and energetic: hook from the first beat, lift every 8 bars, peak 0:42–0:54, button ending with a small upward flourish.',
     prompt: 'Playful, bright, energetic modern electronic music for a fun product feature film. 114 BPM, key of C major. ' +
@@ -225,7 +229,7 @@ const BEDS = [
     },
   },
   {
-    name: 'bed-share', film: 5, title: 'One Link, Three Doors', filmLen: 45.45, lengthMs: 49000,
+    name: 'bed-share', film: 5, title: 'One Link, Three Doors', filmLen: 45.47, lengthMs: 49000,
     bpm: 100, key: 'F major',
     character: 'Warm but forward: plucked/arpeggiated synths over a soft four-on-the-floor, a lift every 8 bars, resolves cleanly on a final chord with a short ring.',
     prompt: 'Warm but forward modern electronic music for a product film about sharing. 100 BPM, key of F major. ' +
@@ -306,6 +310,29 @@ const ONLY = (opt('--only', '') || '').split(',').map((s) => s.trim()).filter(Bo
 const wantBed = (b) => !ONLY.length || ONLY.includes('beds') || ONLY.includes(b.name);
 const wantSfx = (s) => !ONLY.length || ONLY.includes('sfx') || ONLY.includes(s.name);
 if (!['auto', 'prompt', 'plan'].includes(MODE)) { console.error('--mode must be auto|prompt|plan'); process.exit(2); }
+// A drop inside a live window is inaudible: the assembler ducks the bed −97 % for the window's
+// whole span. This has been got wrong twice, so it is checked, not remembered. Read the SAME file
+// the assembler reads; if the layout is missing, say so rather than silently skipping the check.
+function windowsForFilm(n) {
+  // self-contained path: this guard runs before DIR is initialized
+  const p = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'seeding', 'layout-v3.json');
+  if (!existsSync(p)) return null;
+  const L = JSON.parse(readFileSync(p, 'utf8'));
+  const w = n === 1 ? L.demo?.windows : n === 2 ? L.tutorial?.windows : L.niche?.find((x) => x.film === n)?.windows;
+  return (w ?? []).map((x) => x.window);
+}
+for (const b of BEDS) {
+  if (b.dropAt == null) continue;
+  const wins = windowsForFilm(b.film);
+  if (wins == null) { console.error(`${b.name}: seeding/layout-v3.json not found — cannot check dropAt ${b.dropAt} s against the live windows`); process.exit(2); }
+  const hit = wins.find(([a, z]) => b.dropAt >= a && b.dropAt < z);
+  if (hit) {
+    console.error(`${b.name}: dropAt ${b.dropAt} s falls inside live window [${hit[0]},${hit[1]}], where the assembler ducks the bed −97 % — the drop would be inaudible.`);
+    console.error(`  film ${b.film} windows: ${JSON.stringify(wins)}. Put the drop in a beat the audience can hear, then re-run.`);
+    process.exit(2);
+  }
+}
+
 const SECTION_MS = [3000, 120000]; // /v1/music validation limits for composition_plan.sections[].duration_ms (422 outside)
 for (const b of BEDS) {
   const sum = b.plan.sections.reduce((a, s) => a + s.duration_ms, 0);

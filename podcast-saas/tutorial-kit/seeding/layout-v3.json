@@ -1,5 +1,5 @@
 {
-  "comment": "v3 experience layout \u2014 MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth \u2014 retime both together). Each window: sim key \u2192 { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }.",
+  "comment": "v3 experience layout — MID-ROLL live windows at narrative beats (owner: embed, don't capture; no post-roll pileups). Times SYNCED to scripts v3 (scripts/SCRIPT-*.md WINDOW MAP lines are the source of truth — retime both together). Each window: sim key → { window:[start,end] on that project's master video, label, prompt (Generate mini model, generated), simpleUI }. `uiHide` is the MECHANICAL selector list Simple UI hides — the prompt says what in words, this is what the player is handed; an empty list cloaks nothing.",
   "demo": {
     "title": "Welcome to Flow Video",
     "master": "film1",
@@ -12,7 +12,15 @@
         ],
         "label": "Drag the slider",
         "prompt": "Let viewers scrub the walking cycle and orbit the camera — keep only the cycle slider and Pause.",
-        "simpleUI": true
+        "simpleUI": true,
+        "uiHide": [
+          ".section-heading",
+          "#motor-control",
+          "#restart",
+          "#reset-camera",
+          "#advanced-background-control",
+          ".range-field:has(#presentation-rate)"
+        ]
       },
       {
         "sim": "solarSystem",
@@ -21,8 +29,11 @@
           33
         ],
         "label": "Tap a planet",
-        "prompt": "Give viewers the planets \u2014 let them speed up time and fly to any world",
-        "simpleUI": true
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "uiHide": [
+          "#panel-title"
+        ]
       },
       {
         "sim": "murmuration",
@@ -31,14 +42,14 @@
           52
         ],
         "label": "Hit Scatter",
-        "prompt": "Let viewers steer the flock \u2014 cohesion, speed, and a scatter button",
+        "prompt": "Let viewers steer the flock — cohesion, speed, and a scatter button",
         "simpleUI": true
       }
     ],
     "choiceDoorsAtEnd": true
   },
   "tutorial": {
-    "title": "Make Yours \u2014 the basics",
+    "title": "Make Yours — the basics",
     "master": "film2",
     "ownProject": true,
     "windows": [
@@ -49,8 +60,11 @@
           63
         ],
         "label": "Tap a planet",
-        "prompt": "Give viewers the planets \u2014 let them speed up time and fly to any world",
-        "simpleUI": true
+        "prompt": "Give viewers the planets — let them speed up time and fly to any world",
+        "simpleUI": true,
+        "uiHide": [
+          "#panel-title"
+        ]
       }
     ]
   },
@@ -59,7 +73,7 @@
       "key": "heavy",
       "film": 3,
       "title": "Drop In Anything",
-      "topic": "You have your own simulation or interactive content? Drop it in, describe the moment, generate \u2014 it goes live for your viewers.",
+      "topic": "You have your own simulation or interactive content? Drop it in, describe the moment, generate — it goes live for your viewers.",
       "windows": [
         {
           "sim": "kinesin",
@@ -69,7 +83,15 @@
           ],
           "label": "Drag the slider",
           "prompt": "Let viewers scrub the walking cycle and switch motors — keep only those two controls",
-          "simpleUI": true
+          "simpleUI": true,
+          "uiHide": [
+            ".section-heading",
+            "#motor-control",
+            "#restart",
+            "#reset-camera",
+            "#advanced-background-control",
+            ".range-field:has(#presentation-rate)"
+          ]
         }
       ]
     },

@@ -124,7 +124,11 @@ export default {
     const cut = (id, from, to, min) => ({ id, from, to: Math.max(to, from + min), film: 1, scene: 'plate' });
     return {
       cuts: [
-        { ...cut('plate-kinesin', m.kinesin, m['kinesin-end'], 10), note: `full-frame kinesin package, camera orbit + cycle-position sweep (mean luma at start ${luma.kinesin})` },
+        // NOTE: no plate-kinesin here. Standalone, the kinesin package shows its full panel —
+        // including the "ASSET PROOF" eyebrow the owner objected to in the teaser's hook. That
+        // plate is recorded THROUGH the demo window, where the section's Minimal UI hides it:
+        // captures/shots/plate-kinesin.mjs. The kinesin leg above still runs so the take's timing
+        // is unchanged, and its footage is simply not cut.
         { ...cut('plate-solar', m.solar, m['solar-end'], 10), note: `full-frame solar package, time-lapse up + flight to Jupiter (mean luma at start ${luma.solar})` },
         { ...cut('plate-murmuration', m.murmuration, m['murmuration-end'], 9), note: `full-frame murmuration package, pointer sweep + Scatter + re-form (mean luma at start ${luma.murmuration})` },
         { ...cut('plate-orbitlab', m.orbitlab, m['orbitlab-end'], 14), note: `full-frame orbit-lab package, two planets launched by drag (mean luma at start ${luma.orbitlab})` },

@@ -41,9 +41,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
-        "cy": 0.45,
-        "scale": 1.6
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
       },
       "reshoot": "drag across V1 → Simulation → the Generate mini model card; prompt typed verbatim",
       "atBeat": "card"
@@ -55,9 +55,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
+        "cx": 0.05,
         "cy": 0.55,
-        "scale": 1.8
+        "scale": 1.7
       },
       "reshoot": "both toggles flipped + Generate (new label)",
       "atBeat": "minimal-ui"
@@ -69,9 +69,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
-        "cy": 0.45,
-        "scale": 1.6
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
       },
       "reshoot": "follow-up typed into Generate mini model → Generate",
       "atBeat": "typing"

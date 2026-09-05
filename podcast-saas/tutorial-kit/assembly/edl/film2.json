@@ -53,9 +53,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
-        "cy": 0.45,
-        "scale": 1.6
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
       },
       "reshoot": "card opens: Simulation type → 'Generate mini model' card (new label)",
       "atBeat": "card"
@@ -67,9 +67,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
-        "cy": 0.45,
-        "scale": 1.8
+        "cx": 0.05,
+        "cy": 0.55,
+        "scale": 1.7
       },
       "reshoot": "the prompt typed in sync (new label)",
       "atBeat": "typing"
@@ -81,9 +81,9 @@
       "kind": "VIDEO",
       "fallback": "captures/props/lesson-waves.mp4",
       "zoom": {
-        "cx": 0.78,
+        "cx": 0.05,
         "cy": 0.55,
-        "scale": 1.8
+        "scale": 1.7
       },
       "reshoot": "both toggles flipped + Generate with AI (new label)",
       "atBeat": "minimal-ui"
