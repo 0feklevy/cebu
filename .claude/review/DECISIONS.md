@@ -2342,3 +2342,8 @@ deploys deserves one at least as much.
 - 🔴 OPEN (viewer asserts): build-template's "two sim sections present" assert counts only the
   teaser-anchored sections in the share config — stale vs the film2-anchored tail layout; the
   live journey + posters verify the truth. Update the assert next pass.
+- 🟢 CI GREEN: PR #192 all 9 checks pass (after 4 real fix rounds the gates earned: test-typecheck
+  ratchet, a11y switch roster, the player exit-contract regression — respecified per the existing
+  suites, check-db's second migration list; plus one proven webkit flake). Local: backend full
+  suite exit 0, client 1988/1988. Ready for owner review; production template publish + flags
+  remain the deliberate operator step.
