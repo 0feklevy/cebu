@@ -136,3 +136,14 @@ PM/accuracy critic: still running — its findings fold into v2 before G1-post.
   ONLY when somewhere forward exists (stacked section / next video), preserving legacy
   single-video replay semantics. All 26 spec tests + 1988 client tests green; live chain
   re-verified (film2 advances; orbit presents without doors).
+## v3 PIVOT (owner review 2026-09-05 midday — first cut REJECTED as "stuck and boring")
+Root error: sims captured as footage + sections piled post-roll. New grammar (verified live):
+MID-ROLL LIVE WINDOWS — the real sim mounts on the film at its beat, narration continues under,
+auto-return at window end. Layout of record: seeding/layout-v3.json (synced to the scripts'
+WINDOW MAP lines). Product fixes shipped: 'Generate mini model' (no ✦), header ? right of
+Create link, sections born at the PLAYHEAD (was append-to-end — the pileup's mechanism),
+choice-doors focus, bounded generation dots. In flight (fleet): editor sim-loading perf fix
+(static P1: 4N serial publish round-trips), music v2 (driving), narration audition (free Edge
+neural for review; ElevenLabs after sign-off), build-template v3 (layout-driven, tutorial its own
+project, kinesin embedded for local review), reference research → CREATIVE-DIRECTION-v3.md,
+harsh marketing gate on scripts v3. Reshoots listed in captures/RESHOOT-v3.md.

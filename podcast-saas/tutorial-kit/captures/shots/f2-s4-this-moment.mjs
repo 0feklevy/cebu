@@ -1,4 +1,4 @@
-// Film 2 · Scene 4 — the "This moment" card: pick Simulation, choose the package, describe the
+// Film 2 · Scene 4 — the "Generate mini model" card: pick Simulation, choose the package, describe the
 // moment, flip Simple UI + Auto Script, ✦ Generate with AI, and WAIT for the result on camera.
 //
 // The sim NAME is a constant so the later re-run with the real Solar System package is a
