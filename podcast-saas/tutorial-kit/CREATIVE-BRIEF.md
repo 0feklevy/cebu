@@ -1,4 +1,22 @@
-# FlowVid Tutorial Film — Creative Brief (draft v3)
+# FlowVid Tutorial Film — Creative Brief (v4 — after the owner's review, 2026-09-05 midday)
+
+## OWNER VERDICT ON THE FIRST CUT (verbatim force): "stuck and boring"
+The v2 films CAPTURED simulations as footage and piled interactive sections at the END of the
+timeline. Rejected outright: "Why stick simulations at the end, and three of them? No point."
+"Don't capture simulations — EMBED them at the relevant parts, at the right times, as part of the
+ad." "The point of the sims: they have BUTTONS; in Generate mini model you write what to change and
+flip Simple UI + Auto Script — show THAT." "The Heavy Simulation — what's the point? Users care what
+to DO." "Scripts not marketing-strong. Pace, music, narration, embedding — all of it: improve."
+
+## THE v3 GRAMMAR (verified in the product 2026-09-05): MID-ROLL LIVE WINDOWS
+A section with start/end INSIDE the video presents the REAL interactive simulation on top while
+the video AND narration keep playing underneath, then auto-returns to video at the window's end.
+Films are therefore: short kinetic video (narration + real UI captures ONLY) + live windows at the
+narrative beats — the narration speaks OVER the window and directs the viewer's hand. No sim
+footage anywhere. One sim per beat, at its beat. Layout of record: seeding/layout-v3.json.
+Product renames shipped with this round: "✦ This moment" → "Generate mini model" (no star);
+header "?" moved right of Create link.
+
 
 ## STYLE REFERENCE (owner, 2026-09-05): ~/Downloads/welcome!.mp4
 A ~56s product teaser from another app, sampled frame-by-frame. What we adopt:

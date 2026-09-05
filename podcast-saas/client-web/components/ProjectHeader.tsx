@@ -233,12 +233,6 @@ export function ProjectHeader({ projectId }: Props) {
         <span className="hidden min-[390px]:inline">Preview</span>
       </a>
 
-      <TourButton
-        onClick={() => window.dispatchEvent(new Event('editor:start-tour'))}
-        title="Editor walkthrough"
-        aria-label="Editor walkthrough"
-      />
-
       <ProjectSettingsPanel
         projectId={projectId}
         project={project}
@@ -386,6 +380,13 @@ export function ProjectHeader({ projectId }: Props) {
         )}
       </div>
 
+      {/* Owner ruling 2026-09-05: the walkthrough "?" sits at the far right, after Create link —
+          not between Export and Settings where it read as a primary action. */}
+      <TourButton
+        onClick={() => window.dispatchEvent(new Event('editor:start-tour'))}
+        title="Editor walkthrough"
+        aria-label="Editor walkthrough"
+      />
     </header>
   );
 }
